@@ -335,7 +335,7 @@ export default function Salary() {
 
             <div>
               <p className="mb-1.5 text-xs font-semibold text-slate-600">{t.historyTitle}</p>
-              <div className="space-y-1 rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
                 {sortedSalaryHistory(reviseTarget).length ? (
                   [...sortedSalaryHistory(reviseTarget)].reverse().map((entry) => (
                     <div key={entry.effectiveFrom} className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -368,7 +368,7 @@ export default function Salary() {
               <span className="text-slate-600">{monthLabel}</span>
               <span className="font-bold text-violet-600">{formatCurrency(monthlyCreditTotal(creditTarget, viewYear, viewMonthIdx))}</span>
             </div>
-            <div className="space-y-1.5 rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
+            <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
               {monthlyCreditEntries(creditTarget, viewYear, viewMonthIdx).map((entry) => (
                 <div key={entry.id} className="flex items-start gap-1.5 text-xs">
                   <Receipt size={11} className="mt-0.5 shrink-0 text-violet-400" />

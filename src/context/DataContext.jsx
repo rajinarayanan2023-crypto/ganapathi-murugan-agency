@@ -31,6 +31,7 @@ import {
   deleteCreditCustomer as apiDeleteCreditCustomer,
   addLedgerEntry as apiAddLedgerEntry,
   deleteLedgerEntry as apiDeleteLedgerEntry,
+  updateLedgerEntryBill as apiUpdateLedgerEntryBill,
   getOfferCustomers,
   createOfferCustomer as apiCreateOfferCustomer,
   updateOfferCustomer as apiUpdateOfferCustomer,
@@ -590,6 +591,75 @@ export function DataProvider({ children }) {
     loadFuelEntries()
   }, [isAuthenticated, loadFuelEntries])
 
+  // bills[].url / ledger[].billUrl are kept as the RAW S3 key here — resolve
+  // to a real, short-lived URL with apiClient's getDownloadUrl(key) at the
+  // point of use (rendering a link, fetching for download), never baked
+  // into stored state, since a presigned URL expires. Declared up here
+  // (rather than down in the "Credit Customers" section below, where the
+  // rest of that section's functions live) only because
+  // refreshFuelEntrySideEffects, right below, needs loadCreditCustomers
+  // already initialized — useCallback's dependency array is evaluated
+  // immediately at render time, so a later `const` would still be in its
+  // temporal dead zone here.
+  const normalizeCreditCustomer = useCallback(
+    (c) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone || '',
+      openingBalance: Number(c.opening_balance),
+      notes: c.notes || '',
+      ledger: (c.ledger_entries || []).map((e) => ({
+        id: e.id,
+        date: e.date,
+        type: e.type,
+        fuelType: e.fuel_type ? e.fuel_type[0].toUpperCase() + e.fuel_type.slice(1) : null,
+        ltr: e.litres != null ? Number(e.litres) : null,
+        rate: e.rate != null ? Number(e.rate) : null,
+        amount: Number(e.amount),
+        mode: e.mode,
+        note: e.note || '',
+        sourceFuelEntryId: e.source_fuel_entry_id,
+        billUrl: e.bill_file_url || null,
+        billName: e.bill_file_name || null,
+      })),
+      bills: (c.bills || []).map((b) => ({ id: b.id, name: b.file_name, url: b.file_url, date: b.uploaded_date })),
+    }),
+    [],
+  )
+
+  const loadCreditCustomers = useCallback(async () => {
+    setCreditCustomersLoading(true)
+    setCreditCustomersError(null)
+    try {
+      const data = await getCreditCustomers()
+      setCreditCustomers(data.map(normalizeCreditCustomer))
+    } catch (err) {
+      setCreditCustomersError(err.message)
+    } finally {
+      setCreditCustomersLoading(false)
+    }
+  }, [normalizeCreditCustomer])
+
+  // A finalized shift's customer-credit / employee-credit payment lines
+  // create real rows straight in Postgres (see FuelEntryService
+  // ._apply_credit_ledger / ._apply_employee_credit) — but creditCustomers
+  // and employees are separate slices of state, each fetched once and never
+  // otherwise touched by a fuel-entry save, so without this they'd keep
+  // showing whatever they last had (missing the brand-new ledger/credit
+  // row) until the next full login, even though the shift itself saved
+  // fine. Re-fetches only whichever slice this save could plausibly have
+  // changed, and only for a draft→final/final→draft/final-edit transition —
+  // never on a plain draft-to-draft autosave, since those can never trigger
+  // either side effect server-side.
+  const refreshFuelEntrySideEffects = useCallback(
+    (payments) => {
+      const list = payments || []
+      if (list.some((p) => p.type === 'credit' && Number(p.amount) > 0)) loadCreditCustomers()
+      if (list.some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0)) loadEmployees()
+    },
+    [loadCreditCustomers, loadEmployees],
+  )
+
   // Optimistic-first, always awaitable: local state updates immediately (a
   // temp id stands in for the not-yet-assigned real one), so PumpDayEditor's
   // debounced draft autosave — which calls this WITHOUT awaiting it — never
@@ -607,6 +677,7 @@ export function DataProvider({ children }) {
           const created = await apiCreateFuelEntry(toApiFuelEntry(entry))
           const normalized = normalizeFuelEntry(created)
           setFuelEntries((prev) => prev.map((f) => (f.id === tempId ? normalized : f)))
+          if (normalized.status === 'final') refreshFuelEntrySideEffects(normalized.payments)
           return normalized.id
         } catch (err) {
           setFuelEntries((prev) => prev.filter((f) => f.id !== tempId))
@@ -614,7 +685,7 @@ export function DataProvider({ children }) {
         }
       })()
     },
-    [normalizeFuelEntry, toApiFuelEntry],
+    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects],
   )
 
   const updateFuelEntry = useCallback(
@@ -629,6 +700,13 @@ export function DataProvider({ children }) {
           const updated = await apiUpdateFuelEntry(id, toApiFuelEntry(entry))
           const normalized = normalizeFuelEntry(updated)
           setFuelEntries((prev) => prev.map((f) => (f.id === id ? normalized : f)))
+          // Either side of the transition (just finalized, just un-finalized,
+          // or edited while already final) can add/remove a ledger/credit
+          // row server-side — checking both old and new payment lines covers
+          // a credit line that existed before this save but doesn't anymore.
+          if (previous?.status === 'final' || normalized.status === 'final') {
+            refreshFuelEntrySideEffects([...(previous?.payments || []), ...(normalized.payments || [])])
+          }
           return normalized.id
         } catch (err) {
           if (previous) setFuelEntries((prev) => prev.map((f) => (f.id === id ? previous : f)))
@@ -636,7 +714,7 @@ export function DataProvider({ children }) {
         }
       })()
     },
-    [normalizeFuelEntry, toApiFuelEntry],
+    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects],
   )
 
   const deleteFuelEntry = useCallback((id) => {
@@ -752,49 +830,12 @@ export function DataProvider({ children }) {
   )
 
   // ---------- Credit Customers ----------
-  // bills[].url / ledger[].billUrl are kept as the RAW S3 key here — resolve
-  // to a real, short-lived URL with apiClient's getDownloadUrl(key) at the
-  // point of use (rendering a link, fetching for download), never baked
-  // into stored state, since a presigned URL expires.
-  const normalizeCreditCustomer = useCallback(
-    (c) => ({
-      id: c.id,
-      name: c.name,
-      phone: c.phone || '',
-      openingBalance: Number(c.opening_balance),
-      notes: c.notes || '',
-      ledger: (c.ledger_entries || []).map((e) => ({
-        id: e.id,
-        date: e.date,
-        type: e.type,
-        fuelType: e.fuel_type ? e.fuel_type[0].toUpperCase() + e.fuel_type.slice(1) : null,
-        ltr: e.litres != null ? Number(e.litres) : null,
-        rate: e.rate != null ? Number(e.rate) : null,
-        amount: Number(e.amount),
-        mode: e.mode,
-        note: e.note || '',
-        sourceFuelEntryId: e.source_fuel_entry_id,
-        billUrl: e.bill_file_url || null,
-        billName: e.bill_file_name || null,
-      })),
-      bills: (c.bills || []).map((b) => ({ id: b.id, name: b.file_name, url: b.file_url, date: b.uploaded_date })),
-    }),
-    [],
-  )
-
-  const loadCreditCustomers = useCallback(async () => {
-    setCreditCustomersLoading(true)
-    setCreditCustomersError(null)
-    try {
-      const data = await getCreditCustomers()
-      setCreditCustomers(data.map(normalizeCreditCustomer))
-    } catch (err) {
-      setCreditCustomersError(err.message)
-    } finally {
-      setCreditCustomersLoading(false)
-    }
-  }, [normalizeCreditCustomer])
-
+  // (normalizeCreditCustomer/loadCreditCustomers themselves are declared
+  // earlier, above addFuelEntry/updateFuelEntry — refreshFuelEntrySideEffects
+  // needs loadCreditCustomers already initialized, and useCallback's
+  // dependency array is evaluated immediately at render time, not lazily,
+  // so it can't come later in the same component than something that
+  // references it.)
   useEffect(() => {
     if (!isAuthenticated) {
       setCreditCustomers([])
@@ -855,6 +896,24 @@ export function DataProvider({ children }) {
         note: entry.note || null,
         bill_file_name: entry.billName || null,
         bill_file_url: entry.billUrl || null,
+      })
+      const customer = normalizeCreditCustomer(updated)
+      setCreditCustomers((prev) => prev.map((c) => (c.id === customerId ? customer : c)))
+      return customer
+    },
+    [normalizeCreditCustomer],
+  )
+
+  // Attaches/replaces the bill on an already-recorded ledger entry — the
+  // entry itself is immutable, only its bill can change. Pass billName:
+  // null, billUrl: null to clear it. Chiefly for a credit entered from the
+  // Fuel Entry screen (amount + reason only, no bill upload there), so the
+  // manager can come back here once the physical bill is in hand.
+  const updateLedgerEntryBill = useCallback(
+    async (customerId, entryId, { billName, billUrl }) => {
+      const updated = await apiUpdateLedgerEntryBill(customerId, entryId, {
+        bill_file_name: billName || null,
+        bill_file_url: billUrl || null,
       })
       const customer = normalizeCreditCustomer(updated)
       setCreditCustomers((prev) => prev.map((c) => (c.id === customerId ? customer : c)))
@@ -1086,6 +1145,7 @@ export function DataProvider({ children }) {
       updateCustomer,
       deleteCustomer,
       addLedgerEntry,
+      updateLedgerEntryBill,
       removeLedgerEntry,
       offerCustomers,
       offerCustomersLoading,
@@ -1154,6 +1214,7 @@ export function DataProvider({ children }) {
       updateCustomer,
       deleteCustomer,
       addLedgerEntry,
+      updateLedgerEntryBill,
       removeLedgerEntry,
       offerCustomers,
       offerCustomersLoading,

@@ -205,6 +205,15 @@ export function deleteLedgerEntry(customerId, entryId) {
   return apiDelete(`/credit-customers/${customerId}/ledger/${entryId}`)
 }
 
+// Attaches/replaces (or, passing both fields null, clears) the bill on an
+// already-recorded ledger entry — for a credit entered from the Fuel Entry
+// screen (amount + reason only, no bill upload there) or one recorded here
+// without a bill at hand, so the manager can come back and attach it once
+// the physical bill is in.
+export function updateLedgerEntryBill(customerId, entryId, data) {
+  return apiPatch(`/credit-customers/${customerId}/ledger/${entryId}/bill`, data)
+}
+
 // ---------- Offer Customers ----------
 // Standalone recipient list for Offers — deliberately separate from
 // Employees/Credit Customers (see app/models/offer.py on the backend).

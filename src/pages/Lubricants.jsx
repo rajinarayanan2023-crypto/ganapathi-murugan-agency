@@ -16,7 +16,7 @@ import { Field, Input, Select, PrimaryButton, SecondaryButton, IconButton } from
 import StatCard from '../components/StatCard.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 
-const emptyForm = { name: '', unit: 'Pcs', rate: '', stock: '', packaging: 'packet' }
+const emptyForm = { name: '', unit: 'Pcs', rate: '', stock: '', packaging: 'cane' }
 
 // Packet = small individual sachets/bottles; Cane = bulk tins/drums. Fuel
 // Entry's Pump 2 oil section uses this to keep the two product pickers apart.

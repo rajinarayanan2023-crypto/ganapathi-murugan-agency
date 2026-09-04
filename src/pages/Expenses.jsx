@@ -218,7 +218,7 @@ export default function Expenses() {
           </Field>
 
           <Field label={t.itemsLabel} error={errors.items}>
-            <div className="space-y-2">
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
               {items.map((item) => (
                 <div key={item.id} className="flex items-center gap-1.5">
                   <Input

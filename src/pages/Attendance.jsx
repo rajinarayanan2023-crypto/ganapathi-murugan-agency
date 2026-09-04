@@ -248,6 +248,34 @@ export default function Attendance() {
     return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {attendanceError}</div>
   }
 
+  // Shared between the standalone header below (history tab, or the mark
+  // tab's empty state — neither renders a DataTable of its own to carry
+  // this) and the mark tab's DataTable leadingContent (merged into its own
+  // toolbar row so the tabs, date, Mark All buttons, search box, and Export
+  // CSV button all end up on the exact same row instead of two stacked ones).
+  const tabsNav = (
+    <div className="flex items-center gap-1">
+      {[
+        { key: 'mark', label: t.tabMark },
+        { key: 'history', label: t.tabHistory },
+      ].map((tab) => (
+        <button
+          key={tab.key}
+          onClick={() => setActiveTab(tab.key)}
+          className={`relative px-4 py-2.5 text-sm font-semibold transition-colors ${
+            activeTab === tab.key ? 'text-brand-700' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          {tab.label}
+          {activeTab === tab.key ? (
+            <motion.span layoutId="attendanceTabUnderline" className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-brand-600" />
+          ) : null}
+        </button>
+      ))}
+    </div>
+  )
+  const showOwnHeader = activeTab === 'history' || activeEmployees.length === 0
+
   return (
     <div className="space-y-6">
       <motion.div
@@ -256,90 +284,36 @@ export default function Attendance() {
         transition={{ duration: 0.35 }}
         className="rounded-xl border border-slate-200 bg-white shadow-card"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
-          <div className="flex items-center gap-1">
-            {[
-              { key: 'mark', label: t.tabMark },
-              { key: 'history', label: t.tabHistory },
-            ].map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                className={`relative px-4 py-2.5 text-sm font-semibold transition-colors ${
-                  activeTab === tab.key ? 'text-brand-700' : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {tab.label}
-                {activeTab === tab.key ? (
-                  <motion.span layoutId="attendanceTabUnderline" className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-brand-600" />
-                ) : null}
-              </button>
-            ))}
-          </div>
+        {showOwnHeader ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
+            {tabsNav}
 
-          {activeTab === 'mark' ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 rounded-lg bg-slate-50 py-1 pl-1 pr-2 ring-1 ring-slate-200">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
-                  <CalendarDays size={13} />
-                </div>
-                <AppDatePicker value={selectedDate} onChange={setSelectedDate} maxDate={today} variant="inline" className="w-[140px]" />
-                {selectedDate === today ? (
-                  <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">{t.today}</span>
-                ) : null}
+            {activeTab === 'history' ? (
+              <div className="flex items-center gap-2">
+                <AppTooltip title="Previous month">
+                  <button
+                    onClick={goPrevMonth}
+                    aria-label="Previous month"
+                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                </AppTooltip>
+                <span className="min-w-[130px] text-center text-sm font-bold text-slate-800">{monthLabel}</span>
+                <AppTooltip title="Next month">
+                  <button
+                    onClick={goNextMonth}
+                    disabled={isCurrentMonth}
+                    aria-label="Next month"
+                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </AppTooltip>
               </div>
-
-              {activeEmployees.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    onClick={() => markAll('oneShift')}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {t.markAllOneShift}
-                  </button>
-                  <button
-                    onClick={() => markAll('absent')}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {t.markAllAbsent}
-                  </button>
-                  <button
-                    onClick={() => markAll('leave')}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {t.markAllLeave}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <AppTooltip title="Previous month">
-                <button
-                  onClick={goPrevMonth}
-                  aria-label="Previous month"
-                  className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
-                >
-                  <ChevronLeft size={16} />
-                </button>
-              </AppTooltip>
-              <span className="min-w-[130px] text-center text-sm font-bold text-slate-800">{monthLabel}</span>
-              <AppTooltip title="Next month">
-                <button
-                  onClick={goNextMonth}
-                  disabled={isCurrentMonth}
-                  aria-label="Next month"
-                  className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <ChevronRight size={16} />
-                </button>
-              </AppTooltip>
-            </div>
-          )}
-        </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <AnimatePresence mode="wait">
           {activeTab === 'mark' ? (
@@ -368,9 +342,46 @@ export default function Attendance() {
                   globalFilterFields={['name', 'phone', 'role', 'fatherName']}
                   searchPlaceholder={t.searchPlaceholder}
                   defaultSortField="name"
-                  scrollHeight="calc(100vh - 160px)"
+                  scrollHeight="calc(100vh - 105px)"
                   exportFilename={`attendance-${selectedDate}`}
                   dense
+                  leadingContent={tabsNav}
+                  trailingContent={
+                    <>
+                      <div className="flex items-center gap-1.5 rounded-lg bg-slate-50 py-1 pl-1 pr-2 ring-1 ring-slate-200">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
+                          <CalendarDays size={13} />
+                        </div>
+                        <AppDatePicker value={selectedDate} onChange={setSelectedDate} maxDate={today} variant="inline" className="w-[140px]" />
+                        {selectedDate === today ? (
+                          <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">{t.today}</span>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          onClick={() => markAll('oneShift')}
+                          disabled={saving}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {t.markAllOneShift}
+                        </button>
+                        <button
+                          onClick={() => markAll('absent')}
+                          disabled={saving}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {t.markAllAbsent}
+                        </button>
+                        <button
+                          onClick={() => markAll('leave')}
+                          disabled={saving}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {t.markAllLeave}
+                        </button>
+                      </div>
+                    </>
+                  }
                 />
               )}
             </motion.div>

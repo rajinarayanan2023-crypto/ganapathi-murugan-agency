@@ -356,6 +356,7 @@ function ShiftCard({
   onChange,
   isDerivedOpening,
   employees,
+  unavailableEmployeeIds,
   creditCustomers,
   lubricants,
   onSaveDraft,
@@ -364,6 +365,14 @@ function ShiftCard({
   onDiscardDraft,
 }) {
   const fuelKeys = FUEL_KEYS_BY_PUMP[pumpKey]
+  // Employees marked absent/leave/duty-off for this shift's date shouldn't
+  // be assignable to work it — but never hide whoever is ALREADY assigned
+  // just because their attendance was (perhaps later) marked that way; that
+  // would leave this dropdown showing blank for an existing selection.
+  const assignableEmployees = useMemo(
+    () => employees.filter((emp) => emp.id === value.employeeId || !unavailableEmployeeIds?.has(emp.id)),
+    [employees, unavailableEmployeeIds, value.employeeId],
+  )
   // This shift's own sale/payments/excess — not every shift on this pump
   // added together. Only the top-level "Entire Day Total" (in FuelEntryForm,
   // above the pump tabs) is meant to combine every shift across both pumps;
@@ -726,9 +735,10 @@ function ShiftCard({
             error={shiftEmployeeMissing}
           >
             <option value="">{t.selectEmployee}</option>
-            {employees.map((emp) => (
+            {assignableEmployees.map((emp) => (
               <option key={emp.id} value={emp.id}>
                 {emp.name}
+                {unavailableEmployeeIds?.has(emp.id) ? ` (${tRoot.employeeUnavailableSuffix})` : ''}
               </option>
             ))}
           </Select>
@@ -914,6 +924,9 @@ function ShiftCard({
             {/* Scrolls internally once there are more than ~4 rows, instead
                 of pushing the rest of the form down indefinitely. */}
             <div className="max-h-[240px] space-y-3 overflow-y-auto pr-1">
+              {(value.oilRows || []).length === 0 ? (
+                <p className="text-xs text-slate-400">{t.noOilRowsAdded}</p>
+              ) : null}
               {(value.oilRows || []).map((row) => (
                 <div
                   key={row.id}
@@ -983,6 +996,9 @@ function ShiftCard({
             {/* Scrolls internally once there are more than ~4 rows, instead
                 of pushing the rest of the form down indefinitely. */}
             <div className="max-h-[240px] space-y-3 overflow-y-auto pr-1">
+              {(value.caneOilRows || []).length === 0 ? (
+                <p className="text-xs text-slate-400">{t.noOilRowsAdded}</p>
+              ) : null}
               {(value.caneOilRows || []).map((row) => (
                 <div
                   key={row.id}
@@ -1445,7 +1461,7 @@ function ShiftCard({
   )
 }
 
-export default function PumpDayEditor({ pumpKey, label, accent, tint, date, employees, fuelRates, creditCustomers, lubricants }) {
+export default function PumpDayEditor({ pumpKey, label, accent, tint, date, employees, fuelRates, creditCustomers, lubricants, unavailableEmployeeIds }) {
   const { language } = useLanguage()
   const tRoot = FUEL_ENTRY_TEXT[language]
   const t = tRoot.pumpEditor
@@ -1742,6 +1758,7 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
               onChange={(next) => updateCard(index, next)}
               isDerivedOpening={index > 0}
               employees={employees}
+              unavailableEmployeeIds={unavailableEmployeeIds}
               creditCustomers={creditCustomers}
               lubricants={lubricants}
               onSaveDraft={() => handleSaveDraft(index)}

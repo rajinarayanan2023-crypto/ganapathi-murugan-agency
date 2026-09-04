@@ -696,9 +696,9 @@ export default function AuditModal({
 
         <div>
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.lubricantSalesTitle}</p>
-          <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50">
+              <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr className="text-slate-400">
                   <th className="px-3 py-2 font-semibold">{t.colProduct}</th>
                   <th className="px-3 py-2 text-right font-semibold">{t.colCount}</th>
@@ -738,9 +738,9 @@ export default function AuditModal({
 
         <div>
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.paymentsBreakdownTitle}</p>
-          <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50">
+              <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr className="text-slate-400">
                   <th className="px-3 py-2 font-semibold">{t.colMethod}</th>
                   <th className="px-3 py-2 text-right font-semibold">{t.colLitres}</th>
@@ -781,9 +781,9 @@ export default function AuditModal({
         {remainingExpenseRows.length ? (
           <div>
             <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.remainingExpensesTitle}</p>
-            <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50">
+                <thead className="sticky top-0 z-10 bg-slate-50">
                   <tr className="text-slate-400">
                     <th className="px-3 py-2 font-semibold">{t.colMethod}</th>
                     <th className="px-3 py-2 text-right font-semibold">{t.colAmount}</th>
@@ -915,25 +915,27 @@ export default function AuditModal({
 
           {todaysCreditPayments.length ? (
             <div className="space-y-1.5">
-              {todaysCreditPayments.map((row) => (
-                <div key={row.id} className="flex items-center justify-between gap-2 rounded-lg bg-white px-3 py-1.5 text-xs">
-                  <span className="min-w-0 truncate font-medium text-slate-700">
-                    {row.customerName} <span className="text-slate-400">· {row.mode}</span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    <span className="font-bold text-emerald-700">{roundedCurrency(row.amount)}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveCreditPayment(row)}
-                      aria-label={t.removeCreditPayment}
-                      title={t.removeCreditPayment}
-                      className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
-                    >
-                      <X size={13} />
-                    </button>
-                  </span>
-                </div>
-              ))}
+              <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">
+                {todaysCreditPayments.map((row) => (
+                  <div key={row.id} className="flex items-center justify-between gap-2 rounded-lg bg-white px-3 py-1.5 text-xs">
+                    <span className="min-w-0 truncate font-medium text-slate-700">
+                      {row.customerName} <span className="text-slate-400">· {row.mode}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <span className="font-bold text-emerald-700">{roundedCurrency(row.amount)}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveCreditPayment(row)}
+                        aria-label={t.removeCreditPayment}
+                        title={t.removeCreditPayment}
+                        className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
               <div className="flex items-center justify-between rounded-lg bg-rose-100/60 px-3 py-1.5 text-xs font-bold text-rose-700">
                 <span>{t.totalCreditPaidLabel}</span>
                 <span>{roundedCurrency(todaysCreditPaymentsTotal)}</span>

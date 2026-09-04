@@ -22,7 +22,7 @@ import AuditModal from '../components/AuditModal.jsx'
 export default function FuelEntryForm() {
   const { entryId } = useParams()
   const navigate = useNavigate()
-  const { fuelEntries, fuelEntriesLoading, fuelRates, employees, creditCustomers, lubricants, station, updateStation } = useData()
+  const { fuelEntries, fuelEntriesLoading, fuelRates, employees, creditCustomers, lubricants, station, updateStation, attendance, loadAttendanceMonth } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
   const activeEmployees = useMemo(() => employees.filter((e) => e.active !== false), [employees])
@@ -31,6 +31,28 @@ export default function FuelEntryForm() {
   // day + pump; arriving via "New Day Entry" starts on today, Pump 1.
   const linkedEntry = entryId ? fuelEntries.find((e) => e.id === entryId) : null
   const [date, setDate] = useState(() => linkedEntry?.date || todayISO())
+
+  // Attendance only auto-loads the real-world current month by default (see
+  // DataContext) — Fuel Entry can view any date, so make sure whichever
+  // month is actually being viewed is loaded too (a no-op if it already is).
+  useEffect(() => {
+    const [year, month] = date.split('-').map(Number)
+    loadAttendanceMonth(year, month - 1)
+  }, [date, loadAttendanceMonth])
+
+  // An employee marked absent/leave/duty-off for this date shouldn't be
+  // assignable to work a shift on it — ShiftCard (PumpDayEditor) still shows
+  // whoever is ALREADY assigned even if they're in this set, so correcting
+  // someone's attendance after the fact never leaves an existing shift
+  // assignment looking blank.
+  const unavailableEmployeeIds = useMemo(() => {
+    const notWorking = new Set(['absent', 'leave', 'dutyOff'])
+    const ids = new Set()
+    for (const emp of activeEmployees) {
+      if (notWorking.has(attendance[emp.id]?.[date]?.status)) ids.add(emp.id)
+    }
+    return ids
+  }, [activeEmployees, attendance, date])
   const [activeTab, setActiveTab] = useState(() => linkedEntry?.pumpKey || 'pump1')
   const [auditOpen, setAuditOpen] = useState(false)
   // Its own state, entirely separate from the main audit above — Shift 3's
@@ -53,17 +75,6 @@ export default function FuelEntryForm() {
     }
   }, [entryId, fuelEntriesLoading, linkedEntry])
 
-  if (entryId && !linkedEntry) {
-    // Still fetching — avoid a misleading "no entries" flash before the real
-    // one arrives; render nothing rather than a page-blocking spinner.
-    if (fuelEntriesLoading) return null
-    return (
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-card">
-        <EmptyState icon={ReceiptText} title={t.emptyTitle} description={t.emptyDesc} />
-      </div>
-    )
-  }
-
   // Combined Pump 1 + Pump 2 totals for the viewed date, from whatever
   // shifts are currently saved — updates live as each shift card is saved.
   // Also keeps each pump's own entries/aggregate/bill count around for the
@@ -76,6 +87,11 @@ export default function FuelEntryForm() {
   // litres/cash are their own thing, not "the day's sales." So it gets its
   // own combined-both-pumps total and its own audit, entirely separate from
   // the day's Shift 1 + Shift 2 total and audit.
+  //
+  // Kept ABOVE the entryId-not-found early return below — this is a hook, and
+  // hooks can never come after a conditional return or their call order
+  // changes between "still loading" and "loaded" renders, which is exactly
+  // what threw "Rendered more hooks than during the previous render" here.
   const dayBreakdown = useMemo(() => {
     const dayEntries = fuelEntries.filter((e) => e.date === date)
     const perPump = { pump1: [], pump2: [] }
@@ -117,6 +133,17 @@ export default function FuelEntryForm() {
   const dayTotals = dayBreakdown.dayTotals
   const shift3Totals = dayBreakdown.shift3Totals
 
+  if (entryId && !linkedEntry) {
+    // Still fetching — avoid a misleading "no entries" flash before the real
+    // one arrives; render nothing rather than a page-blocking spinner.
+    if (fuelEntriesLoading) return null
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-card">
+        <EmptyState icon={ReceiptText} title={t.emptyTitle} description={t.emptyDesc} />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-card">
@@ -130,7 +157,7 @@ export default function FuelEntryForm() {
               <ArrowLeft size={15} /> {t.entryHistory}
             </button>
             <span className="hidden h-4 w-px bg-slate-200 sm:block" />
-            <h2 className="text-base font-bold text-slate-800">{t.newEntry}</h2>
+            <h2 className="text-base font-bold text-slate-800">{entryId ? t.editEntry : t.newEntry}</h2>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="shrink-0 text-xs font-semibold text-slate-600">{t.fieldDate}</span>
@@ -209,6 +236,7 @@ export default function FuelEntryForm() {
             tint="violet"
             date={date}
             employees={activeEmployees}
+            unavailableEmployeeIds={unavailableEmployeeIds}
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
           />
@@ -222,6 +250,7 @@ export default function FuelEntryForm() {
             tint="blue"
             date={date}
             employees={activeEmployees}
+            unavailableEmployeeIds={unavailableEmployeeIds}
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
             lubricants={lubricants}

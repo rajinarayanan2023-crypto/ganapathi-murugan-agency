@@ -37,6 +37,7 @@ export default function DataTable({
   dense = false,
   toolbarActions,
   leadingContent,
+  trailingContent,
   scrollable = true,
   hideExport = false,
 }) {
@@ -57,7 +58,7 @@ export default function DataTable({
     prevLengthRef.current = data.length
   }, [data.length])
 
-  const showToolbar = !!globalFilterFields || !!toolbarActions || !!leadingContent || !hideExport
+  const showToolbar = !!globalFilterFields || !!toolbarActions || !!leadingContent || !!trailingContent || !hideExport
 
   return (
     <div>
@@ -80,6 +81,11 @@ export default function DataTable({
                 />
               </div>
             ) : null}
+            {/* Placed after the search box (not grouped with leadingContent)
+                so a crowded toolbar wraps THIS to a second line before it
+                ever pushes the search box itself down — search stays usable
+                on the first row even when the row runs out of width. */}
+            {trailingContent}
           </div>
           <div className="flex shrink-0 items-center gap-2 self-start">
             {toolbarActions}

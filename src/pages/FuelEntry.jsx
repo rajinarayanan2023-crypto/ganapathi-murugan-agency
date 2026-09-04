@@ -31,7 +31,6 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import Modal from '../components/Modal.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { PrimaryButton, IconButton, Field, Input, SecondaryButton } from '../components/FormControls.jsx'
@@ -159,10 +158,18 @@ function embeddableExtension(filename) {
 }
 
 export default function FuelEntry() {
-  const { fuelEntries, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, lubricants, creditCustomers } = useData()
+  const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, lubricants, creditCustomers } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
-  const loading = useSimulatedLoading(650)
+  // fuelEntries loads from the real API now — this used to be a fixed
+  // useSimulatedLoading(650) timer from the mock-data era, which meant the
+  // skeleton always disappeared after exactly 650ms regardless of whether
+  // the real fetch had actually finished. On a slower connection that let
+  // "No fuel entries recorded" flash for real before the genuine data
+  // arrived a moment later — using the real loading flag instead means the
+  // skeleton now stays up for exactly as long as the fetch is actually in
+  // flight.
+  const loading = fuelEntriesLoading
   const navigate = useNavigate()
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)

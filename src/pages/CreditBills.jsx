@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote } from 'lucide-react'
+import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote, ChevronUp, ChevronDown } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
@@ -14,7 +14,7 @@ import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
-import { CallIcon, WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
+import { WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import CalcBreakdown from '../components/CalcBreakdown.jsx'
 
@@ -68,6 +68,7 @@ export default function CreditBills() {
     updateCustomer,
     deleteCustomer,
     addLedgerEntry,
+    updateLedgerEntryBill,
     removeLedgerEntry,
     fuelRates,
     station,
@@ -97,13 +98,15 @@ export default function CreditBills() {
   const [savingCredit, setSavingCredit] = useState(false)
   const [savingPayment, setSavingPayment] = useState(false)
   const [customerBillFiles, setCustomerBillFiles] = useState([])
-  const [billPickerCustomerId, setBillPickerCustomerId] = useState(null)
+  // Uploading (or clearing) a bill directly against one Transaction History
+  // row — id of whichever entry has a request in flight, so only that row's
+  // control shows a busy state.
+  const [uploadingTxBillId, setUploadingTxBillId] = useState(null)
+  const [txSort, setTxSort] = useState({ field: 'date', dir: 'desc' })
 
-  const rows = useMemo(() => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c) })), [creditCustomers])
-
-  const billPickerCustomer = useMemo(
-    () => (billPickerCustomerId ? rows.find((c) => c.id === billPickerCustomerId) : null),
-    [billPickerCustomerId, rows],
+  const rows = useMemo(
+    () => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c), billsCount: (c.bills?.length || 0) + (c.ledger || []).filter((e) => e.billUrl).length })),
+    [creditCustomers],
   )
 
   const ledgerCustomer = useMemo(
@@ -114,6 +117,27 @@ export default function CreditBills() {
   // render straight from its live ledger, so the balance tooltip can never
   // show a stale number after a credit/payment was just added or removed.
   const balanceBreakdown = ledgerCustomer ? closingBalanceBreakdown(ledgerCustomer) : null
+
+  // Sortable by Date/Type/Amount (clicking the same header again flips
+  // direction) — defaults to newest-first, same order the table always
+  // showed before this existed (a plain .reverse() of insertion order).
+  const sortedLedger = useMemo(() => {
+    const list = [...(ledgerCustomer?.ledger || [])]
+    const { field, dir } = txSort
+    const sign = dir === 'asc' ? 1 : -1
+    list.sort((a, b) => {
+      const av = a[field]
+      const bv = b[field]
+      if (av < bv) return -1 * sign
+      if (av > bv) return 1 * sign
+      return 0
+    })
+    return list
+  }, [ledgerCustomer, txSort])
+
+  function toggleTxSort(field) {
+    setTxSort((prev) => (prev.field === field ? { field, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: field === 'date' ? 'desc' : 'asc' }))
+  }
 
   function openAddCustomer() {
     setEditingCustomerId(null)
@@ -216,18 +240,6 @@ export default function CreditBills() {
     }
   }
 
-  function sendReminder(name) {
-    toast.success(t.toastReminderSent(name))
-  }
-
-  // No bill attached — a plain balance reminder. Used when the customer has
-  // no bills on file, or when they explicitly skip picking one in the modal.
-  function sendPlainReminderWhatsApp(c) {
-    const message = `Hi ${c.name}, this is a reminder from ${station.name} that you have an outstanding balance of ${formatCurrency(c.balance)}. Kindly clear it at your earliest convenience. Thank you!`
-    openWhatsAppChat(c.phone, message)
-    toast.success(t.toastReminderSent(c.name))
-  }
-
   // Presigned GET URLs expire, so one is fetched fresh right when the
   // manager actually clicks to view a bill — never pre-fetched for a whole
   // list up front. `key` is the S3 key stored on the bill/ledger row.
@@ -240,33 +252,56 @@ export default function CreditBills() {
     }
   }
 
-  function sendBillWhatsApp(c, bill) {
-    const message = `Hi ${c.name}, sharing your bill "${bill.name}" dated ${formatDate(bill.date)} from ${station.name}. Your outstanding balance is ${formatCurrency(closingBalance(c))}. Kindly clear it at your earliest convenience. Thank you!`
-    sendBillFileThenOpenWhatsApp(c.phone, message, bill.url, bill.name)
-    toast.success(t.toastBillDownloadedForWhatsApp(c.name))
-  }
-
-  // The quick WhatsApp action always lets the manager pick which bill (if
-  // any) to send, rather than guessing — only skips straight to a plain
-  // reminder when there's nothing on file to choose from.
-  function openBillPicker(c) {
-    if (!c.bills?.length) {
-      sendPlainReminderWhatsApp(c)
-      return
+  // One WhatsApp reminder per transaction row — references that specific
+  // entry (and sends its bill along, if one's attached by now) rather than
+  // a generic customer-level reminder, since the whole point of attaching
+  // bills per-row is that different entries can be at different stages.
+  function sendTransactionReminder(c, tx) {
+    const detail =
+      tx.type === 'credit'
+        ? `a credit of ${formatCurrency(tx.amount)} recorded on ${formatDate(tx.date)}${tx.note ? ` (${tx.note})` : ''}`
+        : `a payment of ${formatCurrency(tx.amount)} recorded on ${formatDate(tx.date)}`
+    const message = `Hi ${c.name}, this is a reminder from ${station.name} regarding ${detail}. Your outstanding balance is ${formatCurrency(closingBalance(c))}. Kindly clear it at your earliest convenience. Thank you!`
+    if (tx.billUrl) {
+      sendBillFileThenOpenWhatsApp(c.phone, message, tx.billUrl, tx.billName || 'bill')
+      toast.success(t.toastBillDownloadedForWhatsApp(c.name))
+    } else {
+      openWhatsAppChat(c.phone, message)
+      toast.success(t.toastReminderSent(c.name))
     }
-    setBillPickerCustomerId(c.id)
   }
 
-  function pickBillToSend(bill) {
-    if (!billPickerCustomer) return
-    sendBillWhatsApp(billPickerCustomer, bill)
-    setBillPickerCustomerId(null)
+  // Attaches a bill straight to one already-recorded transaction — this is
+  // the intended path for a credit that came in through the Fuel Entry
+  // screen (amount + reason only there, no bill upload) as well as one
+  // recorded here without the physical bill at hand yet.
+  async function handleTxBillUpload(e, tx) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || !ledgerCustomer) return
+    setUploadingTxBillId(tx.id)
+    try {
+      const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
+      await updateLedgerEntryBill(ledgerCustomer.id, tx.id, { billName: name, billUrl: key })
+      toast.success(t.toastBillUploaded)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setUploadingTxBillId(null)
+    }
   }
 
-  function pickNoBill() {
-    if (!billPickerCustomer) return
-    sendPlainReminderWhatsApp(billPickerCustomer)
-    setBillPickerCustomerId(null)
+  async function handleRemoveTxBill(tx) {
+    if (!ledgerCustomer) return
+    setUploadingTxBillId(tx.id)
+    try {
+      await updateLedgerEntryBill(ledgerCustomer.id, tx.id, { billName: null, billUrl: null })
+      toast.success(t.toastBillRemoved)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setUploadingTxBillId(null)
+    }
   }
 
   function openLedger(id) {
@@ -306,37 +341,6 @@ export default function CreditBills() {
       } catch {
         // Best-effort, see removeCustomerBillFile.
       }
-    }
-  }
-
-  async function handleUploadCustomerBills(e) {
-    const files = Array.from(e.target.files || [])
-    e.target.value = ''
-    if (!files.length || !ledgerCustomer) return
-    setUploadingCustomerBills(true)
-    try {
-      const newBills = await Promise.all(files.map(uploadAsBill))
-      await updateCustomer(ledgerCustomer.id, { bills: [...(ledgerCustomer.bills || []), ...newBills] })
-      toast.success(newBills.length > 1 ? t.billsUploaded(newBills.length) : t.toastBillUploaded)
-    } catch (err) {
-      toast.error(err.message || t.toastSaveFailed)
-    } finally {
-      setUploadingCustomerBills(false)
-    }
-  }
-
-  // Unlike removeCustomerBillFile/removeStagedCreditBill above, this bill is
-  // already saved — updateCustomer sends the trimmed list straight to the
-  // backend, whose own diff (see CreditCustomerService._bills_from) is what
-  // deletes the S3 object. Calling deleteUpload here too would just be a
-  // second, redundant delete of the same key.
-  async function handleRemoveCustomerBill(billId) {
-    if (!ledgerCustomer) return
-    try {
-      await updateCustomer(ledgerCustomer.id, { bills: (ledgerCustomer.bills || []).filter((b) => b.id !== billId) })
-      toast.success(t.toastBillRemoved)
-    } catch (err) {
-      toast.error(err.message || t.toastSaveFailed)
     }
   }
 
@@ -448,13 +452,13 @@ export default function CreditBills() {
       align: 'center',
       style: { width: '10%' },
       body: (c) =>
-        c.bills?.length > 0 ? (
+        c.billsCount > 0 ? (
           <button
             onClick={() => openLedger(c.id)}
-            title={t.billsUploaded(c.bills.length)}
+            title={t.billsUploaded(c.billsCount)}
             className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700 hover:bg-brand-100"
           >
-            <Paperclip size={12} /> {c.bills.length}
+            <Paperclip size={12} /> {c.billsCount}
           </button>
         ) : (
           <span className="text-xs text-slate-300">—</span>
@@ -483,31 +487,6 @@ export default function CreditBills() {
           <IconButton onClick={() => openLedger(c.id)} aria-label="View ledger" title="View ledger" tone="info">
             <ReceiptText size={15} />
           </IconButton>
-          <AppTooltip title={t.tooltipPhone}>
-            <motion.button
-              type="button"
-              onClick={() => sendReminder(c.name)}
-              aria-label="Send reminder"
-              whileHover={{ scale: 1.15 }}
-              whileTap={{ scale: 0.9 }}
-              className="inline-flex items-center justify-center rounded-lg p-1"
-            >
-              <CallIcon size={24} />
-            </motion.button>
-          </AppTooltip>
-          <AppTooltip title={t.tooltipWhatsApp}>
-            <motion.button
-              type="button"
-              onClick={() => openBillPicker(c)}
-              aria-label={t.tooltipWhatsApp}
-              whileHover={{ scale: 1.15, rotate: [0, -8, 8, -4, 0] }}
-              whileTap={{ scale: 0.9 }}
-              transition={{ duration: 0.4 }}
-              className="inline-flex items-center justify-center rounded-lg p-1"
-            >
-              <WhatsAppIcon size={24} />
-            </motion.button>
-          </AppTooltip>
           <IconButton onClick={() => openEditCustomer(c)} aria-label="Edit" title="Edit" tone="edit">
             <Pencil size={15} />
           </IconButton>
@@ -625,7 +604,7 @@ export default function CreditBills() {
       </Modal>
 
       {/* Ledger detail */}
-      <Modal isOpen={!!ledgerCustomerId} onClose={() => setLedgerCustomerId(null)} title={ledgerCustomer?.name || ''} maxWidth="max-w-2xl">
+      <Modal isOpen={!!ledgerCustomerId} onClose={() => setLedgerCustomerId(null)} title={ledgerCustomer?.name || ''} maxWidth="max-w-6xl">
         {ledgerCustomer ? (
           <div className="space-y-5">
             <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3">
@@ -652,60 +631,6 @@ export default function CreditBills() {
                   {formatCurrency(closingBalance(ledgerCustomer))}
                 </p>
               </div>
-            </div>
-
-            <div className="rounded-xl border border-slate-200 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500">{t.billsAndDocuments}</h4>
-                <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700">
-                  <Upload size={13} /> {t.uploadBill}
-                  <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={handleUploadCustomerBills} />
-                </label>
-              </div>
-              {ledgerCustomer.bills?.length > 0 ? (
-                <ul className="space-y-1.5">
-                  {[...ledgerCustomer.bills].reverse().map((bill) => (
-                    <li
-                      key={bill.id}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => openBill(bill.url)}
-                        className="flex min-w-0 items-center gap-1.5 text-slate-700 hover:text-brand-700"
-                      >
-                        <Paperclip size={13} className="shrink-0 text-slate-400" />
-                        <span className="truncate">{bill.name}</span>
-                        <span className="shrink-0 text-slate-400">&middot; {formatDate(bill.date)}</span>
-                      </button>
-                      <div className="flex shrink-0 items-center gap-0.5">
-                        <AppTooltip title={t.tooltipWhatsApp}>
-                          <button
-                            onClick={() => sendBillWhatsApp(ledgerCustomer, bill)}
-                            className="rounded p-1 text-slate-400 hover:bg-white hover:text-emerald-600"
-                            aria-label={t.sendBillWhatsApp}
-                          >
-                            <WhatsAppIcon size={15} />
-                          </button>
-                        </AppTooltip>
-                        <AppTooltip title={t.removeBill}>
-                          <button
-                            onClick={() => handleRemoveCustomerBill(bill.id)}
-                            className="rounded p-1 text-slate-400 hover:bg-white hover:text-rose-500"
-                            aria-label={t.removeBill}
-                          >
-                            <X size={13} />
-                          </button>
-                        </AppTooltip>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="rounded-lg bg-slate-50 px-3 py-3 text-center text-xs text-slate-400">
-                  {t.noBillsYet}
-                </p>
-              )}
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -800,20 +725,47 @@ export default function CreditBills() {
               {ledgerCustomer.ledger.length === 0 ? (
                 <EmptyState icon={ReceiptText} title={t.noTransactionsTitle} description={t.noTransactionsDesc} />
               ) : (
-                <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-100">
+                <div className="max-h-[28rem] overflow-y-auto rounded-lg border border-slate-100">
                   <table className="w-full text-left text-xs">
-                    <thead className="sticky top-0 bg-slate-50">
+                    <thead className="sticky top-0 z-10 bg-slate-50">
                       <tr className="text-slate-400">
-                        <th className="px-3 py-2 font-semibold">{t.thDate}</th>
-                        <th className="px-3 py-2 font-semibold">{t.thType}</th>
+                        {[
+                          { field: 'date', label: t.thDate },
+                          { field: 'type', label: t.thType },
+                        ].map((col) => (
+                          <th key={col.field} className="px-3 py-2 font-semibold">
+                            <button
+                              type="button"
+                              onClick={() => toggleTxSort(col.field)}
+                              className="inline-flex items-center gap-0.5 hover:text-slate-600"
+                            >
+                              {col.label}
+                              {txSort.field === col.field ? (
+                                txSort.dir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />
+                              ) : null}
+                            </button>
+                          </th>
+                        ))}
                         <th className="px-3 py-2 font-semibold">{t.thDetails}</th>
                         <th className="px-3 py-2 font-semibold">{t.thReason}</th>
-                        <th className="px-3 py-2 text-right font-semibold">{t.thAmount}</th>
+                        <th className="px-3 py-2 font-semibold">{t.thBill}</th>
+                        <th className="px-3 py-2 text-right font-semibold">
+                          <button
+                            type="button"
+                            onClick={() => toggleTxSort('amount')}
+                            className="inline-flex items-center gap-0.5 hover:text-slate-600"
+                          >
+                            {t.thAmount}
+                            {txSort.field === 'amount' ? (
+                              txSort.dir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />
+                            ) : null}
+                          </button>
+                        </th>
                         <th className="px-3 py-2" />
                       </tr>
                     </thead>
                     <tbody>
-                      {[...ledgerCustomer.ledger].reverse().map((tx) => (
+                      {sortedLedger.map((tx) => (
                         <tr key={tx.id} className="border-t border-slate-100">
                           <td className="px-3 py-2 text-slate-600">{formatDate(tx.date)}</td>
                           <td className="px-3 py-2">
@@ -822,45 +774,85 @@ export default function CreditBills() {
                             </span>
                           </td>
                           <td className="px-3 py-2 text-slate-500">
-                            <span>
-                              {tx.type === 'credit'
-                                ? tx.ltr != null && tx.rate != null
-                                  ? `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
-                                  : t.fromFuelEntry
-                                : t.modeLabel[tx.mode] || tx.mode}
-                            </span>
-                            {tx.billUrl ? (
-                              <button
-                                type="button"
-                                onClick={() => openBill(tx.billUrl)}
-                                title={tx.billName || t.viewAttachedBill}
-                                className="ml-1.5 inline-flex items-center gap-0.5 text-brand-600 hover:underline"
-                              >
-                                <Paperclip size={11} /> {t.view}
-                              </button>
-                            ) : null}
+                            {tx.type === 'credit'
+                              ? tx.ltr != null && tx.rate != null
+                                ? `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
+                                : t.fromFuelEntry
+                              : t.modeLabel[tx.mode] || tx.mode}
                           </td>
-                          <td className="max-w-[180px] px-3 py-2 text-slate-500">
+                          <td className="max-w-[160px] px-3 py-2 text-slate-500">
                             <span className="block truncate" title={tx.note || undefined}>
                               {tx.note || '—'}
                             </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            {tx.type !== 'credit' ? (
+                              <span className="text-slate-300">—</span>
+                            ) : tx.billUrl ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => openBill(tx.billUrl)}
+                                  title={tx.billName || t.viewAttachedBill}
+                                  className="flex min-w-0 items-center gap-1 text-brand-600 hover:underline"
+                                >
+                                  <Paperclip size={12} className="shrink-0" />
+                                  <span className="max-w-[100px] truncate">{tx.billName || t.view}</span>
+                                </button>
+                                <AppTooltip title={t.removeBill}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTxBill(tx)}
+                                    disabled={uploadingTxBillId === tx.id}
+                                    className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
+                                    aria-label={t.removeBill}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </AppTooltip>
+                              </div>
+                            ) : (
+                              <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-dashed border-slate-300 px-1.5 py-1 text-[11px] font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700">
+                                <Upload size={11} />
+                                {uploadingTxBillId === tx.id ? t.uploadingBillPrompt : t.attachBill}
+                                <input
+                                  type="file"
+                                  accept="image/*,application/pdf"
+                                  className="hidden"
+                                  disabled={uploadingTxBillId === tx.id}
+                                  onChange={(e) => handleTxBillUpload(e, tx)}
+                                />
+                              </label>
+                            )}
                           </td>
                           <td className={`px-3 py-2 text-right font-semibold ${tx.type === 'credit' ? 'text-rose-500' : 'text-emerald-600'}`}>
                             {tx.type === 'credit' ? '+' : '−'} {formatCurrency(tx.amount)}
                           </td>
                           <td className="px-3 py-2">
-                            {!tx.sourceFuelEntryId ? (
-                              <AppTooltip title={t.removeTransaction}>
+                            <div className="flex items-center justify-end gap-0.5">
+                              <AppTooltip title={t.tooltipWhatsApp}>
                                 <button
                                   type="button"
-                                  onClick={() => setConfirmDeleteTx({ customerId: ledgerCustomer.id, entryId: tx.id })}
-                                  className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
-                                  aria-label={t.removeTransaction}
+                                  onClick={() => sendTransactionReminder(ledgerCustomer, tx)}
+                                  className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"
+                                  aria-label={t.tooltipWhatsApp}
                                 >
-                                  <X size={13} />
+                                  <WhatsAppIcon size={15} />
                                 </button>
                               </AppTooltip>
-                            ) : null}
+                              {!tx.sourceFuelEntryId ? (
+                                <AppTooltip title={t.removeTransaction}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteTx({ customerId: ledgerCustomer.id, entryId: tx.id })}
+                                    className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+                                    aria-label={t.removeTransaction}
+                                  >
+                                    <X size={13} />
+                                  </button>
+                                </AppTooltip>
+                              ) : null}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -868,43 +860,6 @@ export default function CreditBills() {
                   </table>
                 </div>
               )}
-            </div>
-          </div>
-        ) : null}
-      </Modal>
-
-      {/* Pick which bill to send before opening WhatsApp */}
-      <Modal
-        isOpen={!!billPickerCustomerId}
-        onClose={() => setBillPickerCustomerId(null)}
-        title={billPickerCustomer ? t.selectBillTitle(billPickerCustomer.name) : ''}
-      >
-        {billPickerCustomer ? (
-          <div className="space-y-4">
-            <p className="text-xs text-slate-500">{t.selectBillPrompt}</p>
-            <ul className="max-h-64 space-y-1.5 overflow-y-auto">
-              {[...billPickerCustomer.bills].reverse().map((bill) => (
-                <li key={bill.id}>
-                  <button
-                    type="button"
-                    onClick={() => pickBillToSend(bill)}
-                    className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2.5 text-left text-xs transition-colors hover:border-emerald-300 hover:bg-emerald-50"
-                  >
-                    <Paperclip size={13} className="shrink-0 text-slate-400" />
-                    <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{bill.name}</span>
-                    <span className="shrink-0 text-slate-400">{formatDate(bill.date)}</span>
-                    <WhatsAppIcon size={16} className="shrink-0" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-              <SecondaryButton type="button" onClick={() => setBillPickerCustomerId(null)}>
-                {t.cancel}
-              </SecondaryButton>
-              <SecondaryButton type="button" onClick={pickNoBill}>
-                {t.sendReminderOnly}
-              </SecondaryButton>
             </div>
           </div>
         ) : null}

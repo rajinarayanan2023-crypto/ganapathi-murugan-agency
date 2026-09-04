@@ -45,3 +45,12 @@ input[type='number']::-webkit-outer-spin-button {
 input[type='number'] {
   -moz-appearance: textfield;
 }
+
+/* Every password field already gets its own show/hide toggle from
+   PasswordInput (FormControls.jsx) — Edge's built-in "Peek password" icon
+   renders inside the input on top of it otherwise, showing two eye icons
+   stacked in the same corner. */
+input[type='password']::-ms-reveal,
+input[type='password']::-ms-clear {
+  display: none;
+}
