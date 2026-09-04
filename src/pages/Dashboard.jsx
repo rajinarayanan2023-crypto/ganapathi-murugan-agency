@@ -129,6 +129,8 @@ export default function Dashboard() {
       petrol: Number(ratesForm.petrol) || 0,
       diesel: Number(ratesForm.diesel) || 0,
       oil: Number(ratesForm.oil) || 0,
+      oilPacket: Number(ratesForm.oilPacket) || 0,
+      oilCane: Number(ratesForm.oilCane) || 0,
     })
     toast.success(t.toastRatesUpdated)
     setRatesModalOpen(false)
@@ -253,7 +255,26 @@ export default function Dashboard() {
                 onChange={(e) => setRatesForm({ ...ratesForm, oil: e.target.value })}
               />
             </Field>
+            <Field label={t.fieldOilPacketRate}>
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                value={ratesForm.oilPacket}
+                onChange={(e) => setRatesForm({ ...ratesForm, oilPacket: e.target.value })}
+              />
+            </Field>
+            <Field label={t.fieldOilCaneRate}>
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                value={ratesForm.oilCane}
+                onChange={(e) => setRatesForm({ ...ratesForm, oilCane: e.target.value })}
+              />
+            </Field>
           </div>
+
           <div className="flex justify-end gap-2 pt-1">
             <SecondaryButton type="button" onClick={() => setRatesModalOpen(false)}>
               {t.cancel}

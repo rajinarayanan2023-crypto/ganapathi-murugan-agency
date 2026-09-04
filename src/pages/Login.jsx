@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, Eye, EyeOff, Fuel, Lock, UserRound } from 'lucide-react'
+import { Fuel, Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2 } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
-import { ApiError } from '../lib/apiClient.js'
 import AppTooltip from '../components/AppTooltip.jsx'
+import { apiPost } from '../lib/apiClient.js'
 
 const RESEND_SECONDS = 30
 
@@ -14,47 +14,50 @@ const inputNormal = 'border-slate-200 focus:border-brand-500 focus:shadow-[0_0_0
 const inputError = 'border-rose-400 focus:shadow-[0_0_0_3px_rgba(244,63,94,0.15)]'
 
 export default function Login() {
-  const { login, verifyOtp, resendOtp, station } = useData()
+  const { login, station } = useData()
   const navigate = useNavigate()
 
   const [step, setStep] = useState('credentials') // 'credentials' | 'otp' | 'success'
+  const [userId, setUserId] = useState(null)
 
   // ---------- Step 1: credentials ----------
-  // `identifier` is either the account's email or its display name — the
-  // API accepts both (see UserRepository.get_by_identifier).
-  const [identifier, setIdentifier] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [identifierError, setIdentifierError] = useState('')
+  const [userError, setUserError] = useState('')
   const [passError, setPassError] = useState('')
-  const [identifierShakeKey, setIdentifierShakeKey] = useState(0)
+  const [userShakeKey, setUserShakeKey] = useState(0)
   const [passShakeKey, setPassShakeKey] = useState(0)
   const [submitting, setSubmitting] = useState(false)
 
   function triggerFieldError(which, message) {
-    if (which === 'identifier') {
-      setIdentifierError(message)
-      setIdentifierShakeKey((k) => k + 1)
+    if (which === 'user') {
+      setUserError(message)
+      setUserShakeKey((k) => k + 1)
     } else {
       setPassError(message)
       setPassShakeKey((k) => k + 1)
     }
   }
 
+  async function requestOtp() {
+    const data = await apiPost('/auth/login', { identifier: username.trim(), password })
+    setUserId(data.user_id)
+  }
+
   async function handleCredentialsSubmit(e) {
     e.preventDefault()
-    if (submitting) return
     let valid = true
 
-    if (!identifier.trim()) {
-      triggerFieldError('identifier', 'Please enter your email or name.')
+    if (!username.trim()) {
+      triggerFieldError('user', 'Please enter your username or email.')
       valid = false
     } else {
-      setIdentifierError('')
+      setUserError('')
     }
 
-    if (!password) {
-      triggerFieldError('pass', 'Please enter your password.')
+    if (password.length < 6) {
+      triggerFieldError('pass', 'Password must be at least 6 characters.')
       valid = false
     } else {
       setPassError('')
@@ -64,35 +67,23 @@ export default function Login() {
 
     setSubmitting(true)
     try {
-      const result = await login(identifier.trim(), password)
-      if (result.skippedOtp) {
-        // OTP step is temporarily disabled server-side — the session is
-        // already complete, so skip straight to the success screen.
-        setStep('success')
-        setTimeout(() => navigate('/dashboard'), 900)
-      } else {
-        setOtpToken(result.otpToken)
-        setSecondsLeft(Math.min(RESEND_SECONDS, result.expiresInSeconds))
-        setStep('otp')
-      }
+      await requestOtp()
+      setStep('otp')
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Unable to reach the server. Please try again.'
-      triggerFieldError('identifier', message)
-      triggerFieldError('pass', message)
+      triggerFieldError('user', err.message)
+      triggerFieldError('pass', err.message)
     } finally {
       setSubmitting(false)
     }
   }
 
   // ---------- Step 2: OTP ----------
-  const [otpToken, setOtpToken] = useState(null)
   const [otp, setOtp] = useState(['', '', '', '', '', ''])
   const [otpError, setOtpError] = useState('')
   const [otpShakeKey, setOtpShakeKey] = useState(0)
   const [poppingIndex, setPoppingIndex] = useState(-1)
   const [secondsLeft, setSecondsLeft] = useState(RESEND_SECONDS)
   const [verifying, setVerifying] = useState(false)
-  const [resending, setResending] = useState(false)
   const otpRefs = useRef([])
 
   useEffect(() => {
@@ -102,7 +93,10 @@ export default function Login() {
   }, [step, secondsLeft])
 
   useEffect(() => {
-    if (step === 'otp') otpRefs.current[0]?.focus()
+    if (step === 'otp') {
+      setSecondsLeft(RESEND_SECONDS)
+      otpRefs.current[0]?.focus()
+    }
   }, [step])
 
   function handleOtpChange(index, rawValue) {
@@ -144,52 +138,39 @@ export default function Login() {
 
   async function handleVerifyOtp() {
     const entered = otp.join('')
-    if (entered.length < 6 || verifying) {
-      if (entered.length < 6) {
-        setOtpError('Enter the 6-digit code.')
-        setOtpShakeKey((k) => k + 1)
-      }
+    if (entered.length < 6) {
+      setOtpError('Enter the full 6-digit OTP.')
+      setOtpShakeKey((k) => k + 1)
       return
     }
 
     setVerifying(true)
     try {
-      await verifyOtp(otpToken, entered)
+      const data = await apiPost('/auth/verify-otp', { user_id: userId, otp: entered })
+      login({ accessToken: data.access_token, refreshToken: data.refresh_token, user: data.user })
       setStep('success')
-      setTimeout(() => navigate('/dashboard'), 900)
+      setTimeout(() => {
+        navigate('/dashboard')
+      }, 1200)
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Unable to reach the server. Please try again.'
-      setOtpError(message)
+      setOtpError(err.message)
       setOtpShakeKey((k) => k + 1)
-      setOtp(['', '', '', '', '', ''])
-      otpRefs.current[0]?.focus()
     } finally {
       setVerifying(false)
     }
   }
 
   async function handleResend() {
-    if (secondsLeft > 0 || resending) return
-    setResending(true)
-    try {
-      const { otpToken: token, expiresInSeconds } = await resendOtp(otpToken)
-      setOtpToken(token)
-      setOtp(['', '', '', '', '', ''])
-      setOtpError('')
-      setSecondsLeft(Math.min(RESEND_SECONDS, expiresInSeconds))
-      otpRefs.current[0]?.focus()
-    } catch (err) {
-      setOtpError(err instanceof ApiError ? err.message : 'Unable to reach the server. Please try again.')
-    } finally {
-      setResending(false)
-    }
-  }
-
-  function backToCredentials() {
-    setStep('credentials')
-    setOtpToken(null)
+    if (secondsLeft > 0) return
     setOtp(['', '', '', '', '', ''])
     setOtpError('')
+    otpRefs.current[0]?.focus()
+    try {
+      await requestOtp()
+      setSecondsLeft(RESEND_SECONDS)
+    } catch (err) {
+      setOtpError(err.message)
+    }
   }
 
   return (
@@ -238,24 +219,24 @@ export default function Login() {
                   onSubmit={handleCredentialsSubmit}
                 >
                   <div className="mb-[18px]">
-                    <label className="mb-[7px] block text-[12.5px] font-semibold text-slate-600">Email or Name</label>
-                    <motion.div key={identifierShakeKey} animate={identifierError ? { x: [0, -8, 8, -5, 5, 0] } : {}} transition={{ duration: 0.45 }}>
+                    <label className="mb-[7px] block text-[12.5px] font-semibold text-slate-600">Username / Email</label>
+                    <motion.div key={userShakeKey} animate={userError ? { x: [0, -8, 8, -5, 5, 0] } : {}} transition={{ duration: 0.45 }}>
                       <div className="relative flex items-center">
-                        <UserRound size={17} className="pointer-events-none absolute left-[13px] text-slate-400" />
+                        <Mail size={17} className="pointer-events-none absolute left-[13px] text-slate-400" />
                         <input
                           type="text"
-                          value={identifier}
+                          value={username}
                           onChange={(e) => {
-                            setIdentifier(e.target.value)
-                            setIdentifierError('')
+                            setUsername(e.target.value)
+                            setUserError('')
                           }}
-                          placeholder="you@example.com or your name"
+                          placeholder="admin"
                           autoComplete="username"
-                          className={`${inputBase} pl-10 pr-3.5 ${identifierError ? inputError : inputNormal}`}
+                          className={`${inputBase} pl-10 pr-3.5 ${userError ? inputError : inputNormal}`}
                         />
                       </div>
                     </motion.div>
-                    {identifierError ? <p className="mt-1.5 text-xs text-rose-500">{identifierError}</p> : null}
+                    {userError ? <p className="mt-1.5 text-xs text-rose-500">{userError}</p> : null}
                   </div>
 
                   <div className="mb-[18px]">
@@ -270,7 +251,7 @@ export default function Login() {
                             setPassword(e.target.value)
                             setPassError('')
                           }}
-                          placeholder="••••••••"
+                          placeholder="admin123"
                           autoComplete="current-password"
                           className={`${inputBase} pl-10 pr-11 ${passError ? inputError : inputNormal}`}
                         />
@@ -296,7 +277,7 @@ export default function Login() {
                   </div>
 
                   <GoldButton type="submit" disabled={submitting}>
-                    {submitting ? 'Sending code…' : 'Sign In'}
+                    {submitting ? 'Signing In…' : 'Sign In'}
                   </GoldButton>
                 </motion.form>
               )}
@@ -311,7 +292,7 @@ export default function Login() {
                 >
                   <button
                     type="button"
-                    onClick={backToCredentials}
+                    onClick={() => setStep('credentials')}
                     className="mb-[18px] inline-flex items-center gap-1 text-[13px] text-slate-500 transition-colors hover:text-brand-700"
                   >
                     <ArrowLeft size={15} /> Back
@@ -319,7 +300,7 @@ export default function Login() {
 
                   <h2 className="mb-2 text-lg font-bold text-slate-900">Verify Your Identity</h2>
                   <p className="mb-[22px] text-[13px] leading-relaxed text-slate-500">
-                    Enter the 6-digit code sent to your registered phone
+                    Enter the 6-digit OTP sent to your registered mobile
                   </p>
 
                   <motion.div
@@ -339,8 +320,7 @@ export default function Login() {
                         onChange={(e) => handleOtpChange(i, e.target.value)}
                         onKeyDown={(e) => handleOtpKeyDown(i, e)}
                         onPaste={handleOtpPaste}
-                        disabled={verifying}
-                        className={`h-14 w-12 rounded-[10px] border-[1.5px] bg-white text-center text-xl font-bold text-slate-800 outline-none transition-transform disabled:opacity-60 ${
+                        className={`h-14 w-12 rounded-[10px] border-[1.5px] bg-white text-center text-xl font-bold text-slate-800 outline-none transition-transform ${
                           otpError ? inputError : inputNormal
                         } ${poppingIndex === i ? 'animate-pop' : ''}`}
                       />
@@ -352,8 +332,8 @@ export default function Login() {
                     {secondsLeft > 0 ? (
                       <span className="text-slate-400">Resend in {secondsLeft}s</span>
                     ) : (
-                      <button type="button" onClick={handleResend} disabled={resending} className="font-semibold text-brand-700 hover:underline disabled:opacity-60">
-                        {resending ? 'Resending…' : 'Resend OTP'}
+                      <button type="button" onClick={handleResend} className="font-semibold text-brand-700 hover:underline">
+                        Resend OTP
                       </button>
                     )}
                   </div>
@@ -384,6 +364,10 @@ export default function Login() {
             </AnimatePresence>
           </motion.div>
           </div>
+
+          {/* <p className="mt-5 text-center text-xs leading-relaxed text-slate-500">
+            Sri Vinayagar Thunai &middot; {station.mobiles.join(' / ')}
+          </p> */}
         </div>
       </div>
     </MotionConfig>

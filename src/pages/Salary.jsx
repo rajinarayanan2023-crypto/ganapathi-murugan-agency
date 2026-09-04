@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Link } from 'react-router-dom'
-import { Wallet, IndianRupee, TrendingUp, Users, Pencil, ChevronLeft, ChevronRight, UserPlus, CalendarDays, Receipt } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Wallet, IndianRupee, TrendingUp, Users, Pencil, ChevronLeft, ChevronRight, UserPlus, CalendarDays, Receipt, HandCoins } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { SALARY_TEXT } from '../i18n/salary.js'
@@ -16,15 +16,15 @@ import StatCard from '../components/StatCard.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonStatCards, SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 
 export default function Salary() {
-  const { employees, attendance, reviseSalary } = useData()
+  const navigate = useNavigate()
+  const { employees, employeesLoading, employeesError, attendance, reviseSalary } = useData()
   const { language } = useLanguage()
   const t = SALARY_TEXT[language]
   const roleLabels = EMPLOYEES_TEXT[language].roleLabels
-  const loading = useSimulatedLoading(650)
+  const loading = employeesLoading
   const now = new Date()
 
   const [viewYear, setViewYear] = useState(now.getFullYear())
@@ -35,6 +35,7 @@ export default function Salary() {
   const [effectiveFrom, setEffectiveFrom] = useState(todayISO())
   const [amountError, setAmountError] = useState('')
   const [dateError, setDateError] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const isCurrentMonth = viewYear === now.getFullYear() && viewMonthIdx === now.getMonth()
   const monthLabel = new Date(viewYear, viewMonthIdx, 1).toLocaleDateString(language === 'ta' ? 'ta-IN' : 'en-IN', {
@@ -97,12 +98,15 @@ export default function Salary() {
       hasError = true
     }
     if (hasError) return
+    setSaving(true)
     try {
       await reviseSalary(reviseTarget.id, { amount: num, effectiveFrom })
       toast.success(t.toastRevised(reviseTarget.name))
       setReviseTarget(null)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -203,12 +207,47 @@ export default function Salary() {
     )
   }
 
+  if (employeesError) {
+    return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {employeesError}</div>
+  }
+
+  // Shared between the table's own toolbar row (the common case) and the
+  // empty-active-employees state below it — either way it renders once, in
+  // one row, never stacked above a separate search/actions row of its own.
+  const monthNav = (
+    <div className="flex items-center gap-2">
+      <AppTooltip title="Previous month">
+        <button
+          onClick={goPrevMonth}
+          aria-label="Previous month"
+          className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+        >
+          <ChevronLeft size={16} />
+        </button>
+      </AppTooltip>
+      <span className="min-w-[130px] text-center text-sm font-bold text-slate-800">{monthLabel}</span>
+      <AppTooltip title="Next month">
+        <button
+          onClick={goNextMonth}
+          disabled={isCurrentMonth}
+          aria-label="Next month"
+          className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </AppTooltip>
+      {isCurrentMonth ? (
+        <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">{t.today}</span>
+      ) : null}
+    </div>
+  )
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard icon={Users} label={t.statActiveEmployees} value={activeEmployees.length} index={0} accent="blue" />
-        <StatCard icon={Wallet} label={t.statMonthlyPayroll} value={totalPayroll} formatter={formatCurrency} index={1} accent="brand" />
-        <StatCard icon={TrendingUp} label={t.statPayableThisMonth} value={totalPayable} formatter={formatCurrency} index={2} accent="green" />
+        <StatCard icon={Users} label={t.statActiveEmployees} value={activeEmployees.length} index={0} accent="blue" dense />
+        <StatCard icon={Wallet} label={t.statMonthlyPayroll} value={totalPayroll} formatter={formatCurrency} index={1} accent="brand" dense />
+        <StatCard icon={TrendingUp} label={t.statPayableThisMonth} value={totalPayable} formatter={formatCurrency} index={2} accent="green" dense />
       </div>
 
       <motion.div
@@ -217,50 +256,27 @@ export default function Salary() {
         transition={{ duration: 0.35 }}
         className="rounded-xl border border-slate-200 bg-white shadow-card"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <AppTooltip title="Previous month">
-              <button
-                onClick={goPrevMonth}
-                aria-label="Previous month"
-                className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
-              >
-                <ChevronLeft size={16} />
-              </button>
-            </AppTooltip>
-            <span className="min-w-[130px] text-center text-sm font-bold text-slate-800">{monthLabel}</span>
-            <AppTooltip title="Next month">
-              <button
-                onClick={goNextMonth}
-                disabled={isCurrentMonth}
-                aria-label="Next month"
-                className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </AppTooltip>
-            {isCurrentMonth ? (
-              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">{t.today}</span>
-            ) : null}
-          </div>
-        </div>
-
         {activeEmployees.length === 0 ? (
-          <div className="p-5">
-            <EmptyState
-              icon={IndianRupee}
-              title={t.emptyActiveTitle}
-              description={t.emptyActiveDesc}
-              action={
-                <Link
-                  to="/employees"
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98]"
-                >
-                  <UserPlus size={16} /> {t.goToEmployees}
-                </Link>
-              }
-            />
-          </div>
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+              {monthNav}
+            </div>
+            <div className="p-5">
+              <EmptyState
+                icon={IndianRupee}
+                title={t.emptyActiveTitle}
+                description={t.emptyActiveDesc}
+                action={
+                  <Link
+                    to="/employees"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98]"
+                  >
+                    <UserPlus size={16} /> {t.goToEmployees}
+                  </Link>
+                }
+              />
+            </div>
+          </>
         ) : (
           <DataTable
             columns={columns}
@@ -272,6 +288,12 @@ export default function Salary() {
             scrollHeight="calc(100vh - 320px)"
             exportFilename={`salary-${viewYear}-${viewMonthIdx + 1}`}
             dense
+            leadingContent={monthNav}
+            toolbarActions={
+              <SecondaryButton onClick={() => navigate('/employee-credits')} className="shrink-0 px-3.5 py-2 text-xs">
+                <HandCoins size={14} /> {t.employeeCreditsButton}
+              </SecondaryButton>
+            }
           />
         )}
       </motion.div>
@@ -331,7 +353,9 @@ export default function Salary() {
               <SecondaryButton type="button" onClick={() => setReviseTarget(null)}>
                 {t.cancel}
               </SecondaryButton>
-              <PrimaryButton type="submit">{t.saveRevision}</PrimaryButton>
+              <PrimaryButton type="submit" disabled={saving}>
+                {t.saveRevision}
+              </PrimaryButton>
             </div>
           </form>
         ) : null}

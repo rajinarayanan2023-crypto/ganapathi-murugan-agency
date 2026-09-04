@@ -26,14 +26,21 @@ export function monthlyExpensesTotal(expenseDays, year, monthIdx) {
     .reduce((sum, d) => sum + (d.items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0), 0)
 }
 
-// The dealer's standard per-litre commission (from commissionRates, set on
-// the Dashboard) applied to the month's litres sold — this is the station's
-// actual earnings, separate from the pass-through retail sale amount.
+// The dealer's standard commission (a flat, current figure — see
+// commissionRates in DataContext — the OMC agreement it comes from is
+// renegotiated rarely, so unlike the retail pump price this doesn't need
+// day-by-day history) applied to the month's sales: per litre for
+// OMC-priced fuel (petrol/diesel/2T oil machine), per piece sold for 2T
+// packet and Servo (cane) oil, since those move by the unit rather than a
+// nozzle meter. This is the station's actual earnings, separate from the
+// pass-through retail sale amount.
 export function commissionEarned(fuelTotals, commissionRates) {
   return (
     (Number(fuelTotals?.petrolLtr) || 0) * (Number(commissionRates?.petrol) || 0) +
     (Number(fuelTotals?.dieselLtr) || 0) * (Number(commissionRates?.diesel) || 0) +
-    (Number(fuelTotals?.oilLtr) || 0) * (Number(commissionRates?.oil) || 0)
+    (Number(fuelTotals?.oilLtr) || 0) * (Number(commissionRates?.oil) || 0) +
+    (Number(fuelTotals?.pocketOilQtyTotal) || 0) * (Number(commissionRates?.oilPacket) || 0) +
+    (Number(fuelTotals?.caneOilQtyTotal) || 0) * (Number(commissionRates?.oilCane) || 0)
   )
 }
 

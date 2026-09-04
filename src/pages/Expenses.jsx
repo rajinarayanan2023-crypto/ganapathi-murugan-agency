@@ -5,14 +5,13 @@ import { Plus, Pencil, Trash2, Receipt, X } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EXPENSES_TEXT } from '../i18n/expenses.js'
-import { formatCurrency, formatDate, formatDateTime, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 
 function makeItemId() {
@@ -24,10 +23,10 @@ function emptyItem() {
 }
 
 export default function Expenses() {
-  const { expenseDays, addExpenseDay, updateExpenseDay, deleteExpenseDay } = useData()
+  const { expenseDays, expensesLoading, expensesError, addExpenseDay, updateExpenseDay, deleteExpenseDay } = useData()
   const { language } = useLanguage()
   const t = EXPENSES_TEXT[language]
-  const loading = useSimulatedLoading(600)
+  const loading = expensesLoading
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -35,6 +34,7 @@ export default function Expenses() {
   const [items, setItems] = useState([emptyItem()])
   const [errors, setErrors] = useState({})
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [saving, setSaving] = useState(false)
 
   const rows = useMemo(
     () => expenseDays.map((d) => ({ ...d, total: d.items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0) })),
@@ -71,7 +71,7 @@ export default function Expenses() {
 
   const total = useMemo(() => items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0), [items])
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
     const validItems = items
       .filter((i) => i.label.trim() && Number(i.amount) > 0)
@@ -84,20 +84,32 @@ export default function Expenses() {
     setErrors(errs)
     if (Object.keys(errs).length > 0) return
 
-    if (editingId) {
-      updateExpenseDay(editingId, { date, items: validItems })
-      toast.success(t.toastUpdated)
-    } else {
-      addExpenseDay({ date, items: validItems })
-      toast.success(t.toastAdded)
+    setSaving(true)
+    try {
+      if (editingId) {
+        await updateExpenseDay(editingId, { date, items: validItems })
+        toast.success(t.toastUpdated)
+      } else {
+        await addExpenseDay({ date, items: validItems })
+        toast.success(t.toastAdded)
+      }
+      setModalOpen(false)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSaving(false)
     }
-    setModalOpen(false)
   }
 
-  function handleDelete() {
-    deleteExpenseDay(confirmDeleteId)
-    toast.success(t.toastDeleted)
-    setConfirmDeleteId(null)
+  async function handleDelete() {
+    try {
+      await deleteExpenseDay(confirmDeleteId)
+      toast.success(t.toastDeleted)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setConfirmDeleteId(null)
+    }
   }
 
   const columns = [
@@ -105,13 +117,13 @@ export default function Expenses() {
       field: 'date',
       header: t.colDate,
       sortable: true,
-      style: { width: '14%' },
+      style: { width: '16%' },
       body: (d) => <span className="font-medium text-slate-800">{formatDate(d.date)}</span>,
     },
     {
       field: 'items',
       header: t.colItems,
-      style: { width: '42%' },
+      style: { width: '52%' },
       body: (d) => (
         <div className="flex flex-wrap gap-1.5">
           {d.items.slice(0, 3).map((i) => (
@@ -132,31 +144,13 @@ export default function Expenses() {
       header: t.colTotal,
       sortable: true,
       align: 'right',
-      style: { width: '14%' },
-      body: (d) => <span className="font-semibold text-rose-600">{formatCurrency(d.total)}</span>,
-    },
-    {
-      field: 'updatedAt',
-      header: t.colLastUpdated,
-      sortable: true,
       style: { width: '16%' },
-      body: (d) =>
-        d.updatedAt ? (
-          <p
-            title={d.updatedByName ? `By ${d.updatedByName}` : undefined}
-            className="text-xs font-medium text-slate-500"
-          >
-            {formatDateTime(d.updatedAt)}
-            {d.updatedByName ? <span className="block text-slate-400">by {d.updatedByName}</span> : null}
-          </p>
-        ) : (
-          <span className="text-xs text-slate-300">—</span>
-        ),
+      body: (d) => <span className="font-semibold text-rose-600">{formatCurrency(d.total)}</span>,
     },
     {
       header: t.colActions,
       align: 'right',
-      style: { width: '14%' },
+      style: { width: '16%' },
       body: (d) => (
         <div className="flex justify-end gap-1">
           <IconButton onClick={() => openEdit(d)} aria-label="Edit" title="Edit" tone="edit">
@@ -172,6 +166,10 @@ export default function Expenses() {
 
   if (loading) {
     return <SkeletonTable rows={6} cols={4} />
+  }
+
+  if (expensesError) {
+    return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {expensesError}</div>
   }
 
   return (
@@ -270,7 +268,9 @@ export default function Expenses() {
             <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{editingId ? t.saveChanges : t.saveEntry}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={saving}>
+              {editingId ? t.saveChanges : t.saveEntry}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>

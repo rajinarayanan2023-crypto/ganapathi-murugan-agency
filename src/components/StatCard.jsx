@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import CountUp from './CountUp.jsx'
 
-export default function StatCard({ icon: Icon, label, value, formatter, suffix, accent = 'brand', index = 0 }) {
+export default function StatCard({ icon: Icon, label, value, formatter, suffix, accent = 'brand', index = 0, dense = false }) {
   // VIBGYOR set (plus gold brand + neutral) so each metric on a multi-stat dashboard reads as
   // its own color-coded category rather than a wash of one repeated accent.
   const accents = {
@@ -26,19 +26,19 @@ export default function StatCard({ icon: Icon, label, value, formatter, suffix, 
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: index * 0.06, ease: 'easeOut' }}
       whileHover={{ y: -2 }}
-      className={`cursor-pointer rounded-xl border border-slate-200 p-5 shadow-card ring-1 transition-shadow duration-200 hover:shadow-card-hover ${theme.card}`}
+      className={`cursor-pointer rounded-xl border border-slate-200 shadow-card ring-1 transition-shadow duration-200 hover:shadow-card-hover ${dense ? 'p-2.5' : 'p-5'} ${theme.card}`}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-2xl font-bold tracking-tight text-slate-900">
+          <p className={`font-medium text-slate-500 ${dense ? 'text-xs' : 'text-sm'}`}>{label}</p>
+          <p className={`font-bold tracking-tight text-slate-900 ${dense ? 'mt-0.5 text-base' : 'mt-2 text-2xl'}`}>
             <CountUp value={value} formatter={formatter} />
             {suffix ? <span className="ml-1 text-base font-semibold text-slate-400">{suffix}</span> : null}
           </p>
         </div>
         {Icon ? (
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${theme.icon}`}>
-            <Icon size={20} strokeWidth={2} />
+          <div className={`flex shrink-0 items-center justify-center rounded-lg ${dense ? 'h-7 w-7' : 'h-10 w-10'} ${theme.icon}`}>
+            <Icon size={dense ? 14 : 20} strokeWidth={2} />
           </div>
         ) : null}
       </div>

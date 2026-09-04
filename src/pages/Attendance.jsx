@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { Link } from 'react-router-dom'
@@ -8,14 +8,13 @@ import { useLanguage } from '../context/LanguageContext.jsx'
 import { ATTENDANCE_TEXT } from '../i18n/attendance.js'
 import { EMPLOYEES_TEXT } from '../i18n/employees.js'
 import { STATUS_OPTIONS, nextDateISO } from '../utils/attendance.js'
-import { formatDate, formatDateTime, formatDayLabel, todayISO, toISODate } from '../utils/format.js'
+import { formatDate, formatDayLabel, todayISO, toISODate } from '../utils/format.js'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import Modal from '../components/Modal.jsx'
 import { Field, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTimePicker from '../components/AppTimePicker.jsx'
 
@@ -50,11 +49,11 @@ function formatTime12h(time) {
 }
 
 export default function Attendance() {
-  const { employees, attendance, setAttendanceDay } = useData()
+  const { employees, employeesLoading, attendance, attendanceLoading, attendanceError, setAttendanceDay, loadAttendanceMonth } = useData()
   const { language } = useLanguage()
   const t = ATTENDANCE_TEXT[language]
   const roleLabels = EMPLOYEES_TEXT[language].roleLabels
-  const loading = useSimulatedLoading(650)
+  const loading = employeesLoading || attendanceLoading
   const today = todayISO()
   const now = new Date()
   const [selectedDate, setSelectedDate] = useState(today)
@@ -64,6 +63,19 @@ export default function Attendance() {
   const [editTarget, setEditTarget] = useState(null)
   const [modalStatus, setModalStatus] = useState('oneShift')
   const [modalStartTime, setModalStartTime] = useState(DEFAULT_START_TIME)
+  const [saving, setSaving] = useState(false)
+
+  // History tab browses a different month than "today" — load whichever
+  // month is actually being viewed/marked; loadAttendanceMonth no-ops if
+  // that month's already in state.
+  useEffect(() => {
+    loadAttendanceMonth(viewYear, viewMonthIdx)
+  }, [viewYear, viewMonthIdx, loadAttendanceMonth])
+
+  useEffect(() => {
+    const d = new Date(selectedDate)
+    loadAttendanceMonth(d.getFullYear(), d.getMonth())
+  }, [selectedDate, loadAttendanceMonth])
 
   const activeEmployees = useMemo(() => employees.filter((e) => e.active !== false), [employees])
 
@@ -102,9 +114,16 @@ export default function Attendance() {
     }
   }
 
-  function markAll(status) {
-    activeEmployees.forEach((emp) => setAttendanceDay(emp.id, selectedDate, { status }))
-    toast.success(t.toastMarkedAll(t.statusLabel[status], formatDate(selectedDate)))
+  async function markAll(status) {
+    setSaving(true)
+    try {
+      await Promise.all(activeEmployees.map((emp) => setAttendanceDay(emp.id, selectedDate, { status })))
+      toast.success(t.toastMarkedAll(t.statusLabel[status], formatDate(selectedDate)))
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSaving(false)
+    }
   }
 
   function openEditAttendance(emp) {
@@ -114,27 +133,36 @@ export default function Attendance() {
     setModalStartTime(record?.startTime || DEFAULT_START_TIME)
   }
 
-  function saveEditAttendance() {
+  async function saveEditAttendance() {
     if (!editTarget) return
     const isShiftDay = modalStatus === 'oneShift' || modalStatus === 'doubleShift'
     const patch = { status: modalStatus, ...(isShiftDay ? { startTime: modalStartTime } : {}) }
-    setAttendanceDay(editTarget.id, selectedDate, patch)
-    if (modalStatus === 'doubleShift') {
-      const nextDate = nextDateISO(selectedDate)
-      if (!attendance[editTarget.id]?.[nextDate]) {
-        setAttendanceDay(editTarget.id, nextDate, { status: 'dutyOff' })
+    setSaving(true)
+    try {
+      await setAttendanceDay(editTarget.id, selectedDate, patch)
+      if (modalStatus === 'doubleShift') {
+        const nextDate = nextDateISO(selectedDate)
+        if (!attendance[editTarget.id]?.[nextDate]) {
+          await setAttendanceDay(editTarget.id, nextDate, { status: 'dutyOff' })
+        }
       }
+      toast.success(t.toastSaved(editTarget.name))
+      setEditTarget(null)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSaving(false)
     }
-    toast.success(t.toastSaved(editTarget.name))
-    setEditTarget(null)
   }
 
-  // A fresh array reference whenever attendance/date changes — activeEmployees
-  // itself doesn't change identity on an attendance-only update (it's memoized
-  // on `employees`), so passing it straight through would let a reference-based
-  // optimization in the table keep showing a stale render after a status click.
+  // PrimeReact's DataTable diffs each row's own data to decide whether a cell
+  // needs to re-render — the attendance status has to live ON the row object
+  // (not just be read from the `attendance` map via closure in the column's
+  // `body`) or a save that only changes `attendance` state leaves the table
+  // showing the pre-save status until something else forces a full remount
+  // (e.g. a page refresh).
   const selectedDateData = useMemo(
-    () => activeEmployees.map((emp) => ({ ...emp })),
+    () => activeEmployees.map((emp) => ({ ...emp, attendanceRecord: attendance[emp.id]?.[selectedDate] || null })),
     [activeEmployees, attendance, selectedDate],
   )
 
@@ -176,7 +204,7 @@ export default function Attendance() {
       style: { width: '40%', minWidth: '220px' },
       exportable: false,
       body: (emp) => {
-        const record = attendance[emp.id]?.[selectedDate]
+        const record = emp.attendanceRecord
         const status = record?.status
         const isShiftDay = status === 'oneShift' || status === 'doubleShift'
         const startTime = record?.startTime || DEFAULT_START_TIME
@@ -186,11 +214,6 @@ export default function Attendance() {
             <div>
               {status ? (
                 <span
-                  title={
-                    record?.updatedAt
-                      ? `${t.updatedLabel} ${formatDateTime(record.updatedAt)}${record.updatedByName ? ` (${record.updatedByName})` : ''}`
-                      : undefined
-                  }
                   className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm ${STATUS_STYLES[status]}`}
                 >
                   {t.statusLabel[status]}
@@ -219,6 +242,10 @@ export default function Attendance() {
         <SkeletonTable rows={6} cols={6} />
       </div>
     )
+  }
+
+  if (attendanceError) {
+    return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {attendanceError}</div>
   }
 
   return (
@@ -266,19 +293,22 @@ export default function Attendance() {
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     onClick={() => markAll('oneShift')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95"
+                    disabled={saving}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {t.markAllOneShift}
                   </button>
                   <button
                     onClick={() => markAll('absent')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95"
+                    disabled={saving}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {t.markAllAbsent}
                   </button>
                   <button
                     onClick={() => markAll('leave')}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95"
+                    disabled={saving}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {t.markAllLeave}
                   </button>
@@ -383,11 +413,7 @@ export default function Attendance() {
                                 <div
                                   title={
                                     status
-                                      ? `${t.statusLabel[status]}${record?.startTime ? ` · ${record.startTime}` : ''}${
-                                          record?.updatedAt
-                                            ? ` · ${t.updatedLabel} ${formatDateTime(record.updatedAt)}${record.updatedByName ? ` (${record.updatedByName})` : ''}`
-                                            : ''
-                                        }`
+                                      ? `${t.statusLabel[status]}${record?.startTime ? ` · ${record.startTime}` : ''}`
                                       : t.noRecord
                                   }
                                   className="mx-auto flex h-5 w-5 items-center justify-center"
@@ -461,7 +487,7 @@ export default function Attendance() {
               <SecondaryButton type="button" onClick={() => setEditTarget(null)}>
                 {t.cancel}
               </SecondaryButton>
-              <PrimaryButton type="button" onClick={saveEditAttendance}>
+              <PrimaryButton type="button" onClick={saveEditAttendance} disabled={saving}>
                 {t.saveAttendance}
               </PrimaryButton>
             </div>

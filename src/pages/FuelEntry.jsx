@@ -2,63 +2,194 @@ import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Paperclip } from 'lucide-react'
+import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Paperclip, Tag, CalendarDays } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
-import { formatCurrency, formatDate, formatLiters } from '../utils/format.js'
+import { formatCurrency, formatDate, formatLiters, todayISO } from '../utils/format.js'
+import { getDownloadUrl } from '../lib/apiClient.js'
 import {
   entryFuelLiters,
   entryFuelAmount,
+  readingLiters,
+  readingAmount,
   shiftSaleAmount,
   shiftPaymentsTotal,
   shiftVariance,
   paymentsTotal,
+  pocketOilAmount,
+  caneOilRawAmount,
+  caneOilAmount,
   sortPumpEntries,
   withCarriedOpenings,
   FUEL_KEYS_BY_PUMP,
   NOZZLE_KEYS,
   PUMP_KEYS,
 } from '../utils/fuelCalc.js'
+import { sortedFuelRateHistory, currentFuelRates, isTodayRateConfirmed } from '../utils/fuelRate.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
-import { PrimaryButton, IconButton } from '../components/FormControls.jsx'
+import Modal from '../components/Modal.jsx'
+import AppDatePicker from '../components/AppDatePicker.jsx'
+import { PrimaryButton, IconButton, Field, Input, SecondaryButton } from '../components/FormControls.jsx'
+
+// "Today's Fuel Rate" — petrol/diesel change often enough (the government/
+// OMC can revise pump price almost daily) that the manager needs to confirm
+// or revise it right here each day, rather than it living behind a settings
+// screen they'd rarely think to open.
+function TodayRateCard({ fuelRateHistory, onRevise }) {
+  const { language } = useLanguage()
+  const t = FUEL_ENTRY_TEXT[language].todayRate
+  const [modalOpen, setModalOpen] = useState(false)
+  const [form, setForm] = useState(() => ({ ...currentFuelRates(fuelRateHistory), effectiveFrom: todayISO() }))
+
+  const rates = currentFuelRates(fuelRateHistory)
+  const confirmed = isTodayRateConfirmed(fuelRateHistory)
+
+  function openModal() {
+    setForm({ ...currentFuelRates(fuelRateHistory), effectiveFrom: todayISO() })
+    setModalOpen(true)
+  }
+
+  function submit(e) {
+    e.preventDefault()
+    onRevise({
+      petrol: Number(form.petrol) || 0,
+      diesel: Number(form.diesel) || 0,
+      effectiveFrom: form.effectiveFrom,
+    })
+    toast.success(t.toastRateUpdated)
+    setModalOpen(false)
+  }
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35 }}
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 shadow-card ${
+          confirmed ? 'border-slate-200 bg-white' : 'border-amber-200 bg-amber-50'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${confirmed ? 'bg-brand-50 text-brand-600' : 'bg-amber-100 text-amber-600'}`}>
+            <Tag size={16} />
+          </span>
+          <div>
+            <p className="text-sm font-bold text-slate-800">{t.sectionTitle}</p>
+            <p className="text-xs font-medium text-slate-500">
+              {t.fieldPetrolRate.replace(' (₹/L)', '')}: <span className="font-bold text-slate-700">{formatCurrency(rates.petrol)}</span>
+              <span className="mx-1.5 text-slate-300">·</span>
+              {t.fieldDieselRate.replace(' (₹/L)', '')}: <span className="font-bold text-slate-700">{formatCurrency(rates.diesel)}</span>
+            </p>
+            {!confirmed ? <p className="mt-0.5 text-xs font-semibold text-amber-600">{t.confirmPrompt}</p> : null}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={openModal}
+          className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+            confirmed ? 'bg-brand-50 text-brand-700 hover:bg-brand-100' : 'bg-amber-600 text-white hover:bg-amber-700'
+          }`}
+        >
+          {confirmed ? t.reviseButton : t.confirmButton}
+        </button>
+      </motion.div>
+
+      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={t.sectionTitle}>
+        <form onSubmit={submit} className="space-y-4">
+          <p className="text-xs text-slate-500">{t.hint}</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t.fieldPetrolRate}>
+              <Input type="number" min="0" step="any" value={form.petrol} onChange={(e) => setForm({ ...form, petrol: e.target.value })} />
+            </Field>
+            <Field label={t.fieldDieselRate}>
+              <Input type="number" min="0" step="any" value={form.diesel} onChange={(e) => setForm({ ...form, diesel: e.target.value })} />
+            </Field>
+          </div>
+          <Field label={t.fieldEffectiveFrom}>
+            <AppDatePicker value={form.effectiveFrom} onChange={(date) => setForm({ ...form, effectiveFrom: date })} className="w-full" />
+          </Field>
+          <div>
+            <p className="mb-1.5 text-xs font-semibold text-slate-600">{t.rateHistoryTitle}</p>
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
+              {sortedFuelRateHistory(fuelRateHistory).length ? (
+                [...sortedFuelRateHistory(fuelRateHistory)].reverse().map((entry) => (
+                  <div key={entry.effectiveFrom} className="flex items-center gap-1.5 text-xs text-slate-500">
+                    <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                    {t.rateHistoryEntry(entry, formatDate(entry.effectiveFrom))}
+                  </div>
+                ))
+              ) : (
+                <p className="px-1 py-1 text-xs text-slate-400">{t.noRateHistory}</p>
+              )}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
+              {FUEL_ENTRY_TEXT[language].cancel}
+            </SecondaryButton>
+            <PrimaryButton type="submit">{FUEL_ENTRY_TEXT[language].saveChanges}</PrimaryButton>
+          </div>
+        </form>
+      </Modal>
+    </>
+  )
+}
 
 const PUMP_LABELS = { pump1: 'Pump 1', pump2: 'Pump 2' }
 
-function csvCell(value) {
-  return `"${String(value ?? '').replace(/"/g, '""')}"`
-}
-
-// Rounded to 2 decimal places, never to whole rupees — CSV export should
-// carry the same precision as the live reconciliation figures.
+// Rounded to 2 decimal places, never to whole rupees — export should carry
+// the same precision as the live reconciliation figures.
 function round2(n) {
   return Math.round(n * 100) / 100
 }
 
+// ExcelJS can only embed jpeg/png/gif inline — webp/heic (both accepted at
+// upload) and PDFs are listed as plain filenames in the sheet instead,
+// since there's no way to render them as a picture in a cell.
+const EMBEDDABLE_EXT = { jpg: 'jpeg', jpeg: 'jpeg', png: 'png', gif: 'gif' }
+function embeddableExtension(filename) {
+  const ext = (filename || '').split('.').pop()?.toLowerCase()
+  return EMBEDDABLE_EXT[ext] || null
+}
+
 export default function FuelEntry() {
-  const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees } = useData()
+  const { fuelEntries, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, lubricants, creditCustomers } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
-  const loading = useSimulatedLoading(650) || fuelEntriesLoading
+  const loading = useSimulatedLoading(650)
   const navigate = useNavigate()
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  // Only the row whose export is in flight shows a disabled state — fetching
+  // bill images to embed can take a moment, but it shouldn't block any other
+  // row's own Export button.
+  const [exportingId, setExportingId] = useState(null)
 
   async function handleDelete(id) {
     try {
       await deleteFuelEntry(id)
       toast.success(t.toastDeleted)
     } catch (err) {
-      toast.error(err.message || t.toastDeleteFailed)
+      toast.error(err.message || t.toastSaveFailed)
     }
   }
 
   function employeeName(id) {
     return employees.find((e) => e.id === id)?.name || ''
+  }
+
+  function customerName(id) {
+    return (creditCustomers || []).find((c) => c.id === id)?.name || ''
+  }
+
+  function lubricantName(id) {
+    return (lubricants || []).find((p) => p.id === id)?.name || ''
   }
 
   // Every shift entry is independent, but its opening reading is still
@@ -74,45 +205,174 @@ export default function FuelEntry() {
     return map
   }, [fuelEntries])
 
-  function exportEntry(entry) {
+  // Every section a shift's own form can hold — meter readings, pocket/cane
+  // oil (Pump 2), every payment line (cash/card/QR, customer credit,
+  // employee credit, expense), bills, and notes — so nothing typed on this
+  // shift is left out of its own downloaded record. A real .xlsx (not CSV)
+  // specifically so bill photos can be embedded as actual pictures in the
+  // sheet, not just listed by filename.
+  async function exportEntry(entry) {
     const effective = effectiveById.get(entry.id) || entry
     const fuelKeys = FUEL_KEYS_BY_PUMP[entry.pumpKey]
+    const fuelLabels = t.pumpEditor.fuelLabels
     const rows = [
       ['Date', formatDate(entry.date)],
       ['Pump', PUMP_LABELS[entry.pumpKey]],
-      [`Shift ${entry.shiftNumber}`, employeeName(entry.employeeId)],
+      [`Shift ${entry.shiftNumber}`, employeeName(entry.employeeId) || '—'],
       [],
       ['Fuel', 'Nozzle', 'Opening', 'Closing', 'Testing', 'Rate', 'Liters', 'Amount'],
     ]
     fuelKeys.forEach((fuelKey) => {
       NOZZLE_KEYS.forEach((nozzleKey, nozzleIdx) => {
         const reading = effective[fuelKey]?.[nozzleKey]
-        rows.push([fuelKey, `Nozzle ${nozzleIdx + 1}`, reading?.opening, reading?.closing, reading?.testing, reading?.rate])
+        rows.push([
+          fuelLabels[fuelKey] || fuelKey,
+          `Nozzle ${nozzleIdx + 1}`,
+          reading?.opening,
+          reading?.closing,
+          reading?.testing,
+          reading?.rate,
+          round2(readingLiters(reading)),
+          round2(readingAmount(reading)),
+        ])
       })
+      rows.push([`${fuelLabels[fuelKey] || fuelKey} Total`, '', '', '', '', '', round2(entryFuelLiters(effective, fuelKey)), round2(entryFuelAmount(effective, fuelKey))])
     })
+
+    if (entry.pumpKey === 'pump2') {
+      rows.push([])
+      rows.push([t.pumpEditor.pocketOilLabel])
+      rows.push(['Product', 'Count', 'Rate', 'Amount'])
+      if ((entry.oilRows || []).length) {
+        entry.oilRows.forEach((row) => {
+          const qty = Number(row.stockCount) || 0
+          const rate = Number(row.stockRate) || 0
+          rows.push([lubricantName(row.productId) || '—', qty, rate, round2(qty * rate)])
+        })
+      } else {
+        rows.push(['—', '', '', 0])
+      }
+      rows.push([`${t.pumpEditor.pocketOilLabel} Total`, '', '', round2(pocketOilAmount(entry))])
+
+      rows.push([])
+      rows.push([t.pumpEditor.caneOilLabel])
+      rows.push(['Product', 'Count', 'Rate', 'Amount'])
+      if ((entry.caneOilRows || []).length) {
+        entry.caneOilRows.forEach((row) => {
+          const qty = Number(row.stockCount) || 0
+          const rate = Number(row.stockRate) || 0
+          rows.push([lubricantName(row.productId) || '—', qty, rate, round2(qty * rate)])
+        })
+      } else {
+        rows.push(['—', '', '', 0])
+      }
+      const caneOfferApplied = Math.min(Number(entry.caneOilOffer) || 0, caneOilRawAmount(entry))
+      rows.push([`${t.pumpEditor.caneOilLabel} Raw Total`, '', '', round2(caneOilRawAmount(entry))])
+      if (caneOfferApplied > 0) rows.push(['Offer / Discount Applied', '', '', round2(caneOfferApplied)])
+      rows.push([`${t.pumpEditor.caneOilLabel} Total`, '', '', round2(caneOilAmount(entry))])
+    }
+
     rows.push([])
     rows.push(['Payments Received'])
-    ;(entry.payments || []).forEach((p) => rows.push([p.label, p.amount]))
+    rows.push(['Type', 'Label / Party', 'Note', 'Amount'])
+    if ((entry.payments || []).length) {
+      entry.payments.forEach((p) => {
+        const type =
+          p.type === 'credit' ? t.pumpEditor.creditLabel : p.type === 'employeeCredit' ? t.pumpEditor.employeeCreditLabel : p.type === 'expense' ? t.pumpEditor.expenseLabel : 'Cash / Card / QR'
+        const label = p.type === 'credit' ? customerName(p.customerId) : p.type === 'employeeCredit' ? employeeName(p.employeeId) : p.label
+        rows.push([type, label || '—', p.note || '', round2(Number(p.amount) || 0)])
+      })
+    } else {
+      rows.push(['—', '—', '', 0])
+    }
+    rows.push(['Payments Collected Total', '', '', round2(paymentsTotal(entry.payments))])
+
+    const bills = entry.bills || []
+    rows.push([])
+    rows.push(['Bills & Documents'])
+    if (bills.length) {
+      rows.push(['Name', 'Date'])
+      bills.forEach((bill) => rows.push([bill.name, formatDate(bill.date), embeddableExtension(bill.name) ? '(picture below)' : '(open original — not embeddable)']))
+    } else {
+      rows.push(['No bills uploaded'])
+    }
+
+    rows.push([])
+    rows.push(['Additional Information', entry.notes || ''])
+
+    rows.push([])
+    rows.push(['Sale Amount (meters + pocket/cane oil)', round2(shiftSaleAmount(effective))])
     rows.push(['Payments Collected', round2(paymentsTotal(entry.payments))])
-    rows.push(['Sale Amount', round2(shiftSaleAmount(effective))])
     rows.push(['Excess / Shortage', round2(shiftVariance(effective))])
 
-    const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const ExcelJS = (await import('exceljs')).default
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = 'Fuel Pump Manager'
+    const sheet = workbook.addWorksheet('Fuel Entry')
+    rows.forEach((row) => sheet.addRow(row))
+    sheet.columns.forEach((col) => { col.width = 22 })
+
+    // Bill photos are fetched and embedded as real pictures, one below the
+    // other beneath the sheet's text content — a presigned download URL is
+    // asked for fresh, right here, same as clicking "view" on a bill would.
+    // A bill that fails to fetch (network hiccup, an old pre-R2 record) is
+    // skipped rather than failing the whole export — the filename/date row
+    // above already accounts for it either way.
+    let imageRow = sheet.rowCount + 2
+    for (const bill of bills) {
+      const extension = embeddableExtension(bill.name)
+      if (!extension) continue
+      try {
+        const downloadUrl = await getDownloadUrl(bill.url)
+        const res = await fetch(downloadUrl)
+        if (!res.ok) throw new Error(`Fetch failed: ${res.status}`)
+        const buffer = await res.arrayBuffer()
+        const imageId = workbook.addImage({ buffer, extension })
+        sheet.getCell(imageRow, 1).value = bill.name
+        sheet.addImage(imageId, { tl: { col: 0, row: imageRow }, ext: { width: 240, height: 180 } })
+        imageRow += 11 // ~180px tall image + a little breathing room before the next one
+      } catch {
+        // Skipped — see comment above.
+      }
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer()
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `fuel-entry-${entry.date}-${entry.pumpKey}-shift${entry.shiftNumber}.csv`
+    a.download = `fuel-entry-${entry.date}-${entry.pumpKey}-shift${entry.shiftNumber}.xlsx`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  async function handleExportEntry(entry) {
+    setExportingId(entry.id)
+    try {
+      await exportEntry(entry)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setExportingId(null)
+    }
   }
 
   // dateDisplay/pumpLabel are extra plain-text fields just for the search
   // box below to match against (typing "28/08" or "Pump 1" wouldn't hit
   // anything searching the raw ISO date / pumpKey values directly).
+  //
+  // Drafts are deliberately left out of this table — they aren't finished,
+  // real records yet (no attendance/stock/credit effects until finalized),
+  // so they shouldn't sit in the history table alongside settled entries.
+  // The draft itself is untouched in storage: opening "New Day Entry" (or
+  // just setting the Date/Pump back to wherever it was) still finds and
+  // resumes it exactly as before, via the same pumpKey+date lookup the form
+  // already does — only its row here is hidden.
   const rows = useMemo(
     () =>
-      fuelEntries.map((entry) => {
+      fuelEntries
+        .filter((entry) => entry.status !== 'draft')
+        .map((entry) => {
         const effective = effectiveById.get(entry.id) || entry
         const fuelKeys = FUEL_KEYS_BY_PUMP[entry.pumpKey]
         const fuelBreakdown = fuelKeys.map((fuelKey) => ({
@@ -121,6 +381,19 @@ export default function FuelEntry() {
           amount: entryFuelAmount(effective, fuelKey),
         }))
         const pumpLabel = `${entry.pumpKey === 'pump1' ? t.pump1 : t.pump2} ${t.pumpEditor.shiftLabel(entry.shiftNumber)}`
+        const employee = employeeName(entry.employeeId)
+        // Plain-text mirrors of the JSX `body` renderers above, used only as
+        // the CSV export value for that column (via Column `exportField`) —
+        // the bulk "Export CSV" button pulls raw field values, so a column
+        // whose visible content is built by `body` (not a plain field) would
+        // otherwise export blank or a raw code like "pump1" instead of what's
+        // actually shown on screen.
+        const pumpShiftEmployeeExport = employee ? `${pumpLabel} (${employee})` : pumpLabel
+        const fuelSummaryExport =
+          fuelBreakdown
+            .filter((f) => f.ltr > 0 || f.amount > 0)
+            .map((f) => `${t.pumpEditor.fuelLabels[f.fuelKey]}: ${formatLiters(f.ltr)} / ${formatCurrency(f.amount)}`)
+            .join('; ') || '—'
         return {
           id: entry.id,
           date: entry.date,
@@ -128,11 +401,13 @@ export default function FuelEntry() {
           pumpKey: entry.pumpKey,
           shiftNumber: entry.shiftNumber,
           pumpLabel,
-          employeeName: employeeName(entry.employeeId),
+          pumpShiftEmployeeExport,
+          fuelSummaryExport,
+          employeeName: employee,
           status: entry.status,
           fuelBreakdown,
-          totalSaleAmount: shiftSaleAmount(effective),
-          excessShortage: shiftVariance(effective),
+          totalSaleAmount: round2(shiftSaleAmount(effective)),
+          excessShortage: round2(shiftVariance(effective)),
           billsCount: entry.bills?.length || 0,
           _entry: entry,
         }
@@ -146,17 +421,11 @@ export default function FuelEntry() {
       header: t.colDate,
       sortable: true,
       style: { width: '12%' },
-      body: (row) => (
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-slate-700">{formatDate(row.date)}</span>
-          {row.status === 'draft' ? (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">{t.draftBadge}</span>
-          ) : null}
-        </div>
-      ),
+      body: (row) => <span className="font-medium text-slate-700">{formatDate(row.date)}</span>,
     },
     {
       field: 'pumpKey',
+      exportField: 'pumpShiftEmployeeExport',
       header: t.colPump,
       sortable: true,
       style: { width: '16%' },
@@ -170,7 +439,7 @@ export default function FuelEntry() {
       ),
     },
     {
-      field: 'fuel',
+      field: 'fuelSummaryExport',
       header: t.colFuel,
       style: { width: '26%' },
       body: (row) => (
@@ -208,9 +477,9 @@ export default function FuelEntry() {
     },
     {
       field: 'bills',
+      exportField: 'billsCount',
       header: t.colBills,
       align: 'center',
-      exportable: false,
       style: { width: '8%' },
       body: (row) =>
         row.billsCount > 0 ? (
@@ -234,8 +503,9 @@ export default function FuelEntry() {
           <IconButton
             onClick={(e) => {
               e.stopPropagation()
-              exportEntry(row._entry)
+              handleExportEntry(row._entry)
             }}
+            disabled={exportingId === row.id}
             aria-label="Export"
             title="Export"
             tone="download"
@@ -275,6 +545,8 @@ export default function FuelEntry() {
 
   return (
     <div className="space-y-6">
+      {/* TodayRateCard removed for now — <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} /> */}
+
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -286,7 +558,16 @@ export default function FuelEntry() {
         </div>
         {fuelEntries.length === 0 ? (
           <div className="p-5">
-            <EmptyState icon={Fuel} title={t.emptyTitle} description={t.emptyDesc} />
+            <EmptyState
+              icon={Fuel}
+              title={t.emptyTitle}
+              description={t.emptyDesc}
+              action={
+                <PrimaryButton onClick={() => navigate('/fuel-entry/new')} className="px-3.5 py-2 text-xs">
+                  <Plus size={14} /> {t.newDayEntry}
+                </PrimaryButton>
+              }
+            />
           </div>
         ) : (
           <DataTable

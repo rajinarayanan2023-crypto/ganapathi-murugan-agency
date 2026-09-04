@@ -5,12 +5,11 @@ import { LayoutDashboard, Users, CalendarCheck, Fuel, Droplet, Wallet, IndianRup
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LAYOUT_TEXT } from '../i18n/layout.js'
-import useIdleLogout from '../hooks/useIdleLogout.js'
 import toast from 'react-hot-toast'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import Modal from './Modal.jsx'
-import { Field, Input, PrimaryButton, SecondaryButton } from './FormControls.jsx'
+import { Field, PasswordInput, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 
 const NAV_ITEMS = [
@@ -25,10 +24,11 @@ const NAV_ITEMS = [
   { to: '/offers', key: 'offers', icon: Megaphone },
 ]
 
-// Matches the API's idle session-timeout policy (see api/app/core/config.py
-// IDLE_TIMEOUT_MINUTES) — kept in sync manually since the two are separate
-// codebases; if one changes, update the other.
-const IDLE_LOGOUT_MS = 4 * 60 * 60 * 1000
+// Reachable only via the button on the Salary page, not the sidebar/bottom
+// nav (see NAV_ITEMS above) — kept separate so it doesn't render as its own
+// tab there, but still needs an entry here so the header title below
+// resolves to "Employee Credits" instead of falling back to "Dashboard".
+const EXTRA_TITLE_ROUTES = [{ to: '/employee-credits', key: 'employeeCredits' }]
 
 export default function Layout() {
   const { station, logout, changePassword } = useData()
@@ -39,9 +39,11 @@ export default function Layout() {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordErrors, setPasswordErrors] = useState({})
+  const [savingPassword, setSavingPassword] = useState(false)
   const mobileNavRef = useRef(null)
 
   // Navigating to a page (via a sidebar icon) auto-collapses the sidebar to
@@ -69,32 +71,58 @@ export default function Layout() {
     navigate('/')
   }
 
-  useIdleLogout(IDLE_LOGOUT_MS, () => {
-    logout()
-    toast.error(t.toastIdleLoggedOut, { duration: 6000 })
-    navigate('/login')
-  })
-
   function openPasswordModal() {
+    setCurrentPassword('')
     setNewPassword('')
     setConfirmPassword('')
     setPasswordErrors({})
     setPasswordModalOpen(true)
   }
 
-  function submitPasswordChange(e) {
+  // Mirrors the backend's own validate_password_strength (app/schemas/user.py)
+  // so an obviously-too-weak password is caught here instead of round-
+  // tripping to the server just to get the same rejection back.
+  function passwordStrengthError(password) {
+    if (password.length < 10) return t.errorPasswordTooShort
+    if (!/[A-Z]/.test(password)) return t.errorPasswordNeedsUppercase
+    if (!/[a-z]/.test(password)) return t.errorPasswordNeedsLowercase
+    if (!/\d/.test(password)) return t.errorPasswordNeedsDigit
+    return null
+  }
+
+  async function submitPasswordChange(e) {
     e.preventDefault()
     const errors = {}
-    if (newPassword.length < 6) errors.newPassword = t.errorPasswordTooShort
+    if (!currentPassword) errors.currentPassword = t.errorCurrentPasswordRequired
+    const strengthError = passwordStrengthError(newPassword)
+    if (strengthError) errors.newPassword = strengthError
     if (confirmPassword !== newPassword) errors.confirmPassword = t.errorPasswordMismatch
     setPasswordErrors(errors)
     if (Object.keys(errors).length > 0) return
-    changePassword(newPassword)
-    toast.success(t.toastPasswordChanged)
+
+    setSavingPassword(true)
+    try {
+      await changePassword(currentPassword, newPassword)
+    } catch (err) {
+      setSavingPassword(false)
+      // The one error this endpoint actually returns for a bad request is a
+      // wrong current password — surface it right on that field rather than
+      // a generic toast, so it reads as "that's wrong" not "something broke".
+      setPasswordErrors({ currentPassword: err.message || t.errorCurrentPasswordWrong })
+      return
+    }
+    setSavingPassword(false)
     setPasswordModalOpen(false)
+    // The API just revoked every refresh token for this account (including
+    // the one this session is using), so the current session is dead too —
+    // sign out immediately rather than leaving the UI in a state that looks
+    // logged in but will fail the next silent token refresh.
+    toast.success(t.toastPasswordChanged)
+    logout()
+    navigate('/')
   }
 
-  const currentKey = NAV_ITEMS.find((n) => location.pathname.startsWith(n.to))?.key || 'dashboard'
+  const currentKey = [...NAV_ITEMS, ...EXTRA_TITLE_ROUTES].find((n) => location.pathname.startsWith(n.to))?.key || 'dashboard'
   const currentLabel = t.nav[currentKey]
 
   return (
@@ -287,28 +315,36 @@ export default function Layout() {
 
       <Modal isOpen={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} title={t.changePassword}>
         <form onSubmit={submitPasswordChange} className="space-y-4">
-          <Field label={t.fieldNewPassword} required error={passwordErrors.newPassword}>
-            <Input
-              type="password"
+          <Field label={t.fieldCurrentPassword} required error={passwordErrors.currentPassword}>
+            <PasswordInput
               autoFocus
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </Field>
+          <Field label={t.fieldNewPassword} required error={passwordErrors.newPassword}>
+            <PasswordInput
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
             />
+            <p className="mt-1 text-xs text-slate-400">{t.newPasswordHint}</p>
           </Field>
           <Field label={t.fieldConfirmPassword} required error={passwordErrors.confirmPassword}>
-            <Input
-              type="password"
+            <PasswordInput
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               autoComplete="new-password"
             />
           </Field>
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setPasswordModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setPasswordModalOpen(false)} disabled={savingPassword}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{t.savePassword}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={savingPassword}>
+              {savingPassword ? t.savingPassword : t.savePassword}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>

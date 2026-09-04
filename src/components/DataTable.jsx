@@ -10,7 +10,12 @@ import { DATA_TABLE_TEXT } from '../i18n/dataTable.js'
 // row filters, sortable headers, an internally scrolling body so the body
 // never has to be so tall that the whole page scrolls, and a CSV export button.
 //
-// columns: [{ field, header, sortable, filter, body: (row) => node, align, filterPlaceholder, exportable }]
+// columns: [{ field, header, sortable, filter, body: (row) => node, align, filterPlaceholder, exportable, exportField }]
+// exportField: which row property the "Export CSV" button reads for this
+// column, when it differs from `field` — needed whenever `body` renders
+// something a raw field value can't (a formatted/joined string, a code
+// mapped to a label, JSX built from several row properties) so the CSV
+// isn't left with the raw code or blank cells for that column.
 export default function DataTable({
   columns,
   data,
@@ -31,6 +36,7 @@ export default function DataTable({
   rowsPerPageOptions = [5, 10, 20, 50],
   dense = false,
   toolbarActions,
+  leadingContent,
   scrollable = true,
   hideExport = false,
 }) {
@@ -51,7 +57,7 @@ export default function DataTable({
     prevLengthRef.current = data.length
   }, [data.length])
 
-  const showToolbar = !!globalFilterFields || !!toolbarActions || !hideExport
+  const showToolbar = !!globalFilterFields || !!toolbarActions || !!leadingContent || !hideExport
 
   return (
     <div>
@@ -61,19 +67,20 @@ export default function DataTable({
             dense ? 'p-2' : 'p-3'
           }`}
         >
-          {globalFilterFields ? (
-            <div className="relative w-full sm:max-w-xs">
-              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input
-                value={globalFilter}
-                onChange={(e) => setGlobalFilter(e.target.value)}
-                placeholder={searchPlaceholder ?? dt.searchPlaceholder}
-                className="py-2 pl-9 text-sm"
-              />
-            </div>
-          ) : (
-            <div />
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {leadingContent}
+            {globalFilterFields ? (
+              <div className="relative w-full sm:w-auto sm:max-w-xs">
+                <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Input
+                  value={globalFilter}
+                  onChange={(e) => setGlobalFilter(e.target.value)}
+                  placeholder={searchPlaceholder ?? dt.searchPlaceholder}
+                  className="py-2 pl-9 text-sm"
+                />
+              </div>
+            ) : null}
+          </div>
           <div className="flex shrink-0 items-center gap-2 self-start">
             {toolbarActions}
             {hideExport ? null : (
@@ -138,6 +145,7 @@ export default function DataTable({
             align={col.align}
             alignHeader={col.align}
             exportable={col.exportable !== undefined ? col.exportable : !!col.field}
+            exportField={col.exportField}
           />
         ))}
       </PrimeTable>

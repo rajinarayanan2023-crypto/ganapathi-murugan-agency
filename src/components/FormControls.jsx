@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, Children } from 'react'
-import { Check, ChevronDown, Search } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, Children } from 'react'
+import { createPortal } from 'react-dom'
+import { Check, ChevronDown, Search, Eye, EyeOff } from 'lucide-react'
 import AppTooltip from './AppTooltip.jsx'
 
 export function Field({ label, required, error, children, className = '' }) {
@@ -46,6 +47,29 @@ export function Input({ error, className = '', title, value, type, onWheel, ...p
   )
 }
 
+// Password field with a show/hide toggle — same props as Input, minus
+// `type` (always starts masked). Visibility is local to each instance, so
+// the New/Confirm/Current fields in a form like Change Password toggle
+// independently of one another.
+export function PasswordInput({ className = '', ...props }) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <div className="relative">
+      <Input type={visible ? 'text' : 'password'} className={`pr-10 ${className}`} {...props} />
+      <AppTooltip title={visible ? 'Hide password' : 'Show password'}>
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          aria-label={visible ? 'Hide password' : 'Show password'}
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 flex text-slate-400 transition-colors hover:text-brand-600"
+        >
+          {visible ? <EyeOff size={16} /> : <Eye size={16} />}
+        </button>
+      </AppTooltip>
+    </div>
+  )
+}
+
 // Drop-in replacement for a native <select> — same props (value, onChange,
 // <option> children) so every call site works unchanged — but every list
 // gets a type-to-filter search box, which a plain <select> can't offer once
@@ -53,7 +77,9 @@ export function Input({ error, className = '', title, value, type, onWheel, ...p
 export function Select({ error, className = '', children, value, onChange, disabled, id, 'aria-label': ariaLabel, ...props }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [menuPos, setMenuPos] = useState(null)
   const containerRef = useRef(null)
+  const menuRef = useRef(null)
   const searchInputRef = useRef(null)
 
   const options = useMemo(
@@ -72,13 +98,34 @@ export function Select({ error, className = '', children, value, onChange, disab
     return options.filter((o) => String(o.label).toLowerCase().includes(q))
   }, [options, query])
 
+  // The menu is portaled to <body> (see below) so a scrollable ancestor —
+  // the payments list, a modal's own scroll body, anywhere — can't clip it.
+  // Since it's no longer a normal DOM child of the trigger, its position has
+  // to be measured and tracked by hand instead of just `absolute` + `top-full`.
+  useLayoutEffect(() => {
+    if (!open) return
+    function updatePosition() {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (rect) setMenuPos({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    // capture: true so this also fires for scrolling inside any nested
+    // scroll container (the payments list, a modal body), not just the window.
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     function onPointerDown(e) {
-      if (containerRef.current && !containerRef.current.contains(e.target)) {
-        setOpen(false)
-        setQuery('')
-      }
+      if (containerRef.current?.contains(e.target)) return
+      if (menuRef.current?.contains(e.target)) return
+      setOpen(false)
+      setQuery('')
     }
     function onKeyDown(e) {
       if (e.key === 'Escape') {
@@ -121,43 +168,50 @@ export function Select({ error, className = '', children, value, onChange, disab
         <ChevronDown size={14} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-full min-w-[10rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-card-hover">
-          <div className="flex items-center gap-1.5 border-b border-slate-100 px-2 py-1.5">
-            <Search size={13} className="shrink-0 text-slate-400" />
-            <input
-              ref={searchInputRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search..."
-              className="w-full bg-transparent text-xs text-slate-700 outline-none placeholder:text-slate-400"
-            />
-          </div>
-          <ul className="max-h-56 overflow-y-auto py-1 text-sm">
-            {filtered.length === 0 ? (
-              <li className="px-3 py-2 text-xs text-slate-400">No matches</li>
-            ) : (
-              filtered.map((o) => {
-                const isSelected = String(o.value) === String(value ?? '')
-                return (
-                  <li key={String(o.value)}>
-                    <button
-                      type="button"
-                      onClick={() => pick(o)}
-                      className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-brand-50 ${
-                        isSelected ? 'bg-brand-50 font-semibold text-brand-700' : 'text-slate-700'
-                      }`}
-                    >
-                      <span className="truncate">{o.label}</span>
-                      {isSelected ? <Check size={13} className="shrink-0 text-brand-600" /> : null}
-                    </button>
-                  </li>
-                )
-              })
-            )}
-          </ul>
-        </div>
-      ) : null}
+      {open && menuPos
+        ? createPortal(
+            <div
+              ref={menuRef}
+              style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, width: menuPos.width }}
+              className="z-50 min-w-[10rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-card-hover"
+            >
+              <div className="flex items-center gap-1.5 border-b border-slate-100 px-2 py-1.5">
+                <Search size={13} className="shrink-0 text-slate-400" />
+                <input
+                  ref={searchInputRef}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search..."
+                  className="w-full bg-transparent text-xs text-slate-700 outline-none placeholder:text-slate-400"
+                />
+              </div>
+              <ul className="max-h-56 overflow-y-auto py-1 text-sm">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-xs text-slate-400">No matches</li>
+                ) : (
+                  filtered.map((o) => {
+                    const isSelected = String(o.value) === String(value ?? '')
+                    return (
+                      <li key={String(o.value)}>
+                        <button
+                          type="button"
+                          onClick={() => pick(o)}
+                          className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-brand-50 ${
+                            isSelected ? 'bg-brand-50 font-semibold text-brand-700' : 'text-slate-700'
+                          }`}
+                        >
+                          <span className="truncate">{o.label}</span>
+                          {isSelected ? <Check size={13} className="shrink-0 text-brand-600" /> : null}
+                        </button>
+                      </li>
+                    )
+                  })
+                )}
+              </ul>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

@@ -5,18 +5,18 @@ import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Pa
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
-import { closingBalance } from '../utils/creditCustomer.js'
+import { closingBalance, closingBalanceBreakdown } from '../data/mockData.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
-import { resolveFileUrl, uploadFile } from '../lib/apiClient.js'
+import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { CallIcon, WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
+import CalcBreakdown from '../components/CalcBreakdown.jsx'
 
 const customerEmptyForm = { name: '', phone: '', openingBalance: 0, notes: '' }
 const creditEmptyForm = { fuelType: 'Diesel', ltr: '', rate: '100.45' }
@@ -26,50 +26,76 @@ function makeId() {
   return `b-${Math.random().toString(36).slice(2, 9)}`
 }
 
-// Bills predating real file uploads are stored as base64 data URLs — decode
-// those synchronously. Anything else is a real server-hosted file (see
-// apiClient.uploadFile), fetched and converted to a File the same way.
-async function billUrlToFile(url, filename) {
-  if (url.startsWith('data:')) {
-    const [header, base64] = url.split(',')
-    const mime = header.match(/data:(.*?);base64/)?.[1] || 'application/octet-stream'
-    const binary = atob(base64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    return new File([bytes], filename, { type: mime })
-  }
-  const response = await fetch(resolveFileUrl(url))
-  const blob = await response.blob()
-  return new File([blob], filename, { type: blob.type })
-}
-
-function downloadFile(file) {
-  const url = URL.createObjectURL(file)
+async function downloadFileFromUrl(url, filename) {
+  const res = await fetch(url)
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url
-  a.download = file.name
+  a.href = objectUrl
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   a.remove()
-  URL.revokeObjectURL(url)
+  URL.revokeObjectURL(objectUrl)
+}
+
+// WhatsApp's wa.me click-to-chat link only ever supports pre-filled text —
+// there's no URL-based way to attach a file to it, and window.open() only
+// counts as gesture-backed (so it isn't silently popup-blocked) if it fires
+// as the very first thing inside the click handler. Triggering the bill's
+// download first — even a synthetic <a download> click — consumes that same
+// gesture, so a window.open() right after it gets blocked with no visible
+// error. Opening WhatsApp first, then downloading the bill, keeps both
+// working. `key` is the S3 key — resolved to a real (short-lived) URL right
+// here, at send-time, never ahead of it.
+async function sendBillFileThenOpenWhatsApp(phone, message, key, fileName) {
+  openWhatsAppChat(phone, message)
+  if (!key) return
+  try {
+    const url = await getDownloadUrl(key)
+    await downloadFileFromUrl(url, fileName)
+  } catch {
+    // Best-effort — WhatsApp itself already opened either way.
+  }
 }
 
 export default function CreditBills() {
-  const { creditCustomers, creditCustomersLoading, addCustomer, updateCustomer, deleteCustomer, addLedgerEntry, fuelRates, station } = useData()
+  const {
+    creditCustomers,
+    creditCustomersLoading,
+    creditCustomersError,
+    addCustomer,
+    updateCustomer,
+    deleteCustomer,
+    addLedgerEntry,
+    removeLedgerEntry,
+    fuelRates,
+    station,
+  } = useData()
   const { language } = useLanguage()
   const t = CREDIT_BILLS_TEXT[language]
-  const loading = useSimulatedLoading(650) || creditCustomersLoading
+  const loading = creditCustomersLoading
 
   const [customerModalOpen, setCustomerModalOpen] = useState(false)
   const [editingCustomerId, setEditingCustomerId] = useState(null)
   const [customerForm, setCustomerForm] = useState(customerEmptyForm)
   const [errors, setErrors] = useState({})
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [savingCustomer, setSavingCustomer] = useState(false)
+  const [uploadingCustomerBills, setUploadingCustomerBills] = useState(false)
 
   const [ledgerCustomerId, setLedgerCustomerId] = useState(null)
+  // Only entries added manually (here, or from the Audit modal's "Customer
+  // Credit Paid") are ever removable — a credit line created from a real
+  // fuel-entry payment (tx.sourceFuelEntryId set) stays tied to that entry;
+  // deleting the fuel entry itself is what cleans that one up.
+  const [confirmDeleteTx, setConfirmDeleteTx] = useState(null)
   const [creditForm, setCreditForm] = useState(creditEmptyForm)
   const [paymentForm, setPaymentForm] = useState(paymentEmptyForm)
   const [creditBillFile, setCreditBillFile] = useState(null)
+  const [uploadingCreditBill, setUploadingCreditBill] = useState(false)
+  const [savingCredit, setSavingCredit] = useState(false)
+  const [savingPayment, setSavingPayment] = useState(false)
   const [customerBillFiles, setCustomerBillFiles] = useState([])
   const [billPickerCustomerId, setBillPickerCustomerId] = useState(null)
 
@@ -84,6 +110,10 @@ export default function CreditBills() {
     () => (ledgerCustomerId ? creditCustomers.find((c) => c.id === ledgerCustomerId) : null),
     [ledgerCustomerId, creditCustomers],
   )
+  // Not memoized separately from ledgerCustomer above — recomputed on every
+  // render straight from its live ledger, so the balance tooltip can never
+  // show a stale number after a credit/payment was just added or removed.
+  const balanceBreakdown = ledgerCustomer ? closingBalanceBreakdown(ledgerCustomer) : null
 
   function openAddCustomer() {
     setEditingCustomerId(null)
@@ -101,25 +131,42 @@ export default function CreditBills() {
     setCustomerModalOpen(true)
   }
 
-  async function uploadOneFile(file) {
-    const uploaded = await uploadFile(file)
-    return { id: makeId(), name: uploaded.file_name, url: uploaded.file_url }
+  async function uploadAsBill(file) {
+    const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
+    return { id: makeId(), name, url: key, date: todayISO() }
   }
 
   async function handleCustomerBillFilesChange(e) {
     const files = Array.from(e.target.files || [])
     e.target.value = ''
     if (!files.length) return
+    setUploadingCustomerBills(true)
     try {
-      const newFiles = await Promise.all(files.map(uploadOneFile))
-      setCustomerBillFiles((prev) => [...prev, ...newFiles])
+      const uploaded = await Promise.all(files.map(uploadAsBill))
+      setCustomerBillFiles((prev) => [...prev, ...uploaded])
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setUploadingCustomerBills(false)
     }
   }
 
-  function removeCustomerBillFile(id) {
+  // Staged in this modal only — the customer isn't created/updated until
+  // the form submits, so nothing has told the backend this bill exists yet.
+  // Deleting the S3 object directly here (rather than waiting on a save
+  // that might not come) is what keeps a picked-then-unpicked file from
+  // leaking in the bucket forever with no DB row to ever clean it up from.
+  async function removeCustomerBillFile(id) {
+    const file = customerBillFiles.find((f) => f.id === id)
     setCustomerBillFiles((prev) => prev.filter((f) => f.id !== id))
+    if (file?.url) {
+      try {
+        await deleteUpload(file.url)
+      } catch {
+        // Best-effort — an orphaned object here has no DB reference that
+        // could ever surface it again, but it isn't worth failing over.
+      }
+    }
   }
 
   function validateCustomer() {
@@ -139,7 +186,8 @@ export default function CreditBills() {
       openingBalance: Number(customerForm.openingBalance) || 0,
       notes: customerForm.notes,
     }
-    const newBills = customerBillFiles.map((f) => ({ id: f.id, name: f.name, url: f.url, date: todayISO() }))
+    const newBills = customerBillFiles.map((f) => ({ id: f.id, name: f.name, url: f.url, date: f.date }))
+    setSavingCustomer(true)
     try {
       if (editingCustomerId) {
         const existing = creditCustomers.find((c) => c.id === editingCustomerId)
@@ -153,7 +201,9 @@ export default function CreditBills() {
       setCustomerBillFiles([])
       setCustomerModalOpen(false)
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingCustomer(false)
     }
   }
 
@@ -162,7 +212,7 @@ export default function CreditBills() {
       await deleteCustomer(id)
       toast.success(t.toastCustomerRemoved)
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
     }
   }
 
@@ -178,19 +228,21 @@ export default function CreditBills() {
     toast.success(t.toastReminderSent(c.name))
   }
 
-  // WhatsApp's wa.me click-to-chat link only supports pre-filled text — there's
-  // no URL-based way to attach a file to it — so this also triggers a plain
-  // file download alongside it. window.open() only counts as gesture-backed
-  // (so it isn't silently popup-blocked) if it fires as the very first thing
-  // inside the click handler; awaiting the bill's fetch/decode before it would
-  // push it past that gesture window, so this deliberately opens WhatsApp
-  // synchronously first and lets the download happen in the background after.
+  // Presigned GET URLs expire, so one is fetched fresh right when the
+  // manager actually clicks to view a bill — never pre-fetched for a whole
+  // list up front. `key` is the S3 key stored on the bill/ledger row.
+  async function openBill(key) {
+    try {
+      const url = await getDownloadUrl(key)
+      window.open(url, '_blank', 'noopener')
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    }
+  }
+
   function sendBillWhatsApp(c, bill) {
     const message = `Hi ${c.name}, sharing your bill "${bill.name}" dated ${formatDate(bill.date)} from ${station.name}. Your outstanding balance is ${formatCurrency(closingBalance(c))}. Kindly clear it at your earliest convenience. Thank you!`
-    openWhatsAppChat(c.phone, message)
-    billUrlToFile(bill.url, bill.name)
-      .then(downloadFile)
-      .catch(() => toast.error(t.toastActionFailed))
+    sendBillFileThenOpenWhatsApp(c.phone, message, bill.url, bill.name)
     toast.success(t.toastBillDownloadedForWhatsApp(c.name))
   }
 
@@ -231,11 +283,29 @@ export default function CreditBills() {
       setCreditBillFile(null)
       return
     }
+    setUploadingCreditBill(true)
     try {
-      const uploaded = await uploadFile(file)
-      setCreditBillFile({ name: uploaded.file_name, url: uploaded.file_url })
+      const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
+      setCreditBillFile({ name, url: key })
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setUploadingCreditBill(false)
+    }
+  }
+
+  // Staged for the credit line being filled in — not attached to anything
+  // in the database until the form submits, so clearing it here has to
+  // clean up the S3 object directly (same reasoning as removeCustomerBillFile).
+  async function removeStagedCreditBill() {
+    const file = creditBillFile
+    setCreditBillFile(null)
+    if (file?.url) {
+      try {
+        await deleteUpload(file.url)
+      } catch {
+        // Best-effort, see removeCustomerBillFile.
+      }
     }
   }
 
@@ -243,23 +313,30 @@ export default function CreditBills() {
     const files = Array.from(e.target.files || [])
     e.target.value = ''
     if (!files.length || !ledgerCustomer) return
+    setUploadingCustomerBills(true)
     try {
-      const uploaded = await Promise.all(files.map(uploadOneFile))
-      const newBills = uploaded.map((f) => ({ id: f.id, name: f.name, url: f.url, date: todayISO() }))
+      const newBills = await Promise.all(files.map(uploadAsBill))
       await updateCustomer(ledgerCustomer.id, { bills: [...(ledgerCustomer.bills || []), ...newBills] })
       toast.success(newBills.length > 1 ? t.billsUploaded(newBills.length) : t.toastBillUploaded)
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setUploadingCustomerBills(false)
     }
   }
 
+  // Unlike removeCustomerBillFile/removeStagedCreditBill above, this bill is
+  // already saved — updateCustomer sends the trimmed list straight to the
+  // backend, whose own diff (see CreditCustomerService._bills_from) is what
+  // deletes the S3 object. Calling deleteUpload here too would just be a
+  // second, redundant delete of the same key.
   async function handleRemoveCustomerBill(billId) {
     if (!ledgerCustomer) return
     try {
       await updateCustomer(ledgerCustomer.id, { bills: (ledgerCustomer.bills || []).filter((b) => b.id !== billId) })
       toast.success(t.toastBillRemoved)
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
     }
   }
 
@@ -271,6 +348,7 @@ export default function CreditBills() {
       toast.error(t.errorQtyRate)
       return
     }
+    setSavingCredit(true)
     try {
       await addLedgerEntry(ledgerCustomerId, {
         date: todayISO(),
@@ -287,7 +365,9 @@ export default function CreditBills() {
       setCreditForm({ fuelType: creditForm.fuelType, ltr: '', rate: creditForm.rate })
       setCreditBillFile(null)
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingCredit(false)
     }
   }
 
@@ -298,6 +378,7 @@ export default function CreditBills() {
       toast.error(t.errorAmount)
       return
     }
+    setSavingPayment(true)
     try {
       await addLedgerEntry(ledgerCustomerId, {
         date: todayISO(),
@@ -311,7 +392,21 @@ export default function CreditBills() {
       toast.success(t.toastPaymentRecorded)
       setPaymentForm({ amount: '', mode: paymentForm.mode })
     } catch (err) {
-      toast.error(err.message || t.toastActionFailed)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingPayment(false)
+    }
+  }
+
+  async function handleRemoveLedgerEntry() {
+    if (!confirmDeleteTx) return
+    try {
+      await removeLedgerEntry(confirmDeleteTx.customerId, confirmDeleteTx.entryId)
+      toast.success(t.toastTransactionRemoved)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setConfirmDeleteTx(null)
     }
   }
 
@@ -428,6 +523,10 @@ export default function CreditBills() {
     return <SkeletonTable rows={7} cols={5} />
   }
 
+  if (creditCustomersError) {
+    return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {creditCustomersError}</div>
+  }
+
   return (
     <div className="space-y-6">
       <motion.div
@@ -477,7 +576,7 @@ export default function CreditBills() {
             />
           </Field>
           <Field label={t.fieldOpeningBalance}>
-            <Input type="number" min="0" step="any" value={customerForm.openingBalance} onChange={(e) => setCustomerForm({ ...customerForm, openingBalance: e.target.value })} />
+            <Input type="number" min="0" value={customerForm.openingBalance} onChange={(e) => setCustomerForm({ ...customerForm, openingBalance: e.target.value })} />
           </Field>
           <Field label={t.fieldAdditionalInfo}>
             <Textarea
@@ -518,7 +617,9 @@ export default function CreditBills() {
             <SecondaryButton type="button" onClick={() => setCustomerModalOpen(false)}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{editingCustomerId ? t.saveChanges : t.addCustomer}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={savingCustomer || uploadingCustomerBills}>
+              {editingCustomerId ? t.saveChanges : t.addCustomer}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>
@@ -533,7 +634,20 @@ export default function CreditBills() {
                 <p className="text-sm font-semibold text-slate-700">{formatCurrency(ledgerCustomer.openingBalance)}</p>
               </div>
               <div className="text-right">
-                <p className="text-xs text-slate-500">{t.colClosingBalance}</p>
+                <AppTooltip
+                  title={
+                    <CalcBreakdown
+                      rows={[
+                        { label: t.colOpeningBalance, value: formatCurrency(balanceBreakdown.openingBalance) },
+                        { label: t.credit, value: `+ ${formatCurrency(balanceBreakdown.totalCredit)}` },
+                        { label: t.payment, value: `− ${formatCurrency(balanceBreakdown.totalPayments)}` },
+                      ]}
+                      formula={`${formatCurrency(balanceBreakdown.openingBalance)} + ${formatCurrency(balanceBreakdown.totalCredit)} − ${formatCurrency(balanceBreakdown.totalPayments)} = ${t.colClosingBalance} (${formatCurrency(balanceBreakdown.balance)})`}
+                    />
+                  }
+                >
+                  <p className="cursor-help text-xs text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">{t.colClosingBalance}</p>
+                </AppTooltip>
                 <p className={`text-lg font-bold ${closingBalance(ledgerCustomer) > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>
                   {formatCurrency(closingBalance(ledgerCustomer))}
                 </p>
@@ -555,16 +669,15 @@ export default function CreditBills() {
                       key={bill.id}
                       className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"
                     >
-                      <a
-                        href={resolveFileUrl(bill.url)}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => openBill(bill.url)}
                         className="flex min-w-0 items-center gap-1.5 text-slate-700 hover:text-brand-700"
                       >
                         <Paperclip size={13} className="shrink-0 text-slate-400" />
                         <span className="truncate">{bill.name}</span>
                         <span className="shrink-0 text-slate-400">&middot; {formatDate(bill.date)}</span>
-                      </a>
+                      </button>
                       <div className="flex shrink-0 items-center gap-0.5">
                         <AppTooltip title={t.tooltipWhatsApp}>
                           <button
@@ -614,10 +727,10 @@ export default function CreditBills() {
                   </Field>
                   <div className="grid grid-cols-2 gap-2">
                     <Field label={t.fieldLtr}>
-                      <Input type="number" min="0" step="any" value={creditForm.ltr} onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })} placeholder="0" />
+                      <Input type="number" min="0" value={creditForm.ltr} onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })} placeholder="0" />
                     </Field>
                     <Field label={t.fieldRate}>
-                      <Input type="number" min="0" step="any" value={creditForm.rate} onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })} />
+                      <Input type="number" min="0" value={creditForm.rate} onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })} />
                     </Field>
                   </div>
                   <p className="text-xs text-slate-500">
@@ -637,7 +750,7 @@ export default function CreditBills() {
                         <AppTooltip title={t.removeAttachment}>
                           <button
                             type="button"
-                            onClick={() => setCreditBillFile(null)}
+                            onClick={removeStagedCreditBill}
                             className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-rose-500"
                             aria-label={t.removeAttachment}
                           >
@@ -654,7 +767,7 @@ export default function CreditBills() {
                     )}
                   </Field>
 
-                  <PrimaryButton type="submit" className="w-full">
+                  <PrimaryButton type="submit" className="w-full" disabled={savingCredit || uploadingCreditBill}>
                     {t.addCredit}
                   </PrimaryButton>
                 </div>
@@ -666,7 +779,7 @@ export default function CreditBills() {
                 </h4>
                 <div className="space-y-3">
                   <Field label={t.fieldAmount}>
-                    <Input type="number" min="0" step="any" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} placeholder="0" />
+                    <Input type="number" min="0" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} placeholder="0" />
                   </Field>
                   <Field label={t.fieldMode}>
                     <Select value={paymentForm.mode} onChange={(e) => setPaymentForm({ ...paymentForm, mode: e.target.value })}>
@@ -675,7 +788,7 @@ export default function CreditBills() {
                       <option value="Online">{t.modeLabel.Online}</option>
                     </Select>
                   </Field>
-                  <PrimaryButton type="submit" className="w-full">
+                  <PrimaryButton type="submit" className="w-full" disabled={savingPayment}>
                     {t.recordPaymentBtn}
                   </PrimaryButton>
                 </div>
@@ -696,6 +809,7 @@ export default function CreditBills() {
                         <th className="px-3 py-2 font-semibold">{t.thDetails}</th>
                         <th className="px-3 py-2 font-semibold">{t.thReason}</th>
                         <th className="px-3 py-2 text-right font-semibold">{t.thAmount}</th>
+                        <th className="px-3 py-2" />
                       </tr>
                     </thead>
                     <tbody>
@@ -716,15 +830,14 @@ export default function CreditBills() {
                                 : t.modeLabel[tx.mode] || tx.mode}
                             </span>
                             {tx.billUrl ? (
-                              <a
-                                href={resolveFileUrl(tx.billUrl)}
-                                target="_blank"
-                                rel="noreferrer"
+                              <button
+                                type="button"
+                                onClick={() => openBill(tx.billUrl)}
                                 title={tx.billName || t.viewAttachedBill}
                                 className="ml-1.5 inline-flex items-center gap-0.5 text-brand-600 hover:underline"
                               >
                                 <Paperclip size={11} /> {t.view}
-                              </a>
+                              </button>
                             ) : null}
                           </td>
                           <td className="max-w-[180px] px-3 py-2 text-slate-500">
@@ -734,6 +847,20 @@ export default function CreditBills() {
                           </td>
                           <td className={`px-3 py-2 text-right font-semibold ${tx.type === 'credit' ? 'text-rose-500' : 'text-emerald-600'}`}>
                             {tx.type === 'credit' ? '+' : '−'} {formatCurrency(tx.amount)}
+                          </td>
+                          <td className="px-3 py-2">
+                            {!tx.sourceFuelEntryId ? (
+                              <AppTooltip title={t.removeTransaction}>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteTx({ customerId: ledgerCustomer.id, entryId: tx.id })}
+                                  className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+                                  aria-label={t.removeTransaction}
+                                >
+                                  <X size={13} />
+                                </button>
+                              </AppTooltip>
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -789,6 +916,14 @@ export default function CreditBills() {
         onConfirm={() => handleDeleteCustomer(confirmDeleteId)}
         title={t.removeCustomerTitle}
         description={t.removeCustomerDesc}
+      />
+
+      <ConfirmDialog
+        isOpen={!!confirmDeleteTx}
+        onClose={() => setConfirmDeleteTx(null)}
+        onConfirm={handleRemoveLedgerEntry}
+        title={t.removeTransactionTitle}
+        description={t.removeTransactionDesc}
       />
     </div>
   )

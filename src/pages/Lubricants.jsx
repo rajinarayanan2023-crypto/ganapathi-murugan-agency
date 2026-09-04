@@ -5,14 +5,13 @@ import { Plus, Pencil, Trash2, Droplet, PackageSearch, PackagePlus, Tag, Boxes, 
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LUBRICANTS_TEXT } from '../i18n/lubricants.js'
-import { formatCurrency, formatDate, formatDateTime, todayISO } from '../utils/format.js'
-import { currentRate, sortedPriceHistory } from '../utils/lubricants.js'
+import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
+import { currentRate, sortedPriceHistory, round3 } from '../utils/lubricants.js'
 import PageHeader from '../components/PageHeader.jsx'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import { SkeletonCardGrid } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
 import { Field, Input, Select, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import StatCard from '../components/StatCard.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
@@ -44,10 +43,14 @@ const CARD_THEMES = [
 const emptyPriceForm = { rate: '', effectiveFrom: todayISO() }
 
 export default function Lubricants() {
-  const { lubricants, lubricantsLoading, addLubricant, updateLubricant, deleteLubricant, reviseLubricantPrice, addPurchase } = useData()
+  const { lubricants, lubricantsLoading, lubricantsError, addLubricant, updateLubricant, deleteLubricant, reviseLubricantPrice, addPurchase } =
+    useData()
   const { language } = useLanguage()
   const t = LUBRICANTS_TEXT[language]
-  const loading = useSimulatedLoading(600) || lubricantsLoading
+  const loading = lubricantsLoading
+  const [saving, setSaving] = useState(false)
+  const [savingPrice, setSavingPrice] = useState(false)
+  const [savingPurchase, setSavingPurchase] = useState(false)
 
   const [search, setSearch] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
@@ -101,6 +104,7 @@ export default function Lubricants() {
   async function handleSubmit(ev) {
     ev.preventDefault()
     if (!validate()) return
+    setSaving(true)
     try {
       if (editingId) {
         await updateLubricant(editingId, { name: form.name, unit: form.unit, packaging: form.packaging })
@@ -118,7 +122,9 @@ export default function Lubricants() {
       }
       setModalOpen(false)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -127,7 +133,7 @@ export default function Lubricants() {
       await deleteLubricant(id)
       toast.success(t.toastRemoved)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || t.toastSaveFailed)
     }
   }
 
@@ -154,12 +160,15 @@ export default function Lubricants() {
   async function handlePriceSubmit(ev) {
     ev.preventDefault()
     if (!validatePrice()) return
+    setSavingPrice(true)
     try {
       await reviseLubricantPrice(priceTarget.id, { rate: Number(priceForm.rate), effectiveFrom: priceForm.effectiveFrom })
       toast.success(t.toastPriceRevised(priceTarget.name))
       setPriceTarget(null)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingPrice(false)
     }
   }
 
@@ -174,12 +183,15 @@ export default function Lubricants() {
   async function handlePurchaseSubmit(ev) {
     ev.preventDefault()
     if (!validatePurchase()) return
+    setSavingPurchase(true)
     try {
       await addPurchase(purchaseTarget.id, { qty: Number(purchaseForm.qty), cost: Number(purchaseForm.cost), date: purchaseForm.date })
       toast.success(t.toastPurchased(purchaseTarget.name))
       setPurchaseTarget(null)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingPurchase(false)
     }
   }
 
@@ -190,6 +202,10 @@ export default function Lubricants() {
         <SkeletonCardGrid count={8} />
       </div>
     )
+  }
+
+  if (lubricantsError) {
+    return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {lubricantsError}</div>
   }
 
   return (
@@ -284,22 +300,13 @@ export default function Lubricants() {
                 <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
                   <span className="text-xs text-slate-500">{t.stockLabel}</span>
                   <span className={`text-sm font-bold ${theme.icon.split(' ')[1]}`}>
-                    {product.stock ?? 0} {product.unit}
+                    {round3(product.stock ?? 0)} {product.unit}
                   </span>
                 </div>
                 <div className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400">
                   <CalendarDays size={11} className="shrink-0" />
                   {t.lastPurchased}: {lastPurchase ? formatDate(lastPurchase.date) : t.noPurchases}
                 </div>
-                {product.updatedAt ? (
-                  <div
-                    className="mt-0.5 truncate text-[11px] text-slate-300"
-                    title={product.updatedByName ? `${t.lastUpdated} by ${product.updatedByName}` : t.lastUpdated}
-                  >
-                    {t.lastUpdated}: {formatDateTime(product.updatedAt)}
-                    {product.updatedByName ? ` (${product.updatedByName})` : ''}
-                  </div>
-                ) : null}
               </motion.div>
             )
           })}
@@ -353,7 +360,9 @@ export default function Lubricants() {
             <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{editingId ? t.saveChanges : t.addProduct}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={saving}>
+              {editingId ? t.saveChanges : t.addProduct}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>
@@ -414,7 +423,9 @@ export default function Lubricants() {
               <SecondaryButton type="button" onClick={() => setPurchaseTarget(null)}>
                 {t.cancel}
               </SecondaryButton>
-              <PrimaryButton type="submit">{t.savePurchase}</PrimaryButton>
+              <PrimaryButton type="submit" disabled={savingPurchase}>
+                {t.savePurchase}
+              </PrimaryButton>
             </div>
           </form>
         ) : null}
@@ -464,7 +475,9 @@ export default function Lubricants() {
               <SecondaryButton type="button" onClick={() => setPriceTarget(null)}>
                 {t.cancel}
               </SecondaryButton>
-              <PrimaryButton type="submit">{t.saveRevision}</PrimaryButton>
+              <PrimaryButton type="submit" disabled={savingPrice}>
+                {t.saveRevision}
+              </PrimaryButton>
             </div>
           </form>
         ) : null}

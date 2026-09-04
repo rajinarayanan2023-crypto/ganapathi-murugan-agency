@@ -16,6 +16,7 @@ import {
   CloudUpload,
   AlertTriangle,
   TrendingUp,
+  Trash2,
 } from 'lucide-react'
 import {
   FUEL_KEYS_BY_PUMP,
@@ -25,10 +26,12 @@ import {
   entryFuelAmount,
   entryFuelLiters,
   shiftSaleAmount,
+  paymentsTotal,
   emptyShiftEntry,
   emptyPaymentLine,
   emptyOilRow,
   emptyCaneOilRow,
+  pocketOilAmount,
   caneOilAmount,
   sortPumpEntries,
   withCarriedOpenings,
@@ -36,10 +39,12 @@ import {
   PAYMENT_METHOD_OPTIONS,
 } from '../utils/fuelCalc.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
-import { currentRate, purchaseBatchesByCost, sortedPriceHistory, stockAvailableAtRate } from '../utils/lubricants.js'
-import { resolveFileUrl, uploadFile } from '../lib/apiClient.js'
-import { Input, Select, Textarea, IconButton, PrimaryButton } from './FormControls.jsx'
+import { currentRate, purchaseBatchesByCost, sortedPriceHistory, stockAvailableAtRate, availableAtRateBreakdown, round3 } from '../utils/lubricants.js'
+import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
+import { Input, Select, Textarea, IconButton, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
+import AppTooltip from './AppTooltip.jsx'
+import CalcBreakdown from './CalcBreakdown.jsx'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
@@ -224,7 +229,32 @@ function PurchaseBatches({ t, product }) {
 // could get lost the instant it also re-clamped the count.
 function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
-  const available = selectedProduct ? (rate ? stockAvailableAtRate(selectedProduct, rate) : Number(selectedProduct.stock) || 0) : null
+  const available = selectedProduct ? (rate ? stockAvailableAtRate(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
+
+  // Same breakdown stockAvailableAtRate() itself used to reach `available` —
+  // read fresh from the live product/rate every render, so the tooltip can
+  // never show a number that disagrees with the clamp actually applied above.
+  const availableBreakdown = selectedProduct
+    ? rate
+      ? availableAtRateBreakdown(selectedProduct, rate)
+      : { available, totalStock: Number(selectedProduct.stock) || 0, singleRate: true }
+    : null
+  const availableTooltipRows = availableBreakdown
+    ? availableBreakdown.singleRate || availableBreakdown.rateNotFound
+      ? [{ label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` }]
+      : [
+          { label: t.purchasedInPeriodLabel, value: `${availableBreakdown.purchasedInPeriod} ${selectedProduct.unit}` },
+          { label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` },
+        ]
+    : []
+  const availableTooltipFormula = availableBreakdown
+    ? availableBreakdown.singleRate
+      ? `${t.currentStockLabel} (${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
+      : availableBreakdown.rateNotFound
+        ? t.rateNotInHistoryNote
+        : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedInPeriod}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
+    : ''
+  const availableTooltipNote = availableBreakdown && !availableBreakdown.singleRate && !availableBreakdown.rateNotFound ? t.availableApproxNote : undefined
 
   function handleCountChange(v) {
     onRateAndCountChange(rate, clampToStock(v, available))
@@ -241,13 +271,13 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2.5">
-        <span className="shrink-0 text-sm font-semibold text-slate-600">{t.oilProductLabel}</span>
-        <div className="w-56 shrink-0">
+      <div className="flex flex-nowrap items-center gap-1.5">
+        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.oilProductLabel}</span>
+        <div className="min-w-[130px] flex-[2]">
           <Select
             value={productId || ''}
             onChange={(e) => onSelectProduct(e.target.value)}
-            className={isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}
+            className={`text-xs ${isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           >
             <option value="">{t.selectProduct}</option>
             {(lubricants || []).map((product) => (
@@ -257,14 +287,14 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             ))}
           </Select>
         </div>
-        <span className="shrink-0 text-sm font-semibold text-slate-600">{t.rate}</span>
-        <div className="w-32 shrink-0">
+        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.rate}</span>
+        <div className="min-w-[80px] flex-1">
           <Select
             value={rate || ''}
             onChange={(e) => handleRateChange(e.target.value)}
             disabled={!selectedProduct}
             title={t.oilStockRateHint}
-            className={isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}
+            className={`text-xs ${isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           >
             <option value="">{t.selectRate}</option>
             {priceOptions(selectedProduct).map((r) => (
@@ -275,12 +305,15 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
           </Select>
         </div>
         {selectedProduct ? (
-          <span className="shrink-0 text-sm font-medium text-slate-500">
-            {t.availableLabel}: <span className="font-bold text-slate-700">{available} {selectedProduct.unit}</span>
-          </span>
+          <AppTooltip title={<CalcBreakdown rows={availableTooltipRows} formula={availableTooltipFormula} note={availableTooltipNote} />}>
+            <span className="shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-slate-500">
+              <span className="underline decoration-dotted decoration-slate-300 underline-offset-4">{t.availableLabel}</span>:{' '}
+              <span className="font-bold text-slate-700">{available} {selectedProduct.unit}</span>
+            </span>
+          </AppTooltip>
         ) : null}
-        <span className="shrink-0 text-sm font-semibold text-slate-600">{t.soldCountLabel}</span>
-        <div className="w-24 shrink-0">
+        <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-600">{t.soldCountLabel}</span>
+        <div className="min-w-[70px] flex-1">
           <Input
             type="number"
             min="0"
@@ -290,13 +323,12 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             onChange={(e) => handleCountChange(e.target.value)}
             placeholder="0"
             title={available != null ? t.soldCountHint(available) : undefined}
+            className="text-xs"
           />
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <span className="text-sm font-semibold text-slate-600">{t.amount}:</span>
-          <div className="w-40 shrink-0">
-            <Input value={formatCurrency(amount)} readOnly disabled className="bg-slate-50 font-bold text-emerald-700" />
-          </div>
+        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
+        <div className="min-w-[100px] flex-[1.5]">
+          <Input value={formatCurrency(amount)} readOnly disabled className="bg-slate-50 text-xs font-bold text-emerald-700" />
         </div>
         {showRemove ? (
           <IconButton onClick={onRemove} aria-label={t.removeOilRow} title={t.removeOilRow} tone="delete">
@@ -328,18 +360,77 @@ function ShiftCard({
   lubricants,
   onSaveDraft,
   onSaveFinal,
+  savingFinal,
+  onDiscardDraft,
 }) {
   const fuelKeys = FUEL_KEYS_BY_PUMP[pumpKey]
+  // This shift's own sale/payments/excess — not every shift on this pump
+  // added together. Only the top-level "Entire Day Total" (in FuelEntryForm,
+  // above the pump tabs) is meant to combine every shift across both pumps;
+  // this block sits right above this one shift's own Save button, so it
+  // should read as this shift's own totals, not the pump's.
+  const shiftTotals = useMemo(() => aggregateEntries([value]), [value])
+  // Readings and payments each used to just run one after another, making
+  // the card very long — splitting them into tabs lets the manager focus on
+  // one job (meter readings, then payments) without scrolling past the other.
+  const [activeShiftTab, setActiveShiftTab] = useState('reading')
   const [openDenomId, setOpenDenomId] = useState(null)
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [shakeKey, setShakeKey] = useState(0)
   const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // 'idle' | 'pending' | 'saved'
+  const [uploadingBill, setUploadingBill] = useState(false)
+  // Id of a just-added payment line still waiting to be scrolled to and
+  // focused — set by the add* functions below, consumed by the effect right
+  // after this one.
+  const [pendingFocusId, setPendingFocusId] = useState(null)
+  const paymentRowRefs = useRef(new Map())
+  const oilRowRefs = useRef(new Map())
+  // Id of a just-added oil/cane-oil row still briefly highlighted so it's
+  // obvious where the new row landed — cleared automatically a moment later.
+  const [highlightedRowId, setHighlightedRowId] = useState(null)
+  useEffect(() => {
+    if (!highlightedRowId) return
+    const timer = setTimeout(() => setHighlightedRowId(null), 1400)
+    return () => clearTimeout(timer)
+  }, [highlightedRowId])
+  // Prepends a new row (oil/cane-oil rows are added to the top, same as
+  // payment lines below) and queues it to be scrolled to, focused, and
+  // briefly highlighted, so a row added while scrolled elsewhere in a long
+  // list is impossible to miss.
+  function flashRow(id) {
+    setPendingFocusId(id)
+    setHighlightedRowId(id)
+  }
+
+  // New lines are prepended (see addPaymentLine etc. below), which can land
+  // above whatever the manager has scrolled to — inside this list's own
+  // internal scroll area, the tab content, or the page itself. scrollIntoView
+  // walks every scrollable ancestor, so one call handles all of those at
+  // once; focusing the row's first control then puts the cursor right where
+  // they'd type/select next, instead of making them go hunting for the row.
+  useEffect(() => {
+    if (!pendingFocusId) return
+    const row = paymentRowRefs.current.get(pendingFocusId) || oilRowRefs.current.get(pendingFocusId)
+    row?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    row?.querySelector('input, button, select')?.focus()
+    setPendingFocusId(null)
+  }, [pendingFocusId])
+
   // Snapshot of `value` as of the last time this effect actually scheduled a
   // save (or, initially, as of first render) — comparing by reference rather
   // than a one-shot boolean flag survives React StrictMode's dev-only double
   // invocation of effects, which would otherwise consume a "skip the first
   // run" flag on its extra invocation and fire a phantom save on mount.
   const lastSeenValue = useRef(value)
+
+  // Lets a manual save (handleSaveFinalClick below) cancel a pending
+  // autosave outright, instead of leaving its setTimeout free to fire a
+  // draft PUT for the same fuel entry moments after (or during) the manual
+  // save's own PUT — two concurrent writes to the same entry each try to
+  // replace its Fuel_Readings rows, and the second one's INSERT can land
+  // before the first's DELETE is visible to it, hitting
+  // uq_fuel_readings_entry_type_nozzle.
+  const autoSaveTimerRef = useRef(null)
 
   // Debounced autosave — waits for a pause in typing before persisting, and
   // never fires on mount (that would just re-save data that's already
@@ -349,15 +440,12 @@ function ShiftCard({
     if (value === lastSeenValue.current) return
     lastSeenValue.current = value
     setAutoSaveStatus('pending')
-    const timer = setTimeout(async () => {
-      try {
-        await onSaveDraft(value)
-        setAutoSaveStatus('saved')
-      } catch (err) {
-        setAutoSaveStatus('idle')
-        toast.error(err.message || tRoot.toastAutoSaveFailed)
-      }
+    const timer = setTimeout(() => {
+      autoSaveTimerRef.current = null
+      onSaveDraft(value)
+      setAutoSaveStatus('saved')
     }, 900)
+    autoSaveTimerRef.current = timer
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value])
@@ -392,17 +480,34 @@ function ShiftCard({
     return null
   }
 
+  // New lines go at the top, not the bottom — the manager just clicked one
+  // of the "Add..." buttons above the list, so the row they're about to fill
+  // in should appear right there instead of making them scroll past every
+  // existing line to find it. Each one also queues itself to be scrolled to
+  // and focused (see the pendingFocusId effect above).
   function addPaymentLine() {
-    updatePayments((payments) => [...payments, emptyPaymentLine()])
+    const line = emptyPaymentLine()
+    updatePayments((payments) => [line, ...payments])
+    setPendingFocusId(line.id)
+    toast.success(t.toastLineAdded)
   }
   function addCreditLine() {
-    updatePayments((payments) => [...payments, emptyPaymentLine(t.creditLabel, 'credit')])
+    const line = emptyPaymentLine(t.creditLabel, 'credit')
+    updatePayments((payments) => [line, ...payments])
+    setPendingFocusId(line.id)
+    toast.success(t.toastCreditLineAdded)
   }
   function addEmployeeCreditLine() {
-    updatePayments((payments) => [...payments, emptyPaymentLine(t.employeeCreditLabel, 'employeeCredit')])
+    const line = emptyPaymentLine(t.employeeCreditLabel, 'employeeCredit')
+    updatePayments((payments) => [line, ...payments])
+    setPendingFocusId(line.id)
+    toast.success(t.toastEmployeeCreditLineAdded)
   }
   function addExpenseLine() {
-    updatePayments((payments) => [...payments, emptyPaymentLine('', 'expense')])
+    const line = emptyPaymentLine('', 'expense')
+    updatePayments((payments) => [line, ...payments])
+    setPendingFocusId(line.id)
+    toast.success(t.toastExpenseLineAdded)
   }
   function updatePaymentLine(id, field, v) {
     updatePayments((payments) => payments.map((p) => (p.id === id ? { ...p, [field]: v } : p)))
@@ -427,33 +532,80 @@ function ShiftCard({
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    setUploadingBill(true)
     try {
-      const uploaded = await uploadFile(file)
-      const newBill = { id: makeBillId(), name: uploaded.file_name, url: uploaded.file_url, date: todayISO() }
+      // Uploads straight to S3 (see apiClient.uploadBillFile) — the backend
+      // only ever learns the resulting key, on the next save, never the
+      // file bytes themselves. `url` here holds that key, unchanged, for as
+      // long as this bill sits untouched — that's what lets the backend's
+      // own diff-on-save recognize it as the same bill and skip re-touching
+      // it in S3 or Postgres.
+      const { name, key } = await uploadBillFile(file, 'fuel-entry-bills')
+      const newBill = { id: makeBillId(), name, url: key, date: todayISO() }
       updateBills((bills) => [...bills, newBill])
       toast.success(tRoot.toastBillAttached(file.name))
     } catch (err) {
-      toast.error(err.message || tRoot.toastBillAttached(file.name))
+      toast.error(err.message || tRoot.toastSaveFailed)
+    } finally {
+      setUploadingBill(false)
     }
   }
-  function removeBill(billId) {
+  // Local-only splice — the shift itself isn't saved here, so nothing tells
+  // the backend a bill disappeared until the next autosave/save. A bill
+  // attached and removed again within that same window (before any save
+  // ever included it) would otherwise leak in S3 forever with no DB row
+  // left to ever clean it up from — so this deletes the S3 object directly,
+  // right away, rather than waiting on a save that might not come.
+  async function removeBill(billId) {
+    const bill = (value.bills || []).find((b) => b.id === billId)
     updateBills((bills) => bills.filter((b) => b.id !== billId))
     toast.success(tRoot.toastBillRemoved)
+    if (bill?.url) {
+      try {
+        await deleteUpload(bill.url)
+      } catch {
+        // Best-effort: if this one call fails, the next save's own
+        // backend-side diff (see fuel_entry_service.py) still catches the
+        // removal and retries the S3 delete from there.
+      }
+    }
+  }
+  // Presigned GET URLs expire, so one is fetched fresh right when the
+  // manager actually clicks to view a bill — never pre-fetched for the
+  // whole list up front.
+  async function openBill(bill) {
+    try {
+      const url = await getDownloadUrl(bill.url)
+      window.open(url, '_blank', 'noopener')
+    } catch (err) {
+      toast.error(err.message || tRoot.toastSaveFailed)
+    }
   }
 
   function addOilRow() {
-    onChange({ ...value, oilRows: [...(value.oilRows || []), emptyOilRow('oil')] })
+    const row = emptyOilRow('oil')
+    onChange({ ...value, oilRows: [row, ...(value.oilRows || [])] })
+    flashRow(row.id)
   }
   function removeOilRow(id) {
     onChange({ ...value, oilRows: value.oilRows.filter((row) => row.id !== id) })
   }
+  // Switching products mid-row has to clear the old Sold Count too — it was
+  // a count of the PREVIOUS product, and leaving it in place (even clamped)
+  // meant the new product's Amount could silently be based on a stock level
+  // that was never actually checked against it.
   function selectOilRowProduct(id, productId) {
     const product = (lubricants || []).find((p) => p.id === productId)
-    onChange({ ...value, oilRows: value.oilRows.map((row) => (row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '' } : row)) })
+    onChange({
+      ...value,
+      oilRows: value.oilRows.map((row) => (row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '', stockCount: '' } : row)),
+    })
   }
 
   function addCaneOilRow() {
-    onChange({ ...value, caneOilRows: [...(value.caneOilRows || []), emptyCaneOilRow()] })
+    const row = emptyCaneOilRow()
+    onChange({ ...value, caneOilRows: [row, ...(value.caneOilRows || [])] })
+    flashRow(row.id)
   }
   function removeCaneOilRow(id) {
     onChange({ ...value, caneOilRows: value.caneOilRows.filter((row) => row.id !== id) })
@@ -462,14 +614,43 @@ function ShiftCard({
     const product = (lubricants || []).find((p) => p.id === productId)
     onChange({
       ...value,
-      caneOilRows: value.caneOilRows.map((row) => (row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '' } : row)),
+      caneOilRows: value.caneOilRows.map((row) =>
+        row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '', stockCount: '' } : row,
+      ),
     })
   }
 
+  const pocketOilStockAmount = pocketOilAmount(value)
   const caneOilStockAmount = caneOilAmount(value)
   const shiftTotal = shiftSaleAmount(value)
-  const shiftBillsMissing = attemptedSubmit && (!value.bills || value.bills.length === 0)
+  const paymentsCollected = paymentsTotal(value.payments)
+  // Same four/five numbers shiftSaleAmount() itself adds together, laid out
+  // for the tooltip below — read straight off `value`, so it's exactly what
+  // shiftTotal was just computed from, never a separately-cached copy.
+  const petrolSaleAmount = entryFuelAmount(value, 'petrol')
+  const dieselSaleAmount = entryFuelAmount(value, 'diesel')
+  const oilSaleAmount = pumpKey === 'pump2' ? entryFuelAmount(value, 'oil') : 0
+  const shiftTotalBreakdownRows = [
+    { label: t.fuelLabels.petrol, value: formatCurrency(petrolSaleAmount) },
+    { label: t.fuelLabels.diesel, value: formatCurrency(dieselSaleAmount) },
+  ]
+  if (pumpKey === 'pump2') {
+    shiftTotalBreakdownRows.push({ label: t.fuelLabels.oil, value: formatCurrency(oilSaleAmount) })
+    shiftTotalBreakdownRows.push({ label: t.pocketOilLabel, value: formatCurrency(pocketOilStockAmount) })
+    shiftTotalBreakdownRows.push({ label: t.caneOilLabel, value: formatCurrency(caneOilStockAmount) })
+  }
+  const shiftTotalFormula = `${shiftTotalBreakdownRows.map((r) => `${r.label} (${r.value})`).join(' + ')} = ${t.shiftTotalLabel} (${formatCurrency(shiftTotal)})`
+  // Bill-upload requirement temporarily disabled — restore the commented
+  // condition below (and in handleSaveFinalClick, and the backend's
+  // create()/update() in fuel_entry_service.py) to bring it back.
+  const shiftBillsMissing = false // attemptedSubmit && (!value.bills || value.bills.length === 0)
+  const shiftEmployeeMissing = attemptedSubmit && !value.employeeId
   const isDraft = value.status === 'draft'
+  // A blank/just-discarded shift is internally `status: 'draft'` too (that's
+  // what makes it autosave-eligible), but there's nothing real to discard
+  // until it's actually been autosaved with an id — same condition the
+  // "Draft" badge above already uses, so the two stay in sync.
+  const hasDraftToDiscard = isDraft && Boolean(value.id)
   // Same product at the same rate should only ever be one row — checked
   // separately per section (a pocket-oil duplicate never flags a cane-oil row).
   const duplicateOilRowIds = useMemo(() => duplicateRowIds(value.oilRows), [value.oilRows])
@@ -481,12 +662,36 @@ function ShiftCard({
       toast.error(tRoot.errorDuplicateOilRow)
       return
     }
-    if (!value.bills || value.bills.length === 0) {
+    // A credit line with money in it but no customer/employee attached would
+    // still count toward Payments Collected (paymentsTotal sums every line
+    // unconditionally), but silently never reach anyone's ledger — the
+    // amount would look "accounted for" here while nobody's balance actually
+    // reflects it. Block the save instead of letting that slip through.
+    const missingCreditCustomer = (value.payments || []).some((p) => p.type === 'credit' && Number(p.amount) > 0 && !p.customerId)
+    const missingCreditEmployee = (value.payments || []).some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0 && !p.employeeId)
+    if (missingCreditCustomer || missingCreditEmployee) {
       setAttemptedSubmit(true)
       setShakeKey((k) => k + 1)
+      toast.error(missingCreditCustomer ? tRoot.errorCreditCustomerRequired : tRoot.errorCreditEmployeeRequired)
+      return
+    }
+    // Bill-upload requirement temporarily disabled — see shiftBillsMissing above.
+    if (!value.employeeId /* || !value.bills || value.bills.length === 0 */) {
+      setAttemptedSubmit(true)
+      setShakeKey((k) => k + 1)
+      if (!value.employeeId) toast.error(tRoot.errorEmployeeRequired)
       return
     }
     setAttemptedSubmit(true)
+    // A pending autosave firing during/after this save's own PUT is exactly
+    // the concurrent-write race described above — cancel it and mark this
+    // value as already "seen" so the autosave effect doesn't reschedule one
+    // right after, either.
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+    lastSeenValue.current = value
     onSaveFinal(value)
   }
 
@@ -509,8 +714,17 @@ function ShiftCard({
             <CloudUpload size={13} className="animate-pulse" /> {tRoot.autoSaving}
           </span>
         ) : null}
-        <div className="max-w-xs flex-1">
-          <Select value={value.employeeId} onChange={(e) => onChange({ ...value, employeeId: e.target.value })}>
+        <motion.div
+          key={`employee-${shakeKey}`}
+          animate={shiftEmployeeMissing ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
+          transition={{ duration: 0.45, ease: 'easeInOut' }}
+          className="max-w-xs flex-1"
+        >
+          <Select
+            value={value.employeeId}
+            onChange={(e) => onChange({ ...value, employeeId: e.target.value })}
+            error={shiftEmployeeMissing}
+          >
             <option value="">{t.selectEmployee}</option>
             {employees.map((emp) => (
               <option key={emp.id} value={emp.id}>
@@ -518,17 +732,56 @@ function ShiftCard({
               </option>
             ))}
           </Select>
-        </div>
+          {shiftEmployeeMissing ? <span className="mt-1 block text-xs font-medium text-rose-500">{tRoot.errorEmployeeRequired}</span> : null}
+        </motion.div>
+        <SecondaryButton
+          type="button"
+          onClick={onDiscardDraft}
+          disabled={!hasDraftToDiscard}
+          title={hasDraftToDiscard ? undefined : tRoot.discardDraftDisabledHint}
+          className={
+            hasDraftToDiscard
+              ? '!border-rose-300 !bg-rose-50 !text-rose-600 hover:!border-rose-400 hover:!bg-rose-100'
+              : '!border-slate-200 !bg-slate-50 !text-slate-400'
+          }
+        >
+          <Trash2 size={14} /> {tRoot.discardDraftButton}
+        </SecondaryButton>
       </div>
 
+      <div className="mb-3.5 flex gap-2 border-b border-slate-200">
+        {['reading', 'payments'].map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveShiftTab(tab)}
+            className={`-mb-px border-b-2 px-1 pb-2 text-sm font-semibold transition-colors ${
+              activeShiftTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            {tab === 'reading' ? t.readingTabLabel : t.payments}
+          </button>
+        ))}
+      </div>
+
+      <div className={activeShiftTab === 'reading' ? '' : 'hidden'}>
       {/* The nozzle grid's columns (opening/closing/testing/rate/liters/
           amount) each need real room for a full meter reading — squeezed to
           a phone's width they'd be too narrow to read or tap. Scrolling the
           whole grid horizontally as one block (rather than shrinking it)
           keeps every column usable; the fixed pump-total banner below stays
-          full-width so the running total is always visible without scrolling. */}
-      <div className="-mx-1 overflow-x-auto px-1">
-        <div className="min-w-[640px]">
+          full-width so the running total is always visible without scrolling.
+          The 640px floor only applies below the sm breakpoint — anything
+          wider already fits the grid naturally, and forcing it there too
+          left a stray horizontal scrollbar that flashed during this card's
+          mount/tab-switch animation even when nothing actually overflowed.
+          overflow-y is pinned to hidden too — setting only overflow-x:auto
+          leaves the browser free to compute overflow-y as auto as well
+          (per the CSS spec), and the Total row's continuous pulse animation
+          was enough sub-pixel height jitter each frame to keep flipping an
+          unwanted vertical scrollbar on and off. */}
+      <div className="-mx-1 overflow-x-auto overflow-y-hidden px-1">
+        <div className="min-w-[640px] sm:min-w-0">
           <div className="grid grid-cols-[0.6fr_1.7fr_1.7fr_0.7fr_1.5fr_1fr_1.1fr] gap-2 px-1 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
             <span className="text-brand-700">{t.fuel}</span>
             <span>{t.opening}</span>
@@ -561,10 +814,9 @@ function ShiftCard({
                           type="number"
                           step="any"
                           value={reading.opening}
-                          disabled={isDerivedOpening}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'opening', e.target.value)}
                           placeholder="0"
-                          className={`px-2.5 py-2 ${isDerivedOpening ? 'bg-slate-50 text-slate-400' : ''}`}
+                          className="px-2.5 py-2"
                           title={isDerivedOpening ? t.autoFromHandover : undefined}
                         />
                         <Input
@@ -659,76 +911,109 @@ function ShiftCard({
                 <Plus size={15} /> {t.addMorePacketOil}
               </button>
             </div>
-            <div className="space-y-3">
+            {/* Scrolls internally once there are more than ~4 rows, instead
+                of pushing the rest of the form down indefinitely. */}
+            <div className="max-h-[240px] space-y-3 overflow-y-auto pr-1">
               {(value.oilRows || []).map((row) => (
-                <OilRow
+                <div
                   key={row.id}
-                  t={t}
-                  lubricants={packetProducts}
-                  productId={row.productId}
-                  onSelectProduct={(productId) => selectOilRowProduct(row.id, productId)}
-                  count={row.stockCount}
-                  rate={row.stockRate}
-                  onRateAndCountChange={(rate, count) =>
-                    onChange({ ...value, oilRows: value.oilRows.map((r) => (r.id === row.id ? { ...r, stockRate: rate, stockCount: count } : r)) })
-                  }
-                  amount={(Number(row.stockCount) || 0) * (Number(row.stockRate) || 0)}
-                  onRemove={() => removeOilRow(row.id)}
-                  showRemove={(value.oilRows || []).length > 1}
-                  isDuplicate={duplicateOilRowIds.has(row.id)}
-                />
+                  ref={(el) => {
+                    if (el) oilRowRefs.current.set(row.id, el)
+                    else oilRowRefs.current.delete(row.id)
+                  }}
+                  className={`rounded-lg transition-colors duration-700 ${
+                    highlightedRowId === row.id ? 'bg-emerald-100 ring-2 ring-emerald-300' : ''
+                  }`}
+                >
+                  <OilRow
+                    t={t}
+                    lubricants={packetProducts}
+                    productId={row.productId}
+                    onSelectProduct={(productId) => selectOilRowProduct(row.id, productId)}
+                    count={row.stockCount}
+                    rate={row.stockRate}
+                    onRateAndCountChange={(rate, count) =>
+                      onChange({ ...value, oilRows: value.oilRows.map((r) => (r.id === row.id ? { ...r, stockRate: rate, stockCount: count } : r)) })
+                    }
+                    amount={(Number(row.stockCount) || 0) * (Number(row.stockRate) || 0)}
+                    onRemove={() => removeOilRow(row.id)}
+                    showRemove
+                    isDuplicate={duplicateOilRowIds.has(row.id)}
+                  />
+                </div>
               ))}
+            </div>
+            <div className="mt-3 flex items-center justify-end border-t border-dashed border-slate-200 pt-3">
+              <span className="text-sm font-semibold text-slate-600">
+                {t.amount}: <span className="font-bold text-emerald-700">{formatCurrency(pocketOilStockAmount)}</span>
+              </span>
             </div>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white/80 p-4">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Droplet size={16} className="shrink-0 text-emerald-600" />
                 <span className="text-sm font-bold text-emerald-600">{t.caneOilLabel}</span>
               </div>
-              <button
-                type="button"
-                onClick={addCaneOilRow}
-                className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-3.5 py-1.5 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
-              >
-                <Plus size={15} /> {t.addMoreCaneOil}
-              </button>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="shrink-0 text-sm font-semibold text-rose-500">{t.offerLabel}</span>
+                  <div className="w-28 shrink-0">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={value.caneOilOffer || ''}
+                      onChange={(e) => onChange({ ...value, caneOilOffer: e.target.value })}
+                      placeholder="0.00"
+                      title={t.offerHint}
+                      className="border-rose-200"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={addCaneOilRow}
+                  className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-3.5 py-1.5 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+                >
+                  <Plus size={15} /> {t.addMoreCaneOil}
+                </button>
+              </div>
             </div>
-            <div className="space-y-3">
+            {/* Scrolls internally once there are more than ~4 rows, instead
+                of pushing the rest of the form down indefinitely. */}
+            <div className="max-h-[240px] space-y-3 overflow-y-auto pr-1">
               {(value.caneOilRows || []).map((row) => (
-                <OilRow
+                <div
                   key={row.id}
-                  t={t}
-                  lubricants={caneProducts}
-                  productId={row.productId}
-                  onSelectProduct={(productId) => selectCaneOilRowProduct(row.id, productId)}
-                  count={row.stockCount}
-                  rate={row.stockRate}
-                  onRateAndCountChange={(rate, count) =>
-                    onChange({ ...value, caneOilRows: value.caneOilRows.map((r) => (r.id === row.id ? { ...r, stockRate: rate, stockCount: count } : r)) })
-                  }
-                  amount={(Number(row.stockCount) || 0) * (Number(row.stockRate) || 0)}
-                  onRemove={() => removeCaneOilRow(row.id)}
-                  showRemove={(value.caneOilRows || []).length > 1}
-                  isDuplicate={duplicateCaneOilRowIds.has(row.id)}
-                />
+                  ref={(el) => {
+                    if (el) oilRowRefs.current.set(row.id, el)
+                    else oilRowRefs.current.delete(row.id)
+                  }}
+                  className={`rounded-lg transition-colors duration-700 ${
+                    highlightedRowId === row.id ? 'bg-emerald-100 ring-2 ring-emerald-300' : ''
+                  }`}
+                >
+                  <OilRow
+                    t={t}
+                    lubricants={caneProducts}
+                    productId={row.productId}
+                    onSelectProduct={(productId) => selectCaneOilRowProduct(row.id, productId)}
+                    count={row.stockCount}
+                    rate={row.stockRate}
+                    onRateAndCountChange={(rate, count) =>
+                      onChange({ ...value, caneOilRows: value.caneOilRows.map((r) => (r.id === row.id ? { ...r, stockRate: rate, stockCount: count } : r)) })
+                    }
+                    amount={(Number(row.stockCount) || 0) * (Number(row.stockRate) || 0)}
+                    onRemove={() => removeCaneOilRow(row.id)}
+                    showRemove
+                    isDuplicate={duplicateCaneOilRowIds.has(row.id)}
+                  />
+                </div>
               ))}
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2.5 border-t border-dashed border-slate-200 pt-3">
-              <span className="shrink-0 text-sm font-semibold text-rose-500">{t.offerLabel}</span>
-              <div className="w-40 shrink-0">
-                <Input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={value.caneOilOffer || ''}
-                  onChange={(e) => onChange({ ...value, caneOilOffer: e.target.value })}
-                  placeholder="0.00"
-                  title={t.offerHint}
-                  className="border-rose-200"
-                />
-              </div>
-              <span className="ml-auto shrink-0 text-sm font-semibold text-slate-600">
+            <div className="mt-3 flex items-center justify-end border-t border-dashed border-slate-200 pt-3">
+              <span className="text-sm font-semibold text-slate-600">
                 {t.amount}: <span className="font-bold text-emerald-700">{formatCurrency(caneOilStockAmount)}</span>
               </span>
             </div>
@@ -743,8 +1028,12 @@ function ShiftCard({
         transition={{ duration: 0.3, ease: 'easeOut' }}
         className="mt-3 rounded-lg bg-gradient-to-r from-brand-600 to-brand-800 px-4 py-3 shadow-md shadow-brand-600/30"
       >
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-bold uppercase tracking-wide text-brand-100">{t.shiftTotalLabel}</span>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <AppTooltip title={<CalcBreakdown rows={shiftTotalBreakdownRows} formula={shiftTotalFormula} />} placement="top-start">
+            <span className="cursor-help whitespace-nowrap text-sm font-bold uppercase tracking-wide text-brand-100 underline decoration-dotted decoration-brand-300/60 underline-offset-4">
+              {t.shiftTotalLabel}
+            </span>
+          </AppTooltip>
           <AnimatePresence mode="popLayout">
             <motion.span
               key={formatCurrency(shiftTotal)}
@@ -762,8 +1051,9 @@ function ShiftCard({
           </AnimatePresence>
         </div>
       </motion.div>
+      </div>
 
-      <div className="mt-4">
+      <div className={`mt-4 ${activeShiftTab === 'payments' ? '' : 'hidden'}`}>
         <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
           <h5 className="text-sm font-bold text-slate-700">{t.payments}</h5>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -797,7 +1087,10 @@ function ShiftCard({
             </button>
           </div>
         </div>
-        <div className="space-y-2">
+        {/* A fresh shift seeds a row per payment method, plus credit/expense
+            lines the manager adds on top — that list can run long, so it
+            scrolls internally instead of stretching the whole page. */}
+        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
           {(value.payments || []).map((p) => {
             const isCash = p.type !== 'credit' && CASH_LABELS.has(p.label.trim().toLowerCase())
             const isCounting = isCash && openDenomId === p.id
@@ -805,49 +1098,51 @@ function ShiftCard({
             // amber highlight keeps it noticeable without needing a click.
             const isBigCash = isCash && Number(p.amount) >= BIG_CASH_THRESHOLD
             return (
-              <div key={p.id}>
+              <div
+                key={p.id}
+                ref={(el) => {
+                  if (el) paymentRowRefs.current.set(p.id, el)
+                  else paymentRowRefs.current.delete(p.id)
+                }}
+              >
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className={p.type === 'credit' || p.type === 'employeeCredit' ? 'w-full sm:min-w-0 sm:flex-1' : 'w-full sm:w-64 sm:shrink-0'}>
+                  <div className={p.type === 'credit' || p.type === 'employeeCredit' ? 'w-full sm:w-48 sm:shrink-0' : 'w-full sm:w-64 sm:shrink-0'}>
                     {p.type === 'credit' ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="w-full sm:w-48 sm:shrink-0">
-                          <Select value={p.customerId || ''} onChange={(e) => updatePaymentLine(p.id, 'customerId', e.target.value)} className="text-rose-600">
-                            <option value="">{t.selectCustomer}</option>
-                            {(creditCustomers || []).map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </Select>
-                        </div>
-                        <Input
-                          value={p.note || ''}
-                          onChange={(e) => updatePaymentLine(p.id, 'note', e.target.value)}
-                          placeholder={t.placeholderCreditNote}
-                          title={t.creditNoteHint}
-                          className="min-w-0 flex-1 text-rose-600"
-                        />
-                      </div>
+                      <Select
+                        value={p.customerId || ''}
+                        onChange={(e) => updatePaymentLine(p.id, 'customerId', e.target.value)}
+                        className={
+                          attemptedSubmit && !p.customerId && Number(p.amount) > 0
+                            ? 'border-rose-400 text-rose-600 focus:border-rose-500 focus:ring-rose-100'
+                            : 'text-rose-600'
+                        }
+                        title={attemptedSubmit && !p.customerId && Number(p.amount) > 0 ? tRoot.errorCreditCustomerRequired : undefined}
+                      >
+                        <option value="">{t.selectCustomer}</option>
+                        {(creditCustomers || []).map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </Select>
                     ) : p.type === 'employeeCredit' ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="w-full sm:w-48 sm:shrink-0">
-                          <Select value={p.employeeId || ''} onChange={(e) => updatePaymentLine(p.id, 'employeeId', e.target.value)} className="text-violet-600">
-                            <option value="">{t.selectEmployee}</option>
-                            {(employees || []).map((emp) => (
-                              <option key={emp.id} value={emp.id}>
-                                {emp.name}
-                              </option>
-                            ))}
-                          </Select>
-                        </div>
-                        <Input
-                          value={p.note || ''}
-                          onChange={(e) => updatePaymentLine(p.id, 'note', e.target.value)}
-                          placeholder={t.placeholderEmployeeCreditNote}
-                          title={t.employeeCreditNoteHint}
-                          className="min-w-0 flex-1 text-violet-600"
-                        />
-                      </div>
+                      <Select
+                        value={p.employeeId || ''}
+                        onChange={(e) => updatePaymentLine(p.id, 'employeeId', e.target.value)}
+                        className={
+                          attemptedSubmit && !p.employeeId && Number(p.amount) > 0
+                            ? 'border-rose-400 text-violet-600 focus:border-rose-500 focus:ring-rose-100'
+                            : 'text-violet-600'
+                        }
+                        title={attemptedSubmit && !p.employeeId && Number(p.amount) > 0 ? tRoot.errorCreditEmployeeRequired : undefined}
+                      >
+                        <option value="">{t.selectEmployee}</option>
+                        {(employees || []).map((emp) => (
+                          <option key={emp.id} value={emp.id}>
+                            {emp.name}
+                          </option>
+                        ))}
+                      </Select>
                     ) : p.type === 'expense' ? (
                       <Input
                         value={p.label}
@@ -866,17 +1161,42 @@ function ShiftCard({
                       </Select>
                     )}
                   </div>
-                  <div className={p.type === 'credit' || p.type === 'employeeCredit' ? 'w-full sm:w-60 sm:shrink-0' : 'min-w-0 flex-1'}>
+                  {/* Amount always sits right after the method/customer picker —
+                      same column position on every row type — so a credit line
+                      can never be mistaken for the (separate, optional) reason
+                      field below and left at its default 0. */}
+                  <div className={p.type === 'credit' || p.type === 'employeeCredit' ? 'w-full sm:w-40 sm:shrink-0' : 'min-w-0 flex-1'}>
                     <Input
                       type="number"
                       step="any"
                       value={p.amount}
                       onChange={(e) => updatePaymentLine(p.id, 'amount', e.target.value)}
                       placeholder="0"
-                      title={isBigCash ? t.bigCashHint : undefined}
-                      className={isBigCash ? 'border-amber-400 font-bold text-amber-700' : ''}
+                      title={isBigCash ? t.bigCashHint : t.creditAmountHint}
+                      className={isBigCash ? 'border-amber-400 font-bold text-amber-700' : p.type === 'credit' ? 'border-rose-200 font-semibold text-rose-700' : p.type === 'employeeCredit' ? 'border-violet-200 font-semibold text-violet-700' : ''}
                     />
                   </div>
+                  {p.type === 'credit' ? (
+                    <div className="w-full sm:min-w-0 sm:flex-1">
+                      <Input
+                        value={p.note || ''}
+                        onChange={(e) => updatePaymentLine(p.id, 'note', e.target.value)}
+                        placeholder={t.placeholderCreditNote}
+                        title={t.creditNoteHint}
+                        className="min-w-0 flex-1 text-rose-600"
+                      />
+                    </div>
+                  ) : p.type === 'employeeCredit' ? (
+                    <div className="w-full sm:min-w-0 sm:flex-1">
+                      <Input
+                        value={p.note || ''}
+                        onChange={(e) => updatePaymentLine(p.id, 'note', e.target.value)}
+                        placeholder={t.placeholderEmployeeCreditNote}
+                        title={t.employeeCreditNoteHint}
+                        className="min-w-0 flex-1 text-violet-600"
+                      />
+                    </div>
+                  ) : null}
                   {!isCash ? (
                     <div className="w-24 shrink-0 text-right text-xs" title={t.paymentLitersHint}>
                       <div className="font-semibold text-slate-500">{paymentLiters(p) != null ? `${paymentLiters(p).toFixed(2)} L` : '—'}</div>
@@ -934,7 +1254,24 @@ function ShiftCard({
                       />
                     </label>
                     <div className="col-span-4 flex items-center justify-between border-t border-brand-100 pt-2 sm:col-span-7">
-                      <span className="text-xs font-semibold text-slate-500">{t.denomTotal}</span>
+                      <AppTooltip
+                        title={
+                          <CalcBreakdown
+                            rows={[
+                              ...NOTE_VALUES.filter((note) => Number(p.denominations?.[note]) > 0).map((note) => ({
+                                label: t.denomNote(note),
+                                value: `${Number(p.denominations[note])} × ₹${note} = ${formatCurrency(note * Number(p.denominations[note]))}`,
+                              })),
+                              ...(Number(p.denominations?.coins) > 0 ? [{ label: t.denomCoins, value: formatCurrency(Number(p.denominations.coins)) }] : []),
+                            ]}
+                            formula={`${t.denomTotal} = ${formatCurrency(denominationTotal(p.denominations))}`}
+                          />
+                        }
+                      >
+                        <span className="cursor-help text-xs font-semibold text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">
+                          {t.denomTotal}
+                        </span>
+                      </AppTooltip>
                       <span className="text-sm font-bold text-brand-700">{formatCurrency(denominationTotal(p.denominations))}</span>
                     </div>
                   </div>
@@ -943,60 +1280,167 @@ function ShiftCard({
             )
           })}
         </div>
+
+        <motion.div
+          initial={{ opacity: 0, scale: 0.97 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3, ease: 'easeOut' }}
+          className="mt-3 rounded-lg bg-gradient-to-r from-brand-600 to-brand-800 px-4 py-3 shadow-md shadow-brand-600/30"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <span className="whitespace-nowrap text-sm font-bold uppercase tracking-wide text-brand-100">{t.paymentsTotalLabel}</span>
+            <AnimatePresence mode="popLayout">
+              <motion.span
+                key={formatCurrency(paymentsCollected)}
+                initial={{ opacity: 0, y: -6, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: [1, 1.07, 1] }}
+                transition={{
+                  opacity: { duration: 0.22, ease: 'easeOut' },
+                  y: { duration: 0.22, ease: 'easeOut' },
+                  scale: { duration: 1.4, repeat: Infinity, ease: 'easeInOut' },
+                }}
+                className="inline-block text-lg font-extrabold text-white"
+              >
+                {formatCurrency(paymentsCollected)}
+              </motion.span>
+            </AnimatePresence>
+          </div>
+        </motion.div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <motion.div
+          key={`${shakeKey}`}
+          animate={shiftBillsMissing ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
+          transition={{ duration: 0.45, ease: 'easeInOut' }}
+          className={`rounded-xl border p-3 ${shiftBillsMissing ? 'border-rose-400 bg-rose-50 ring-2 ring-rose-100' : 'border-violet-300 bg-violet-100'}`}
+        >
+          <div className="mb-2 flex items-center gap-1.5">
+            <Paperclip size={14} className={shiftBillsMissing ? 'text-rose-500' : 'text-violet-600'} />
+            <h4 className="text-sm font-bold text-slate-800">
+              {tRoot.billsAndDocuments}
+              {/* Required-asterisk hidden while the bill-upload requirement is disabled — see shiftBillsMissing above. */}
+              {/* <span className="text-rose-500"> *</span> */}
+            </h4>
+          </div>
+          {value.bills?.length > 0 ? (
+            <ul className="mb-2 space-y-1.5">
+              {value.bills.map((bill) => (
+                <li key={bill.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => openBill(bill)}
+                    className="flex min-w-0 items-center gap-1.5 font-medium text-brand-700 hover:underline"
+                  >
+                    <Paperclip size={12} className="shrink-0" />
+                    <span className="truncate">{bill.name}</span>
+                  </button>
+                  <span className="shrink-0 text-slate-400">&middot; {formatDate(bill.date)}</span>
+                  <IconButton onClick={() => removeBill(bill.id)} aria-label={tRoot.removeBill} title={tRoot.removeBill} tone="delete">
+                    <X size={13} />
+                  </IconButton>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mb-2 text-xs text-slate-400">{tRoot.noBillsYet}</p>
+          )}
+          <label
+            className={`flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs font-medium text-slate-500 transition-colors ${
+              uploadingBill ? 'cursor-wait opacity-60' : 'cursor-pointer hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700'
+            }`}
+          >
+            <Upload size={14} />
+            {uploadingBill ? tRoot.uploadingBillPrompt : tRoot.uploadBillPrompt}
+            <input type="file" accept="image/*,.pdf" className="hidden" disabled={uploadingBill} onChange={handleBillFileChange} />
+          </label>
+          {shiftBillsMissing ? <span className="mt-1.5 block text-xs font-medium text-rose-500">{tRoot.errorBillsRequired}</span> : null}
+        </motion.div>
+
+        <div className="rounded-xl border border-amber-300 bg-amber-100 p-3">
+          <div className="mb-2 flex items-center gap-1.5">
+            <StickyNote size={14} className="text-amber-700" />
+            <h4 className="text-sm font-bold text-slate-800">{tRoot.additionalInfo}</h4>
+          </div>
+          <Textarea value={value.notes} onChange={(e) => onChange({ ...value, notes: e.target.value })} placeholder={tRoot.additionalInfoPlaceholder} rows={2} className="text-xs" />
+        </div>
       </div>
 
       <motion.div
-        key={`${shakeKey}`}
-        animate={shiftBillsMissing ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
-        transition={{ duration: 0.45, ease: 'easeInOut' }}
-        className={`mt-4 rounded-xl border p-4 ${shiftBillsMissing ? 'border-rose-400 bg-rose-50 ring-2 ring-rose-100' : 'border-violet-300 bg-violet-100'}`}
+        animate={shiftTotals.excessShortage < 0 ? { backgroundColor: ['#fef2f2', '#fee2e2', '#fef2f2'] } : { backgroundColor: '#f8fafc' }}
+        transition={shiftTotals.excessShortage < 0 ? { duration: 1.6, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
+        className={`mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border-t border-slate-100 px-4 py-3.5 text-sm ${shiftTotals.excessShortage < 0 ? 'ring-1 ring-rose-200' : ''}`}
       >
-        <div className="mb-3.5 flex items-center gap-2">
-          <Paperclip size={17} className={shiftBillsMissing ? 'text-rose-500' : 'text-violet-600'} />
-          <h4 className="text-base font-bold text-slate-800">
-            {tRoot.billsAndDocuments}
-            <span className="text-rose-500"> *</span>
-          </h4>
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="shrink-0 rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold text-slate-500 ring-1 ring-slate-200">
+            {t.shiftLabel(value.shiftNumber)} {t.shiftTotalSuffix}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <AppTooltip title={<CalcBreakdown rows={shiftTotalBreakdownRows} formula={shiftTotalFormula} />}>
+              <span className="cursor-help text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">{t.saleAmount}</span>
+            </AppTooltip>
+            <AnimatedFigure value={shiftTotals.totalSaleAmount} className="font-semibold text-slate-800" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <AppTooltip
+              title={
+                <CalcBreakdown
+                  rows={
+                    (value.payments || []).length
+                      ? value.payments.map((p) => ({ label: p.label || '—', value: formatCurrency(Number(p.amount) || 0) }))
+                      : [{ label: t.noPaymentLinesYet, value: formatCurrency(0) }]
+                  }
+                  formula={`${(value.payments || []).length} ${t.paymentLinesSuffix} = ${t.paymentsCollected} (${formatCurrency(paymentsCollected)})`}
+                />
+              }
+            >
+              <span className="cursor-help text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">{t.paymentsCollected}</span>
+            </AppTooltip>
+            <AnimatedFigure value={shiftTotals.totalPayments} className="font-semibold text-slate-800" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <AppTooltip
+              title={
+                <CalcBreakdown
+                  rows={[
+                    { label: t.paymentsCollected, value: formatCurrency(shiftTotals.totalPayments) },
+                    { label: t.saleAmount, value: formatCurrency(shiftTotals.totalSaleAmount) },
+                  ]}
+                  formula={`${t.paymentsCollected} (${formatCurrency(shiftTotals.totalPayments)}) − ${t.saleAmount} (${formatCurrency(shiftTotals.totalSaleAmount)}) = ${
+                    shiftTotals.excessShortage >= 0 ? t.excess : t.shortage
+                  } (${formatCurrency(shiftTotals.excessShortage)})`}
+                />
+              }
+            >
+              <span
+                className={`flex cursor-help items-center gap-1 font-semibold underline decoration-dotted underline-offset-4 ${
+                  shiftTotals.excessShortage >= 0 ? 'text-emerald-600 decoration-emerald-300' : 'text-rose-500 decoration-rose-300'
+                }`}
+              >
+                {shiftTotals.excessShortage >= 0 ? (
+                  <TrendingUp size={13} />
+                ) : (
+                  <motion.span animate={{ scale: [1, 1.25, 1] }} transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }}>
+                    <AlertTriangle size={13} />
+                  </motion.span>
+                )}
+                {shiftTotals.excessShortage >= 0 ? t.excess : t.shortage}
+              </span>
+            </AppTooltip>
+            <AnimatedFigure
+              value={shiftTotals.excessShortage}
+              signed
+              pulse={shiftTotals.excessShortage < 0}
+              className={`font-bold ${shiftTotals.excessShortage >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}
+            />
+          </div>
         </div>
-        {value.bills?.length > 0 ? (
-          <ul className="mb-3.5 space-y-2">
-            {value.bills.map((bill) => (
-              <li key={bill.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3.5 py-2.5 text-sm">
-                <a href={resolveFileUrl(bill.url)} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1.5 font-medium text-brand-700 hover:underline">
-                  <Paperclip size={13} className="shrink-0" />
-                  <span className="truncate">{bill.name}</span>
-                </a>
-                <span className="shrink-0 text-slate-400">&middot; {formatDate(bill.date)}</span>
-                <IconButton onClick={() => removeBill(bill.id)} aria-label={tRoot.removeBill} title={tRoot.removeBill} tone="delete">
-                  <X size={15} />
-                </IconButton>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mb-3.5 text-sm text-slate-400">{tRoot.noBillsYet}</p>
-        )}
-        <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-4 py-3.5 text-sm font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700">
-          <Upload size={16} />
-          {tRoot.uploadBillPrompt}
-          <input type="file" accept="image/*,.pdf" className="hidden" onChange={handleBillFileChange} />
-        </label>
-        {shiftBillsMissing ? <span className="mt-2 block text-sm font-medium text-rose-500">{tRoot.errorBillsRequired}</span> : null}
+        <div className="flex items-center gap-2">
+          <PrimaryButton type="button" onClick={handleSaveFinalClick} disabled={savingFinal}>
+            <Save size={15} /> {savingFinal ? tRoot.savingChanges : value.id ? tRoot.saveChanges : tRoot.saveEntry}
+          </PrimaryButton>
+        </div>
       </motion.div>
-
-      <div className="mt-4 rounded-xl border border-amber-300 bg-amber-100 p-4">
-        <div className="mb-3.5 flex items-center gap-2">
-          <StickyNote size={17} className="text-amber-700" />
-          <h4 className="text-base font-bold text-slate-800">{tRoot.additionalInfo}</h4>
-        </div>
-        <Textarea value={value.notes} onChange={(e) => onChange({ ...value, notes: e.target.value })} placeholder={tRoot.additionalInfoPlaceholder} rows={3} />
-      </div>
-
-      <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
-        <PrimaryButton type="button" onClick={handleSaveFinalClick}>
-          <Save size={15} /> {value.id ? tRoot.saveChanges : tRoot.saveEntry}
-        </PrimaryButton>
-      </div>
     </div>
   )
 }
@@ -1006,29 +1450,69 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
   const tRoot = FUEL_ENTRY_TEXT[language]
   const t = tRoot.pumpEditor
   const theme = TINTS[tint] || { bg: 'bg-white', border: 'border-slate-200' }
-  const { fuelEntries, addFuelEntry, updateFuelEntry, deleteFuelEntry } = useData()
+  const { fuelEntries, fuelEntriesLoading, addFuelEntry, updateFuelEntry, deleteFuelEntry } = useData()
 
   const priorEntries = useMemo(
     () => sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date < date)),
     [fuelEntries, pumpKey, date],
   )
 
-  const [cards, setCards] = useState(() => {
-    const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
-    if (existing.length > 0) return existing.map((e) => ({ ...e }))
-    const last = priorEntries[priorEntries.length - 1]
-    const blank = emptyShiftEntry(pumpKey, date, 1, fuelRates)
-    if (last) {
-      for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
-        blank[fuelKey] = {
-          nozzle1: { ...blank[fuelKey].nozzle1, opening: last[fuelKey]?.nozzle1?.closing ?? '' },
-          nozzle2: { ...blank[fuelKey].nozzle2, opening: last[fuelKey]?.nozzle2?.closing ?? '' },
+  // A brand new Shift 1 pre-fills its opening reading from the pump's last
+  // saved shift (whichever earlier day that was) — Shift 2+ never needs this
+  // since withCarriedOpenings always derives their opening live from the
+  // card right before them in the same array. Shared by the initial state
+  // below and by "Discard Draft" rebuilding a card from scratch.
+  function blankShiftEntry(shiftNumber) {
+    const blank = emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)
+    if (shiftNumber === 1) {
+      const last = priorEntries[priorEntries.length - 1]
+      if (last) {
+        for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
+          blank[fuelKey] = {
+            nozzle1: { ...blank[fuelKey].nozzle1, opening: last[fuelKey]?.nozzle1?.closing ?? '' },
+            nozzle2: { ...blank[fuelKey].nozzle2, opening: last[fuelKey]?.nozzle2?.closing ?? '' },
+          }
         }
       }
     }
-    return [blank]
+    return blank
+  }
+
+  const [cards, setCards] = useState(() => {
+    const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
+    if (existing.length > 0) return existing.map((e) => ({ ...e }))
+    return [blankShiftEntry(1)]
   })
+
+  // fuelEntries now loads from the API asynchronously (previously it was
+  // synchronous, from localStorage) — a hard refresh landing directly on
+  // this pump/date can mount before that fetch resolves, so `cards`' lazy
+  // initializer above may have seeded a blank card even though a real
+  // draft/final entry for this shift already exists. Once loading finishes,
+  // re-check for that entry and swap it in — but only once, and only if
+  // nothing's been typed yet (never clobber an edit in progress), so this
+  // never fights a manager who's already typing by the time the fetch
+  // lands. A day that's genuinely still blank is left alone: swapping in an
+  // equivalent-but-new blank object would look like a "value changed" to
+  // ShiftCard's autosave effect and fire a phantom save of nothing.
+  const hasUserEditedRef = useRef(false)
+  const resyncedAfterLoadRef = useRef(false)
+  useEffect(() => {
+    if (fuelEntriesLoading || resyncedAfterLoadRef.current || hasUserEditedRef.current) return
+    resyncedAfterLoadRef.current = true
+    const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
+    if (existing.length === 0) return
+    setCards(existing.map((e) => ({ ...e })))
+    setActiveShiftIndex(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fuelEntriesLoading])
+
   const [confirmRemoveIndex, setConfirmRemoveIndex] = useState(null)
+  // Separate from confirmRemoveIndex above: removing a shift (via the 2nd/
+  // 3rd shift toggle) drops the tab entirely; discarding a draft keeps the
+  // tab but wipes it back to a blank entry — Shift 1 can't be toggled off,
+  // so this is the only way to reset it if a draft was typed by mistake.
+  const [confirmDiscardIndex, setConfirmDiscardIndex] = useState(null)
   // Only one shift's full form (readings, payments, bills...) shows at a
   // time — a "Shift 1 / Shift 2 / Shift 3" tab strip switches between them,
   // instead of stacking every shift's whole form one below the other.
@@ -1039,13 +1523,14 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
   // opening is never independently stored — it's always the live closing of
   // the card right before it, so a handover reading is entered exactly once.
   const effectiveCards = useMemo(() => withCarriedOpenings(cards), [cards])
-  const pumpTotals = useMemo(() => aggregateEntries(effectiveCards), [effectiveCards])
 
   function updateCard(index, patch) {
+    hasUserEditedRef.current = true
     setCards((prev) => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)))
   }
 
   function addShift(shiftNumber) {
+    hasUserEditedRef.current = true
     setCards((prev) => [...prev, emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)])
     setActiveShiftIndex(shiftNumber - 1)
   }
@@ -1054,6 +1539,7 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
     if (cards[index].id) {
       setConfirmRemoveIndex(index)
     } else {
+      hasUserEditedRef.current = true
       setCards((prev) => prev.filter((_, i) => i !== index))
       setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
     }
@@ -1069,12 +1555,38 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         await deleteFuelEntry(card.id)
         toast.success(tRoot.toastDeleted)
       } catch (err) {
-        toast.error(err.message || tRoot.toastDeleteFailed)
+        toast.error(err.message || tRoot.toastSaveFailed)
         return
       }
     }
     setCards((prev) => prev.filter((_, i) => i !== index))
     setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
+  }
+
+  // Draft-only by design: a shift that's already final can't reach this
+  // (the button only shows while value.status === 'draft'), so there's no
+  // risk of accidentally erasing a real, saved sale — only ever an
+  // unfinished draft, whether autosaved (has an id → also deleted from
+  // fuelEntries) or never even saved yet (no id → just clears the form).
+  function requestDiscardDraft(index) {
+    setConfirmDiscardIndex(index)
+  }
+
+  async function confirmDiscardDraft() {
+    const index = confirmDiscardIndex
+    setConfirmDiscardIndex(null)
+    if (index == null) return
+    const card = cards[index]
+    if (card.id) {
+      try {
+        await deleteFuelEntry(card.id)
+      } catch (err) {
+        toast.error(err.message || tRoot.toastSaveFailed)
+        return
+      }
+    }
+    updateCard(index, blankShiftEntry(card.shiftNumber))
+    toast.success(tRoot.toastDraftDiscarded)
   }
 
   function buildPayload(index) {
@@ -1083,26 +1595,69 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
     return rest
   }
 
-  // Called by ShiftCard's own debounced autosave — silent on success (no
-  // toast), since it can fire many times a minute while someone is typing;
-  // the card's own "Draft"/"Not saved yet" badge is the persistent signal
-  // that progress is safe. A failure DOES surface — see ShiftCard's autosave
-  // effect, which awaits this and toasts on a rejected promise.
+  // Whether an as-yet-unsaved card (no id) has a create already in flight —
+  // guards against a second autosave firing (e.g. the manager resumes
+  // typing, then pauses again) before the first create's response comes
+  // back, which would otherwise POST a second draft row for the same shift.
+  // The dropped attempt isn't lost: its edits already live in `cards` (the
+  // form's own source of truth), so the very next autosave picks them up —
+  // or, if the create was mid-flight when it fired, `pending` here retriggers
+  // one immediately once that create resolves.
+  const draftCreateStateRef = useRef({})
+
+  // Called by ShiftCard's own debounced autosave — NOT awaited there by
+  // design (fire-and-forget), so being `async`/awaiting the network call in
+  // here never blocks typing. Silent on success (no toast), since this can
+  // fire many times a minute while someone is typing — the card's own
+  // "Draft"/"Saving..." badge is the persistent signal that progress is
+  // safe. Only a real failure surfaces a toast.
+  //
+  // Only call updateCard when something in local `cards` state actually
+  // needs to change (a fresh id, or status not yet marked 'draft'). Calling
+  // it unconditionally would replace the card object every time even when
+  // it's already an unchanged draft — that new reference flows back into
+  // ShiftCard's `value` prop, which its own autosave effect sees as "value
+  // changed", scheduling another autosave, which calls back in here again:
+  // an infinite loop that never lets the "Saving..." indicator settle.
   async function handleSaveDraft(index) {
     const payload = { ...buildPayload(index), status: 'draft' }
     const card = cards[index]
     if (card.id) {
-      await updateFuelEntry(card.id, payload)
-    } else {
-      const id = await addFuelEntry(payload)
-      updateCard(index, { id })
+      if (card.status !== 'draft') updateCard(index, { status: 'draft' })
+      try {
+        await updateFuelEntry(card.id, payload)
+      } catch (err) {
+        toast.error(err.message || tRoot.toastSaveFailed)
+      }
+      return
     }
-    updateCard(index, { status: 'draft' })
+    const state = draftCreateStateRef.current
+    if (state[index] === 'saving') {
+      state[index] = 'pending'
+      return
+    }
+    state[index] = 'saving'
+    try {
+      const id = await addFuelEntry(payload)
+      updateCard(index, { id, status: 'draft' })
+    } catch (err) {
+      toast.error(err.message || tRoot.toastSaveFailed)
+    } finally {
+      const shouldRetry = state[index] === 'pending'
+      state[index] = 'idle'
+      if (shouldRetry) handleSaveDraft(index)
+    }
   }
+
+  // Final save happens once per shift (not per keystroke), so a normal
+  // awaited call — with a "Saving..." state on the button itself, never a
+  // page-blocking spinner — is expected and fine here.
+  const [savingFinalIndex, setSavingFinalIndex] = useState(null)
 
   async function handleSaveFinal(index) {
     const payload = { ...buildPayload(index), status: 'final' }
     const card = cards[index]
+    setSavingFinalIndex(index)
     try {
       if (card.id) {
         await updateFuelEntry(card.id, payload)
@@ -1115,6 +1670,8 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
       updateCard(index, { status: 'final' })
     } catch (err) {
       toast.error(err.message || tRoot.toastSaveFailed)
+    } finally {
+      setSavingFinalIndex(null)
     }
   }
 
@@ -1126,10 +1683,34 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
       className={`rounded-xl border p-5 shadow-card ${theme.bg} ${theme.border}`}
     >
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span className={`h-3 w-3 rounded-full ${accent}`} />
           <Fuel size={19} className={accent.replace('bg-', 'text-')} />
           <h4 className="text-base font-bold text-slate-800">{label}</h4>
+          {cards.length > 1 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {cards.map((card, index) => {
+                const cardStatus = effectiveCards[index]?.status
+                return (
+                  <button
+                    key={card.id || card.localOnlyId}
+                    type="button"
+                    onClick={() => setActiveShiftIndex(index)}
+                    className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+                      index === activeShiftIndex ? 'bg-brand-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                    }`}
+                  >
+                    {t.shiftLabel(index + 1)}
+                    {!card.id ? (
+                      <span className={`h-1.5 w-1.5 rounded-full ${index === activeShiftIndex ? 'bg-white/70' : 'bg-slate-400'}`} />
+                    ) : cardStatus === 'draft' ? (
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                    ) : null}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <ToggleSwitch
@@ -1150,31 +1731,6 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         </div>
       </div>
 
-      {cards.length > 1 ? (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          {cards.map((card, index) => {
-            const cardStatus = effectiveCards[index]?.status
-            return (
-              <button
-                key={card.id || card.localOnlyId}
-                type="button"
-                onClick={() => setActiveShiftIndex(index)}
-                className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors ${
-                  index === activeShiftIndex ? 'bg-brand-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                }`}
-              >
-                {t.shiftLabel(index + 1)}
-                {!card.id ? (
-                  <span className={`h-1.5 w-1.5 rounded-full ${index === activeShiftIndex ? 'bg-white/70' : 'bg-slate-400'}`} />
-                ) : cardStatus === 'draft' ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                ) : null}
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-
       <div className="space-y-4">
         {cards.map((card, index) => (
           <div key={card.id || card.localOnlyId} className={index === activeShiftIndex ? '' : 'hidden'}>
@@ -1190,43 +1746,12 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
               lubricants={lubricants}
               onSaveDraft={() => handleSaveDraft(index)}
               onSaveFinal={() => handleSaveFinal(index)}
+              savingFinal={savingFinalIndex === index}
+              onDiscardDraft={() => requestDiscardDraft(index)}
             />
           </div>
         ))}
       </div>
-
-      <motion.div
-        animate={pumpTotals.excessShortage < 0 ? { backgroundColor: ['#fef2f2', '#fee2e2', '#fef2f2'] } : { backgroundColor: '#f8fafc' }}
-        transition={pumpTotals.excessShortage < 0 ? { duration: 1.6, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
-        className={`mt-5 space-y-1.5 rounded-lg px-4 py-3.5 text-sm ${pumpTotals.excessShortage < 0 ? 'ring-1 ring-rose-200' : ''}`}
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-slate-500">{t.saleAmount}</span>
-          <AnimatedFigure value={pumpTotals.totalSaleAmount} className="font-semibold text-slate-800" />
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-slate-500">{t.paymentsCollected}</span>
-          <AnimatedFigure value={pumpTotals.totalPayments} className="font-semibold text-slate-800" />
-        </div>
-        <div className="flex items-center justify-between border-t border-slate-200 pt-1.5">
-          <span className={`flex items-center gap-1 font-semibold ${pumpTotals.excessShortage >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
-            {pumpTotals.excessShortage >= 0 ? (
-              <TrendingUp size={13} />
-            ) : (
-              <motion.span animate={{ scale: [1, 1.25, 1] }} transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }}>
-                <AlertTriangle size={13} />
-              </motion.span>
-            )}
-            {pumpTotals.excessShortage >= 0 ? t.excess : t.shortage}
-          </span>
-          <AnimatedFigure
-            value={pumpTotals.excessShortage}
-            signed
-            pulse={pumpTotals.excessShortage < 0}
-            className={`font-bold ${pumpTotals.excessShortage >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}
-          />
-        </div>
-      </motion.div>
 
       <ConfirmDialog
         isOpen={confirmRemoveIndex != null}
@@ -1234,6 +1759,15 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         onConfirm={confirmRemove}
         title={tRoot.deleteTitle}
         description={tRoot.deleteDesc}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmDiscardIndex != null}
+        onClose={() => setConfirmDiscardIndex(null)}
+        onConfirm={confirmDiscardDraft}
+        title={tRoot.discardDraftTitle}
+        description={tRoot.discardDraftDesc}
+        confirmLabel={tRoot.discardDraftButton}
       />
     </motion.div>
   )

@@ -60,20 +60,49 @@ export function sortPumpEntries(entries) {
 // by the immediately preceding entry's closing (per fuel + nozzle) — the
 // first entry in the list keeps whatever opening it already has (typed in,
 // or carried from an even earlier day via withCarriedOpenings' caller).
+// Only fills in a nozzle's opening when nothing's been entered for it yet —
+// once the manager types their own value (correcting a meter reset, a
+// misread handover, etc.), it sticks instead of being silently overwritten
+// on the next render. So this still auto-fills a brand new shift 2/3 card
+// (emptyReading() starts opening at '') without ever fighting a manual edit.
+//
+// Returns the SAME entry object (and, one level down, the SAME fuelKey
+// object) whenever nothing about it actually needed to change — never a new
+// object with identical values. Every card on the SAME pump/day is
+// recomputed together on every render (see PumpDayEditor's `effectiveCards`
+// useMemo), so editing shift 1 used to hand shift 2/3 brand-new object
+// identities purely from being re-mapped over, even though their own values
+// were untouched. ShiftCard's autosave effect below only checks `value !==
+// lastSeenValue.current` (cheap reference equality, not a deep diff), so
+// that false "changed" signal used to autosave a still-blank shift 2/3 the
+// moment shift 1 was edited — creating it as a real draft (with a backend
+// id) and making its Discard button light up despite no reading ever having
+// been entered on that shift.
 export function withCarriedOpenings(sortedEntries) {
   return sortedEntries.map((entry, i) => {
     const prev = sortedEntries[i - 1]
     if (!prev) return entry
     const fuelKeys = FUEL_KEYS_BY_PUMP[entry.pumpKey]
+    let entryChanged = false
     const next = { ...entry }
     for (const fuelKey of fuelKeys) {
+      let nozzlesChanged = false
       const nozzles = { ...next[fuelKey] }
       for (const nozzleKey of NOZZLE_KEYS) {
-        nozzles[nozzleKey] = { ...nozzles[nozzleKey], opening: prev[fuelKey]?.[nozzleKey]?.closing ?? '' }
+        const current = nozzles[nozzleKey]
+        const isBlank = current?.opening === '' || current?.opening == null
+        if (!isBlank) continue
+        const carried = prev[fuelKey]?.[nozzleKey]?.closing ?? ''
+        if (carried === current.opening) continue
+        nozzles[nozzleKey] = { ...current, opening: carried }
+        nozzlesChanged = true
       }
-      next[fuelKey] = nozzles
+      if (nozzlesChanged) {
+        next[fuelKey] = nozzles
+        entryChanged = true
+      }
     }
-    return next
+    return entryChanged ? next : entry
   })
 }
 
@@ -93,6 +122,13 @@ export function pocketOilAmount(entry) {
   return (entry?.oilRows || []).reduce((sum, row) => sum + (Number(row.stockCount) || 0) * (Number(row.stockRate) || 0), 0)
 }
 
+// Piece count sold (independent of price/offer) — the basis for a per-unit
+// commission, since these move by the sachet/can rather than through a
+// nozzle meter with a litre reading.
+export function pocketOilQty(entry) {
+  return (entry?.oilRows || []).reduce((sum, row) => sum + (Number(row.stockCount) || 0), 0)
+}
+
 // 2T cane oil (Pump 2 only) — sold by the can/tin, one or more rows (each
 // its own product/count/rate) on this shift entry, summed and then reduced
 // once by a single flat offer/discount for the whole group — never below zero.
@@ -102,6 +138,11 @@ export function caneOilRawAmount(entry) {
 
 export function caneOilAmount(entry) {
   return Math.max(0, caneOilRawAmount(entry) - (Number(entry?.caneOilOffer) || 0))
+}
+
+// Piece count sold, same basis as pocketOilQty above.
+export function caneOilQty(entry) {
+  return (entry?.caneOilRows || []).reduce((sum, row) => sum + (Number(row.stockCount) || 0), 0)
 }
 
 export function shiftSaleAmount(entry) {
@@ -138,6 +179,8 @@ export function aggregateEntries(entries) {
   const oilAmount = sumFuel(entryFuelAmount, 'oil')
   const pocketOilTotal = list.reduce((sum, e) => sum + pocketOilAmount(e), 0)
   const caneOilTotal = list.reduce((sum, e) => sum + caneOilAmount(e), 0)
+  const pocketOilQtyTotal = list.reduce((sum, e) => sum + pocketOilQty(e), 0)
+  const caneOilQtyTotal = list.reduce((sum, e) => sum + caneOilQty(e), 0)
   const totalSaleAmount = petrolAmount + dieselAmount + oilAmount + pocketOilTotal + caneOilTotal
   const totalPayments = list.reduce((sum, e) => sum + shiftPaymentsTotal(e), 0)
   const excessShortage = totalPayments - totalSaleAmount
@@ -151,6 +194,8 @@ export function aggregateEntries(entries) {
     oilAmount,
     pocketOilTotal,
     caneOilTotal,
+    pocketOilQtyTotal,
+    caneOilQtyTotal,
     totalSaleAmount,
     totalPayments,
     excessShortage,

@@ -7,6 +7,7 @@ import { DatePicker } from '@mui/x-date-pickers/DatePicker'
 // matches our Tailwind inputs.
 export default function AppDatePicker({ value, onChange, maxDate, minDate, className = '', disabled, variant = 'default' }) {
   const isInline = variant === 'inline'
+  const isCompact = variant === 'compact'
 
   return (
     <DatePicker
@@ -45,21 +46,40 @@ export default function AppDatePicker({ value, onChange, maxDate, minDate, class
                 '& .MuiIconButton-root': { padding: '2px' },
                 '& .MuiSvgIcon-root': { fontSize: '16px' },
               }
-            : {
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: '10px',
-                  fontSize: '0.875rem',
-                  fontFamily: 'inherit',
-                  backgroundColor: '#fbe8d9 !important',
-                  '& fieldset': { borderColor: '#e2e8f0' },
-                  '&:hover fieldset': { borderColor: '#c46f36' },
-                  '&.Mui-focused fieldset': { borderColor: '#c46f36', borderWidth: '1.5px' },
+            : isCompact
+              ? {
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: '7px',
+                    fontSize: '0.75rem',
+                    fontFamily: 'inherit',
+                    backgroundColor: '#fbe8d9 !important',
+                    '& fieldset': { borderColor: '#e2e8f0' },
+                    '&:hover fieldset': { borderColor: '#c46f36' },
+                    '&.Mui-focused fieldset': { borderColor: '#c46f36', borderWidth: '1.5px' },
+                  },
+                  '& .MuiInputBase-input': {
+                    padding: '3px 6px',
+                    backgroundColor: 'transparent',
+                  },
+                  '& .MuiInputAdornment-root': { marginLeft: '0' },
+                  '& .MuiIconButton-root': { padding: '2px' },
+                  '& .MuiSvgIcon-root': { fontSize: '13px' },
+                }
+              : {
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: '10px',
+                    fontSize: '0.875rem',
+                    fontFamily: 'inherit',
+                    backgroundColor: '#fbe8d9 !important',
+                    '& fieldset': { borderColor: '#e2e8f0' },
+                    '&:hover fieldset': { borderColor: '#c46f36' },
+                    '&.Mui-focused fieldset': { borderColor: '#c46f36', borderWidth: '1.5px' },
+                  },
+                  '& .MuiInputBase-input': {
+                    padding: '8px 12px',
+                    backgroundColor: 'transparent',
+                  },
                 },
-                '& .MuiInputBase-input': {
-                  padding: '8px 12px',
-                  backgroundColor: 'transparent',
-                },
-              },
         },
         popper: {
           placement: 'bottom-start',

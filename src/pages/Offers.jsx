@@ -1,18 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History } from 'lucide-react'
+import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, MessageSquareText, UserMinus } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { OFFERS_TEXT } from '../i18n/offers.js'
-import { formatDate, todayISO } from '../utils/format.js'
+import { formatDate } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import useSimulatedLoading from '../hooks/useSimulatedLoading.js'
-import { Field, Input, Textarea, PrimaryButton, SecondaryButton } from '../components/FormControls.jsx'
-import { CallIcon, WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
+import { Field, Input, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 
 const customerEmptyForm = { name: '', phone: '' }
@@ -44,24 +43,34 @@ function buildTemplates(station) {
   ]
 }
 
+const STATUS_STYLES = {
+  sent: 'bg-emerald-50 text-emerald-600',
+  failed: 'bg-rose-50 text-rose-600',
+  blocked: 'bg-slate-100 text-slate-500',
+  pending: 'bg-amber-50 text-amber-600',
+}
+
 export default function Offers() {
-  const { creditCustomers, addCustomer, station, sentLog, recordOfferSend } = useData()
+  const {
+    offerCustomers,
+    offerCustomersLoading,
+    addOfferCustomer,
+    deactivateOfferCustomer,
+    offerHistory,
+    offerHistoryLoading,
+    sendOffer,
+    station,
+  } = useData()
   const { language } = useLanguage()
   const t = OFFERS_TEXT[language]
-  const loading = useSimulatedLoading(600)
+
+  const activeCustomers = useMemo(() => offerCustomers.filter((c) => c.active), [offerCustomers])
 
   const [selectedCustomers, setSelectedCustomers] = useState([])
   const [message, setMessage] = useState('')
-  // PrimeReact's DataTable freezes each row's body-render closures at first
-  // mount (it doesn't re-invoke col.body with a fresh reference on every
-  // parent re-render), so sendToSingle/sendToWhatsApp — only reachable via
-  // those closures — would otherwise always see message as it was when the
-  // table first rendered. A ref sidesteps that: unlike the closures, its
-  // identity is stable, so .current always holds the latest typed message.
-  const messageRef = useRef(message)
-  useEffect(() => {
-    messageRef.current = message
-  }, [message])
+  const [templateUsed, setTemplateUsed] = useState(null)
+  const [channel, setChannel] = useState(null)
+  const [sending, setSending] = useState(false)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(customerEmptyForm)
@@ -84,58 +93,54 @@ export default function Offers() {
     return Object.keys(e).length === 0
   }
 
-  function handleAddCustomer(e) {
+  async function handleAddCustomer(e) {
     e.preventDefault()
     if (!validate()) return
-    addCustomer({ name: form.name, phone: form.phone, openingBalance: 0, notes: '', ledger: [] })
+    await addOfferCustomer({ name: form.name, phone: form.phone })
     toast.success(t.toastCustomerAdded)
     setModalOpen(false)
   }
 
+  async function handleDeactivate(customer) {
+    await deactivateOfferCustomer(customer.id)
+    setSelectedCustomers((prev) => prev.filter((c) => c.id !== customer.id))
+    toast.success(t.toastCustomerRemoved(customer.name))
+  }
+
   function selectAll() {
-    setSelectedCustomers(creditCustomers)
+    setSelectedCustomers(activeCustomers)
   }
 
   function clearSelection() {
     setSelectedCustomers([])
   }
 
-  function sendToSingle(customer) {
-    const currentMessage = messageRef.current
-    if (!currentMessage.trim()) {
-      toast.error(t.errorNoMessage)
-      return
-    }
-    toast.success(t.toastSentToOne(customer.name))
-    recordOfferSend({ id: `${Date.now()}-${customer.id}`, recipients: [customer.name], message: currentMessage, sentAt: todayISO() })
-  }
-
-  function sendToWhatsApp(customer) {
-    const currentMessage = messageRef.current
-    if (!currentMessage.trim()) {
-      toast.error(t.errorNoMessage)
-      return
-    }
-    openWhatsAppChat(customer.phone, currentMessage)
-    toast.success(t.toastSentToOne(customer.name))
-    recordOfferSend({ id: `${Date.now()}-${customer.id}`, recipients: [customer.name], message: currentMessage, sentAt: todayISO() })
-  }
-
-  function handleSendOffer() {
+  async function handleSendOffer() {
     if (!message.trim()) {
       toast.error(t.errorNoMessage)
       return
     }
-    if (selectedCustomers.length === 0) {
-      toast.error(t.errorNoRecipients)
-      return
+    if (selectedCustomers.length === 0 || !channel) return
+
+    setSending(true)
+    try {
+      const send = await sendOffer({
+        customerIds: selectedCustomers.map((c) => c.id),
+        message,
+        channel,
+        templateUsed,
+      })
+      const counts = send.statusCounts
+      const parts = Object.entries(counts)
+        .filter(([, n]) => n > 0)
+        .map(([status, n]) => t.statusCount(n, status))
+      toast.success(parts.length ? t.toastSentWithCounts(parts.join(', ')) : t.toastSentToMany(selectedCustomers.length))
+      setSelectedCustomers([])
+    } catch (err) {
+      toast.error(err.message || t.errorSendFailed)
+    } finally {
+      setSending(false)
     }
-    toast.success(
-      selectedCustomers.length === 1
-        ? t.toastSentToOne(selectedCustomers[0].name)
-        : t.toastSentToMany(selectedCustomers.length),
-    )
-    recordOfferSend({ id: `${Date.now()}`, recipients: selectedCustomers.map((c) => c.name), message, sentAt: todayISO() })
   }
 
   const columns = [
@@ -149,50 +154,31 @@ export default function Offers() {
         <>
           <p className="font-medium text-slate-800">{c.name}</p>
           <p className="flex items-center gap-1 text-xs font-medium text-slate-400">
-            <Phone size={11} /> {c.phone}
+            <Phone size={11} /> {c.phone || '—'}
           </p>
         </>
       ),
     },
     {
-      header: t.colQuickSend,
+      header: t.colActions,
       align: 'right',
-      style: { width: '26%' },
+      exportable: false,
+      style: { width: '12%' },
       body: (c) => (
-        <div className="flex items-center justify-end gap-1.5">
-          <AppTooltip title={t.tooltipPhone}>
-            <motion.button
-              type="button"
-              onClick={() => sendToSingle(c)}
-              aria-label={t.sendToThisCustomer}
-              whileHover={{ scale: 1.15 }}
-              whileTap={{ scale: 0.9 }}
-              className="inline-flex items-center justify-center rounded-lg p-1"
-            >
-              <CallIcon size={26} />
-            </motion.button>
-          </AppTooltip>
-          <AppTooltip title={t.tooltipWhatsApp}>
-            <motion.button
-              type="button"
-              onClick={() => sendToWhatsApp(c)}
-              aria-label={t.sendViaWhatsApp}
-              whileHover={{ scale: 1.15, rotate: [0, -8, 8, -4, 0] }}
-              whileTap={{ scale: 0.9 }}
-              transition={{ duration: 0.4 }}
-              className="inline-flex items-center justify-center rounded-lg p-1"
-            >
-              <WhatsAppIcon size={26} />
-            </motion.button>
-          </AppTooltip>
+        <div className="flex justify-end">
+          <IconButton onClick={() => handleDeactivate(c)} aria-label={t.removeCustomer} title={t.removeCustomer} tone="delete">
+            <UserMinus size={15} />
+          </IconButton>
         </div>
       ),
     },
   ]
 
-  if (loading) {
+  if (offerCustomersLoading) {
     return <SkeletonTable rows={6} cols={3} />
   }
+
+  const sendDisabled = sending || selectedCustomers.length === 0 || !channel
 
   return (
     <div className="space-y-6">
@@ -223,7 +209,7 @@ export default function Offers() {
             </div>
           </div>
 
-          {creditCustomers.length === 0 ? (
+          {activeCustomers.length === 0 ? (
             <div className="p-5">
               <EmptyState
                 icon={Users}
@@ -239,7 +225,7 @@ export default function Offers() {
           ) : (
             <DataTable
               columns={columns}
-              data={creditCustomers}
+              data={activeCustomers}
               rowKey="id"
               globalFilterFields={['name', 'phone']}
               searchPlaceholder={t.searchPlaceholder}
@@ -257,11 +243,6 @@ export default function Offers() {
               }
             />
           )}
-          {/* <p className="border-t border-slate-100 px-5 py-2.5 text-xs text-slate-500">
-            {selectedCustomers.length === 0
-              ? 'No customers selected — tick rows above, or use "Select All".'
-              : `${selectedCustomers.length} of ${creditCustomers.length} customer(s) selected.`}
-          </p> */}
         </motion.div>
 
         <motion.div
@@ -278,7 +259,10 @@ export default function Offers() {
             {templates.map((tpl) => (
               <button
                 key={tpl.id}
-                onClick={() => setMessage(tpl.text)}
+                onClick={() => {
+                  setMessage(tpl.text)
+                  setTemplateUsed(tpl.id)
+                }}
                 className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-100"
               >
                 {tpl.label}
@@ -290,41 +274,85 @@ export default function Offers() {
             <Textarea
               rows={9}
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => {
+                setMessage(e.target.value)
+                setTemplateUsed(null)
+              }}
               placeholder={t.placeholderMessage}
               className="font-sans"
             />
           </Field>
 
-          <PrimaryButton onClick={handleSendOffer} className="mt-4 w-full">
-            <Send size={16} /> {t.sendOfferTo(selectedCustomers.length || 0)}
-          </PrimaryButton>
+          <div className="mt-4">
+            <p className="mb-2 text-xs font-semibold text-slate-600">{t.fieldChannel}</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setChannel('sms')}
+                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                  channel === 'sms' ? 'border-brand-400 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                <MessageSquareText size={16} /> {t.channelSms}
+              </button>
+              <button
+                type="button"
+                onClick={() => setChannel('whatsapp')}
+                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                  channel === 'whatsapp' ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                <WhatsAppIcon size={16} /> {t.channelWhatsApp}
+              </button>
+            </div>
+          </div>
+
+          <AppTooltip title={sendDisabled && !sending ? t.sendDisabledHint : undefined}>
+            <PrimaryButton onClick={handleSendOffer} disabled={sendDisabled} className="mt-4 w-full">
+              <Send size={16} /> {sending ? t.sending : t.sendOfferTo(selectedCustomers.length || 0)}
+            </PrimaryButton>
+          </AppTooltip>
         </motion.div>
       </div>
 
-      {sentLog.length > 0 ? (
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35, delay: 0.15 }}
-          className="rounded-xl border border-slate-200 bg-white p-5 shadow-card"
-        >
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-800">
-            <History size={15} className="text-slate-400" /> {t.recentlySent}
-          </h3>
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, delay: 0.15 }}
+        className="rounded-xl border border-slate-200 bg-white p-5 shadow-card"
+      >
+        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-800">
+          <History size={15} className="text-slate-400" /> {t.recentlySent}
+        </h3>
+        {offerHistoryLoading ? (
+          <p className="text-xs text-slate-400">{t.loadingHistory}</p>
+        ) : offerHistory.length === 0 ? (
+          <p className="text-xs text-slate-400">{t.noHistory}</p>
+        ) : (
           <ul className="space-y-2">
-            {sentLog.slice(0, 5).map((log) => (
-              <li key={log.id} className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs">
-                <p className="font-medium text-slate-700">
-                  {formatDate(log.sentAt)} &middot;{' '}
-                  {log.recipients.length === 1 ? t.sentToOne(log.recipients[0]) : t.sentToMany(log.recipients.length)}
-                </p>
-                <p className="mt-1 truncate text-slate-500">{log.message.split('\n')[0]}</p>
+            {offerHistory.slice(0, 8).map((send) => (
+              <li key={send.id} className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-medium text-slate-700">
+                    {formatDate(send.sentAt)} &middot;{' '}
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${send.channel === 'sms' ? 'bg-brand-50 text-brand-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                      {send.channel === 'sms' ? t.channelSms : t.channelWhatsApp}
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {Object.entries(send.statusCounts).map(([status, n]) => (
+                      <span key={status} className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${STATUS_STYLES[status] || STATUS_STYLES.pending}`}>
+                        {t.statusCount(n, status)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <p className="mt-1 truncate text-slate-500">{send.message.split('\n')[0]}</p>
               </li>
             ))}
           </ul>
-        </motion.div>
-      ) : null}
+        )}
+      </motion.div>
 
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={t.editCustomerTitle}>
         <form onSubmit={handleAddCustomer} className="space-y-4">

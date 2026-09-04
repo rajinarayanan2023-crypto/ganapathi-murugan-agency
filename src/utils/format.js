@@ -39,15 +39,6 @@ export function formatDateShort(date) {
   return `${dd}/${mm}`
 }
 
-// Accepts an ISO datetime string, returns DD/MM/YYYY, HH:MM (24h, local time)
-export function formatDateTime(date) {
-  const d = typeof date === 'string' ? new Date(date) : date
-  if (Number.isNaN(d?.getTime?.())) return '-'
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  return `${formatDate(d)}, ${hh}:${mi}`
-}
-
 export function formatDayLabel(date) {
   const d = typeof date === 'string' ? new Date(date) : date
   return d.toLocaleDateString('en-IN', { weekday: 'short' })
