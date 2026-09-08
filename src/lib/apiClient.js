@@ -11,6 +11,14 @@ export class ApiError extends Error {
 let accessToken = null
 let refreshToken = null
 let onSessionExpired = null
+// Notified whenever the silent mid-request refresh below rotates in a new
+// refresh token — without this, only this in-memory copy ever learned about
+// it: localStorage's copy (what a real browser refresh, or another tab,
+// reads to restore the session) kept the OLD, now-server-revoked token
+// forever, so the very next time anything needed to refresh from a fresh
+// page load, it tried a token the server had already invalidated and got a
+// 401 for what looked like no reason.
+let onTokensRefreshed = null
 // Several authenticated requests can 401 on the same expired access token at
 // once (e.g. DataContext's employees/lubricants/creditCustomers/expenses
 // loads firing in parallel) — sharing one in-flight refresh call here means
@@ -25,6 +33,10 @@ export function setAuthTokens(tokens) {
 
 export function setSessionExpiredHandler(handler) {
   onSessionExpired = handler
+}
+
+export function setTokensRefreshedHandler(handler) {
+  onTokensRefreshed = handler
 }
 
 async function rawRequest(path, { method = 'GET', body, auth = false } = {}) {
@@ -53,7 +65,9 @@ async function request(path, opts = {}) {
     })
     const refreshed = await refreshPromise
     if (refreshed.res.ok) {
-      setAuthTokens({ accessToken: refreshed.data.access_token, refreshToken: refreshed.data.refresh_token })
+      const tokens = { accessToken: refreshed.data.access_token, refreshToken: refreshed.data.refresh_token }
+      setAuthTokens(tokens)
+      onTokensRefreshed?.(tokens)
       ;({ res, data } = await rawRequest(path, opts))
     }
   }

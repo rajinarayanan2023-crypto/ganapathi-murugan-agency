@@ -51,16 +51,35 @@ function roundedCurrency(value) {
 // every shift's testing litres in between. `entries` must already be
 // chronologically sorted (see sortPumpEntries) with carried openings
 // applied (see withCarriedOpenings) — same as pump1.entries/pump2.entries.
-function pumpFuelBoundaryBreakdown(entries, fuelKey) {
+// Also keeps every nozzle's own opening/closing/testing/liters per shift
+// (not just the shift-level sum) so the tooltip can show the full
+// nozzle → shift → pump → fuel chain, not just the two boundary totals.
+// `exact: true` (2T Oil only, per manager request) skips the whole-litre
+// rounding and keeps the real decimal reading instead — petrol/diesel keep
+// rounding here since only 2T Oil was asked to stop rounding.
+function pumpFuelBoundaryBreakdown(entries, fuelKey, { exact = false } = {}) {
   const list = (entries || []).filter((e) => e?.[fuelKey])
   if (!list.length) return { shifts: [], liters: 0 }
+  const round = (v) => (exact ? Math.round((Number(v) || 0) * 100) / 100 : roundLtr(v))
 
-  const shifts = list.map((e) => ({
-    shiftNumber: e.shiftNumber,
-    opening: NOZZLE_KEYS.reduce((sum, k) => sum + roundLtr(e[fuelKey]?.[k]?.opening), 0),
-    closing: NOZZLE_KEYS.reduce((sum, k) => sum + roundLtr(e[fuelKey]?.[k]?.closing), 0),
-    testing: NOZZLE_KEYS.reduce((sum, k) => sum + roundLtr(e[fuelKey]?.[k]?.testing), 0),
-  }))
+  const shifts = list.map((e) => {
+    const nozzles = NOZZLE_KEYS.map((k) => {
+      const reading = e[fuelKey]?.[k]
+      const opening = round(reading?.opening)
+      const closing = round(reading?.closing)
+      const testing = round(reading?.testing)
+      const liters = Math.max(0, closing - opening - testing)
+      return { nozzleKey: k, opening, closing, testing, liters }
+    })
+    return {
+      shiftNumber: e.shiftNumber,
+      nozzles,
+      opening: nozzles.reduce((sum, n) => sum + n.opening, 0),
+      closing: nozzles.reduce((sum, n) => sum + n.closing, 0),
+      testing: nozzles.reduce((sum, n) => sum + n.testing, 0),
+      liters: nozzles.reduce((sum, n) => sum + n.liters, 0),
+    }
+  })
   const openingTotal = shifts[0].opening
   const closingTotal = shifts[shifts.length - 1].closing
   const testingTotal = shifts.reduce((sum, s) => sum + s.testing, 0)
@@ -68,26 +87,34 @@ function pumpFuelBoundaryBreakdown(entries, fuelKey) {
   return { shifts, openingTotal, closingTotal, testingTotal, liters }
 }
 
-// Builds the CalcBreakdown content for the Petrol/Diesel round-off-formula
-// tooltip: every shift that fed into the boundary calculation above, in
-// order, so an auditor can see exactly which readings produced each pump's
-// figure — not just the two totals.
-function pumpLitersTooltip({ pump1Label, pump2Label, breakdown1, breakdown2, fuelLabel, roundedTotal, note, shiftLabel }) {
+// Builds the CalcBreakdown content for the Petrol/Diesel/2T-Oil
+// round-off-formula tooltip: every nozzle's own opening→closing(−testing)
+// reading, rolled up into its shift's total, then its pump's total, then
+// (for a two-pump fuel) both pumps' formula — so an auditor can see exactly
+// which meter readings produced each figure at every level, not just the
+// final total. `pumps` is one entry (2T Oil, pump 2 only) or two (Petrol/
+// Diesel, both pumps).
+function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false }) {
+  const fmt = (v) => (exact ? (Number(v) || 0).toFixed(2) : String(v))
   const rows = []
-  for (const [pumpLabel, breakdown] of [[pump1Label, breakdown1], [pump2Label, breakdown2]]) {
+  for (const { label: pumpLabel, breakdown } of pumps) {
     for (const shift of breakdown.shifts) {
-      rows.push({
-        label: `${pumpLabel} · ${shiftLabel(shift.shiftNumber)}`,
-        value: `${shift.opening} → ${shift.closing} L${shift.testing ? ` (−${shift.testing})` : ''}`,
-      })
+      const shiftLbl = shiftLabel(shift.shiftNumber)
+      for (const n of shift.nozzles) {
+        rows.push({
+          label: `${pumpLabel} · ${shiftLbl} · ${nozzleLabel(Number(n.nozzleKey.slice(-1)))}`,
+          value: `${fmt(n.opening)} → ${fmt(n.closing)}${n.testing ? ` (−${fmt(n.testing)})` : ''} = ${fmt(n.liters)} L`,
+        })
+      }
+      rows.push({ label: `${pumpLabel} · ${shiftLbl} Total`, value: `${fmt(shift.liters)} L` })
     }
-    rows.push({ label: `${pumpLabel} Total`, value: `${breakdown.liters} L` })
+    rows.push({ label: `${pumpLabel} Total`, value: `${fmt(breakdown.liters)} L` })
   }
-  return {
-    rows,
-    formula: `${pump1Label} (${breakdown1.liters} L) + ${pump2Label} (${breakdown2.liters} L) = ${fuelLabel} (${roundedTotal} L)`,
-    note,
-  }
+  const formula =
+    pumps.length === 2
+      ? `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) + ${pumps[1].label} (${fmt(pumps[1].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
+      : `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
+  return { rows, formula, note }
 }
 
 // Builds the CalcBreakdown content for a fuel row's pricing tooltip — same
@@ -348,7 +375,9 @@ export default function AuditModal({
   // that shows "litres sold today" for the same date.
   const roundedPetrolLtr = roundLtr(dayTotals.petrolLtr)
   const roundedDieselLtr = roundLtr(dayTotals.dieselLtr)
-  const roundedOilLtr = roundLtr(dayTotals.oilLtr)
+  // 2T Oil is deliberately NOT rounded off (per manager request) — shown and
+  // reported at its real decimal litres, unlike Petrol/Diesel above.
+  const exactOilLtr = Number(dayTotals.oilLtr) || 0
   // Same totals roundedPetrolLtr/roundedDieselLtr add up to, kept separately
   // for the round-off-formula tooltip on those two rows — each pump's own
   // exact figure, rounded the same way, so the breakdown reads consistently
@@ -360,7 +389,12 @@ export default function AuditModal({
   const pump2PetrolBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'petrol'), [pump2.entries])
   const pump1DieselBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump1.entries, 'diesel'), [pump1.entries])
   const pump2DieselBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'diesel'), [pump2.entries])
+  // Oil is only ever sold through Pump 2's nozzle (see FUEL_KEYS_BY_PUMP in
+  // fuelCalc.js) — one pump's breakdown, kept unrounded (`exact: true`) to
+  // match exactOilLtr above.
+  const pump2OilBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'oil', { exact: true }), [pump2.entries])
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
+  const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
   const currentStockPetrol = (Number(openingStockPetrol) || 0) + (Number(stockReceivedPetrol) || 0) - roundedPetrolLtr
   const currentStockDiesel = (Number(openingStockDiesel) || 0) + (Number(stockReceivedDiesel) || 0) - roundedDieselLtr
   const paymentRows = useMemo(() => combinedPaymentRows(dayEntries, creditCustomers), [dayEntries, creditCustomers])
@@ -436,7 +470,7 @@ export default function AuditModal({
     header.font = { bold: true }
     sheet.addRow([t.colPetrol, roundedPetrolLtr, roundedCurrency(dayTotals.petrolAmount)])
     sheet.addRow([t.colDiesel, roundedDieselLtr, roundedCurrency(dayTotals.dieselAmount)])
-    if (dayTotals.oilLtr) sheet.addRow([t.colOil, roundedOilLtr, roundedCurrency(dayTotals.oilAmount)])
+    if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, roundedCurrency(dayTotals.oilAmount)])
     sheet.addRow([t.colPocketCane, '—', roundedCurrency(pocketAndServoOilAmount)])
     sheet.addRow([t.fieldSale, '', roundedCurrency(dayTotals.totalSaleAmount)]).font = { bold: true }
     sheet.addRow([])
@@ -614,14 +648,15 @@ export default function AuditModal({
                       title={
                         <CalcBreakdown
                           {...pumpLitersTooltip({
-                            pump1Label: t.pump1Label,
-                            pump2Label: t.pump2Label,
-                            breakdown1: pump1PetrolBreakdown,
-                            breakdown2: pump2PetrolBreakdown,
+                            pumps: [
+                              { label: t.pump1Label, breakdown: pump1PetrolBreakdown },
+                              { label: t.pump2Label, breakdown: pump2PetrolBreakdown },
+                            ],
                             fuelLabel: t.colPetrol,
-                            roundedTotal: roundedPetrolLtr,
+                            totalLabel: `${roundedPetrolLtr} L`,
                             note: t.litersRoundOffNote,
                             shiftLabel,
+                            nozzleLabel,
                           })}
                         />
                       }
@@ -644,14 +679,15 @@ export default function AuditModal({
                       title={
                         <CalcBreakdown
                           {...pumpLitersTooltip({
-                            pump1Label: t.pump1Label,
-                            pump2Label: t.pump2Label,
-                            breakdown1: pump1DieselBreakdown,
-                            breakdown2: pump2DieselBreakdown,
+                            pumps: [
+                              { label: t.pump1Label, breakdown: pump1DieselBreakdown },
+                              { label: t.pump2Label, breakdown: pump2DieselBreakdown },
+                            ],
                             fuelLabel: t.colDiesel,
-                            roundedTotal: roundedDieselLtr,
+                            totalLabel: `${roundedDieselLtr} L`,
                             note: t.litersRoundOffNote,
                             shiftLabel,
+                            nozzleLabel,
                           })}
                         />
                       }
@@ -670,7 +706,27 @@ export default function AuditModal({
                 {dayTotals.oilLtr ? (
                   <tr className="border-t border-slate-100">
                     <td className="px-3 py-2 font-semibold text-emerald-600">{t.colOil}</td>
-                    <td className="px-3 py-2 font-semibold text-slate-700">{roundedOilLtr} L</td>
+                    <td className="px-3 py-2 font-semibold text-slate-700">
+                      <AppTooltip
+                        title={
+                          <CalcBreakdown
+                            {...pumpLitersTooltip({
+                              pumps: [{ label: t.pump2Label, breakdown: pump2OilBreakdown }],
+                              fuelLabel: t.colOil,
+                              totalLabel: formatLiters(exactOilLtr),
+                              note: t.oilExactLitersNote,
+                              shiftLabel,
+                              nozzleLabel,
+                              exact: true,
+                            })}
+                          />
+                        }
+                      >
+                        <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">
+                          {formatLiters(exactOilLtr)}
+                        </span>
+                      </AppTooltip>
+                    </td>
                     <td className="px-3 py-2 text-right text-slate-600">
                       <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.oilLtr, dayTotals.oilAmount, t)} />}>
                         <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">

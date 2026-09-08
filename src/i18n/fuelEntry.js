@@ -97,6 +97,7 @@ export const FUEL_ENTRY_TEXT = {
       pump2Label: 'Pump 2',
       litersRoundOffNote:
         "Each pump's litres = its first shift's opening meter reading and its last shift's closing reading, each rounded to a whole litre first (the way they'd actually be read off the meter), then subtracted (minus any testing litres) — not the exact decimal difference rounded once at the end.",
+      oilExactLitersNote: '2T Oil is shown at its exact meter reading — not rounded off, unlike Petrol and Diesel above.',
       exactLitersLabel: 'Exact Litres',
       rateLabel: 'Rate',
       pricingNote:
@@ -357,6 +358,7 @@ export const FUEL_ENTRY_TEXT = {
       pump2Label: 'பம்ப் 2',
       litersRoundOffNote:
         'ஒவ்வொரு பம்பின் லிட்டர் = அதன் முதல் ஷிப்டின் ஆரம்ப மீட்டர் அளவீடும் அதன் கடைசி ஷிப்டின் இறுதி அளவீடும், முதலில் ஒவ்வொன்றும் முழு லிட்டராக ரவுண்ட் ஆஃப் செய்யப்பட்டு (மீட்டரில் நேரடியாக படிக்கும் விதம் போல), பின்னர் கழிக்கப்படுகிறது (ஏதேனும் டெஸ்டிங் லிட்டர் கழித்து) — இறுதியில் ஒரே முறை ரவுண்ட் ஆஃப் செய்யப்படும் சரியான தசம வித்தியாசம் அல்ல.',
+      oilExactLitersNote: '2T ஆயில் அதன் சரியான மீட்டர் அளவீட்டிலேயே காட்டப்படுகிறது — மேலே உள்ள பெட்ரோல், டீசல் போல ரவுண்ட் ஆஃப் செய்யப்படவில்லை.',
       exactLitersLabel: 'சரியான லிட்டர்',
       rateLabel: 'விகிதம்',
       pricingNote:

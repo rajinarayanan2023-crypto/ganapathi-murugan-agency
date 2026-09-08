@@ -46,6 +46,7 @@ import {
   deleteFuelEntry as apiDeleteFuelEntry,
   setAuthTokens,
   setSessionExpiredHandler,
+  setTokensRefreshedHandler,
   getMe,
   apiPost,
   changePassword as apiChangePassword,
@@ -169,6 +170,21 @@ export function DataProvider({ children }) {
   useEffect(() => {
     setSessionExpiredHandler(logout)
   }, [logout])
+
+  // apiClient's own silent mid-request refresh (a 401 on an expired access
+  // token, retried transparently — see request() there) rotates in a new
+  // refresh token same as login() does, but only ever knew how to update
+  // its own in-memory copy. Mirror that rotation into React state AND
+  // localStorage here too, or the very next refresh (from this tab after a
+  // reload, or another tab) presents the OLD, now-server-revoked token and
+  // gets a 401 that looks like it came from nowhere.
+  useEffect(() => {
+    setTokensRefreshedHandler(({ accessToken, refreshToken }) => {
+      setAccessToken(accessToken)
+      setRefreshToken(refreshToken)
+      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+    })
+  }, [])
 
   // On first load (a real browser refresh, or a freshly opened tab), silently
   // trade a saved refresh token for a new session instead of forcing a
@@ -500,7 +516,18 @@ export function DataProvider({ children }) {
   // server's authoritative-but-not-live figures.
   const normalizeFuelReading = (r) => ({ opening: r?.opening ?? '', closing: r?.closing ?? '', testing: r?.testing ?? '', rate: r?.rate ?? '' })
   const normalizeFuelNozzles = (n) => (n ? { nozzle1: normalizeFuelReading(n.nozzle1), nozzle2: normalizeFuelReading(n.nozzle2) } : undefined)
-  const normalizeFuelOilRow = (row) => ({ id: row.id, productId: row.product_id || '', stockCount: row.stock_count, stockRate: row.stock_rate })
+  // stock_count/stock_rate are Decimal on the backend, which Pydantic
+  // serializes as JSON STRINGS (e.g. "10.00") to avoid float precision loss
+  // — every other Decimal field coming through this file gets Number()'d on
+  // the way in for exactly that reason (see normalizeLubricant's rate,
+  // normalizeCreditCustomer's amount, etc.), but this one didn't. The custom
+  // Select in FormControls.jsx matches its bound value against each
+  // <option>'s value via String(value) === String(optionValue) — "10.00"
+  // never equals "10", so a saved oil row's Rate dropdown silently fell back
+  // to showing "Select rate..." even though the real number (used correctly
+  // everywhere the amount/available math reads this same field) was right
+  // all along.
+  const normalizeFuelOilRow = (row) => ({ id: row.id, productId: row.product_id || '', stockCount: Number(row.stock_count), stockRate: Number(row.stock_rate) })
   const normalizeFuelPaymentLine = (p) => ({
     id: p.id,
     label: p.label || '',
@@ -640,24 +667,60 @@ export function DataProvider({ children }) {
     }
   }, [normalizeCreditCustomer])
 
+  // Declared up here (rather than down in the "Lubricants" section below,
+  // where the rest of that section's functions live) only because
+  // refreshFuelEntrySideEffects, right below, needs loadLubricants already
+  // initialized — same reason normalizeCreditCustomer/loadCreditCustomers
+  // above were moved up from the "Credit Customers" section.
+  const normalizeLubricant = useCallback(
+    (p) => ({
+      id: p.id,
+      name: p.name,
+      unit: p.unit,
+      packaging: p.packaging,
+      stock: Number(p.stock),
+      priceHistory: (p.price_history || []).map((h) => ({ effectiveFrom: h.effective_from, rate: Number(h.rate) })),
+      purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
+    }),
+    [],
+  )
+
+  const loadLubricants = useCallback(async () => {
+    setLubricantsLoading(true)
+    setLubricantsError(null)
+    try {
+      const data = await getLubricants()
+      setLubricants(data.map(normalizeLubricant))
+    } catch (err) {
+      setLubricantsError(err.message)
+    } finally {
+      setLubricantsLoading(false)
+    }
+  }, [normalizeLubricant])
+
   // A finalized shift's customer-credit / employee-credit payment lines
   // create real rows straight in Postgres (see FuelEntryService
-  // ._apply_credit_ledger / ._apply_employee_credit) — but creditCustomers
-  // and employees are separate slices of state, each fetched once and never
-  // otherwise touched by a fuel-entry save, so without this they'd keep
-  // showing whatever they last had (missing the brand-new ledger/credit
-  // row) until the next full login, even though the shift itself saved
+  // ._apply_credit_ledger / ._apply_employee_credit), and a finalized Pump 2
+  // shift's pocket/cane oil rows decrement a real Lubricant product's stock
+  // (._apply_oil_stock) — but creditCustomers/employees/lubricants are each
+  // a separate slice of state, fetched once and never otherwise touched by
+  // a fuel-entry save, so without this they'd keep showing whatever they
+  // last had (missing the brand-new ledger/credit row, or the reduced
+  // stock) until the next full login, even though the shift itself saved
   // fine. Re-fetches only whichever slice this save could plausibly have
   // changed, and only for a draft→final/final→draft/final-edit transition —
   // never on a plain draft-to-draft autosave, since those can never trigger
-  // either side effect server-side.
+  // any of these side effects server-side.
   const refreshFuelEntrySideEffects = useCallback(
-    (payments) => {
-      const list = payments || []
-      if (list.some((p) => p.type === 'credit' && Number(p.amount) > 0)) loadCreditCustomers()
-      if (list.some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0)) loadEmployees()
+    (entry) => {
+      const payments = entry?.payments || []
+      if (payments.some((p) => p.type === 'credit' && Number(p.amount) > 0)) loadCreditCustomers()
+      if (payments.some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0)) loadEmployees()
+      if (entry?.pumpKey === 'pump2' && [...(entry?.oilRows || []), ...(entry?.caneOilRows || [])].some((r) => r.productId && Number(r.stockCount) > 0)) {
+        loadLubricants()
+      }
     },
-    [loadCreditCustomers, loadEmployees],
+    [loadCreditCustomers, loadEmployees, loadLubricants],
   )
 
   // Optimistic-first, always awaitable: local state updates immediately (a
@@ -677,7 +740,7 @@ export function DataProvider({ children }) {
           const created = await apiCreateFuelEntry(toApiFuelEntry(entry))
           const normalized = normalizeFuelEntry(created)
           setFuelEntries((prev) => prev.map((f) => (f.id === tempId ? normalized : f)))
-          if (normalized.status === 'final') refreshFuelEntrySideEffects(normalized.payments)
+          if (normalized.status === 'final') refreshFuelEntrySideEffects(normalized)
           return normalized.id
         } catch (err) {
           setFuelEntries((prev) => prev.filter((f) => f.id !== tempId))
@@ -702,10 +765,16 @@ export function DataProvider({ children }) {
           setFuelEntries((prev) => prev.map((f) => (f.id === id ? normalized : f)))
           // Either side of the transition (just finalized, just un-finalized,
           // or edited while already final) can add/remove a ledger/credit
-          // row server-side — checking both old and new payment lines covers
-          // a credit line that existed before this save but doesn't anymore.
+          // row or a stock adjustment server-side — checking both the old
+          // and new payment lines/oil rows covers one that existed before
+          // this save but doesn't anymore.
           if (previous?.status === 'final' || normalized.status === 'final') {
-            refreshFuelEntrySideEffects([...(previous?.payments || []), ...(normalized.payments || [])])
+            refreshFuelEntrySideEffects({
+              pumpKey: normalized.pumpKey,
+              payments: [...(previous?.payments || []), ...(normalized.payments || [])],
+              oilRows: [...(previous?.oilRows || []), ...(normalized.oilRows || [])],
+              caneOilRows: [...(previous?.caneOilRows || []), ...(normalized.caneOilRows || [])],
+            })
           }
           return normalized.id
         } catch (err) {
@@ -734,32 +803,9 @@ export function DataProvider({ children }) {
   }, [])
 
   // ---------- Lubricants ----------
-  const normalizeLubricant = useCallback(
-    (p) => ({
-      id: p.id,
-      name: p.name,
-      unit: p.unit,
-      packaging: p.packaging,
-      stock: Number(p.stock),
-      priceHistory: (p.price_history || []).map((h) => ({ effectiveFrom: h.effective_from, rate: Number(h.rate) })),
-      purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
-    }),
-    [],
-  )
-
-  const loadLubricants = useCallback(async () => {
-    setLubricantsLoading(true)
-    setLubricantsError(null)
-    try {
-      const data = await getLubricants()
-      setLubricants(data.map(normalizeLubricant))
-    } catch (err) {
-      setLubricantsError(err.message)
-    } finally {
-      setLubricantsLoading(false)
-    }
-  }, [normalizeLubricant])
-
+  // (normalizeLubricant/loadLubricants themselves are declared earlier,
+  // above addFuelEntry/updateFuelEntry — same reason as
+  // normalizeCreditCustomer/loadCreditCustomers above.)
   useEffect(() => {
     if (!isAuthenticated) {
       setLubricants([])
