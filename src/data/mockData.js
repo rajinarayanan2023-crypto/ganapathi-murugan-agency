@@ -26,7 +26,7 @@ export const STATION = {
 // FUEL_RATE_HISTORY below), since the government/OMC revises pump price on
 // those almost daily.
 export const FUEL_RATES = {
-  oil: 220,
+  oil: 400,
 }
 
 // Petrol/diesel retail rate, day by day — the manager confirms (or revises)

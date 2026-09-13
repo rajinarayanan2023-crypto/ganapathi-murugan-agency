@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, HandCoins, StickyNote, Lock } from 'lucide-react'
+import { Plus, Pencil, Trash2, HandCoins, StickyNote, Lock, ArrowLeft } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EMPLOYEE_CREDITS_TEXT } from '../i18n/employeeCredits.js'
-import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatEmployeeName, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -13,6 +14,7 @@ import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
 const emptyForm = { employeeId: '', date: todayISO(), amount: '', note: '' }
 
@@ -21,6 +23,7 @@ export default function EmployeeCredits() {
   const { language } = useLanguage()
   const t = EMPLOYEE_CREDITS_TEXT[language]
   const loading = employeesLoading
+  const navigate = useNavigate()
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editingRow, setEditingRow] = useState(null)
@@ -28,6 +31,11 @@ export default function EmployeeCredits() {
   const [errors, setErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+  // One combined flag covering every in-flight write this page can make
+  // (add/edit, delete) — while any of them is running, every other action
+  // on this screen is blocked too, same pattern as Employees.jsx.
+  const busy = saving || deleting
 
   // Employee Credits has no table of its own to fetch — every row here is
   // already embedded per employee (see DataContext's normalizeEmployee), so
@@ -85,13 +93,15 @@ export default function EmployeeCredits() {
 
   async function handleDelete() {
     if (!deleteTarget) return
+    setDeleting(true)
     try {
       await deleteEmployeeCredit(deleteTarget.employeeId, deleteTarget.id)
       toast.success(t.toastDeleted)
+      setDeleteTarget(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
-      setDeleteTarget(null)
+      setDeleting(false)
     }
   }
 
@@ -100,7 +110,6 @@ export default function EmployeeCredits() {
       field: 'employeeName',
       header: t.colEmployee,
       sortable: true,
-      filter: true,
       style: { width: '24%' },
       body: (row) => <p className="font-medium text-slate-800">{row.employeeName}</p>,
     },
@@ -144,10 +153,10 @@ export default function EmployeeCredits() {
       body: (row) =>
         row.sourceFuelEntryId ? null : (
           <div className="flex justify-end gap-1">
-            <IconButton onClick={() => openEdit(row)} aria-label="Edit" title="Edit" tone="edit">
+            <IconButton onClick={() => openEdit(row)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
               <Pencil size={15} />
             </IconButton>
-            <IconButton onClick={() => setDeleteTarget(row)} aria-label="Delete" title="Delete" tone="delete">
+            <IconButton onClick={() => setDeleteTarget(row)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
               <Trash2 size={15} />
             </IconButton>
           </div>
@@ -163,8 +172,11 @@ export default function EmployeeCredits() {
     return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {employeesError}</div>
   }
 
+  const busyLabel = saving ? t.saving : deleting ? t.deleting : ''
+
   return (
     <div className="space-y-6">
+      {busy ? <FullPageLoader label={busyLabel} /> : null}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -178,9 +190,14 @@ export default function EmployeeCredits() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={openAdd}>
-                  <Plus size={16} /> {t.addCredit}
-                </PrimaryButton>
+                <div className="flex items-center gap-2">
+                  <SecondaryButton onClick={() => navigate('/salary')} disabled={busy}>
+                    <ArrowLeft size={15} /> {t.backToSalary}
+                  </SecondaryButton>
+                  <PrimaryButton onClick={openAdd} disabled={busy}>
+                    <Plus size={16} /> {t.addCredit}
+                  </PrimaryButton>
+                </div>
               }
             />
           </div>
@@ -197,31 +214,46 @@ export default function EmployeeCredits() {
             exportFilename="employee-credits"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAdd} className="px-3.5 py-2 text-xs">
-                <Plus size={14} /> {t.addCredit}
-              </PrimaryButton>
+              <>
+                <SecondaryButton onClick={() => navigate('/salary')} disabled={busy} className="px-3.5 py-2 text-xs">
+                  <ArrowLeft size={14} /> {t.backToSalary}
+                </SecondaryButton>
+                <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
+                  <Plus size={14} /> {t.addCredit}
+                </PrimaryButton>
+              </>
             }
           />
         )}
       </motion.div>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editingRow ? t.editCredit : t.addCredit}>
+      <Modal
+        isOpen={modalOpen}
+        onClose={saving ? () => {} : () => setModalOpen(false)}
+        title={editingRow ? t.editCredit : t.addCredit}
+      >
         <form onSubmit={handleSubmit} className="space-y-4">
           {editingRow ? (
             <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">{editingRow.employeeName}</div>
           ) : (
             <Field label={t.fieldEmployee} required error={errors.employeeId}>
-              <Select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
+              <Select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })} disabled={saving}>
                 {employees.map((emp) => (
                   <option key={emp.id} value={emp.id}>
-                    {emp.name}
+                    {formatEmployeeName(emp)}
                   </option>
                 ))}
               </Select>
             </Field>
           )}
           <Field label={t.fieldDate}>
-            <AppDatePicker value={form.date} onChange={(date) => setForm({ ...form, date })} maxDate={todayISO()} className="w-full" />
+            <AppDatePicker
+              value={form.date}
+              onChange={(date) => setForm({ ...form, date })}
+              maxDate={todayISO()}
+              className="w-full"
+              disabled={saving}
+            />
           </Field>
           <Field label={t.fieldAmount} required error={errors.amount}>
             <Input
@@ -231,13 +263,20 @@ export default function EmployeeCredits() {
               onChange={(e) => setForm({ ...form, amount: e.target.value })}
               placeholder={t.placeholderAmount}
               error={errors.amount}
+              disabled={saving}
             />
           </Field>
           <Field label={t.fieldNotes}>
-            <Textarea rows={3} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder={t.placeholderNotes} />
+            <Textarea
+              rows={3}
+              value={form.note}
+              onChange={(e) => setForm({ ...form, note: e.target.value })}
+              placeholder={t.placeholderNotes}
+              disabled={saving}
+            />
           </Field>
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setModalOpen(false)} disabled={saving}>
               {t.cancel}
             </SecondaryButton>
             <PrimaryButton type="submit" disabled={saving}>
@@ -254,6 +293,7 @@ export default function EmployeeCredits() {
         title={t.removeTitle}
         description={t.removeDesc}
         confirmLabel={t.removeConfirm}
+        loading={deleting}
       />
     </div>
   )

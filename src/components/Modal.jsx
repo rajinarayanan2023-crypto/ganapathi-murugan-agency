@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import AppTooltip from './AppTooltip.jsx'
 
-export default function Modal({ isOpen, onClose, title, children, maxWidth = 'max-w-lg' }) {
+export default function Modal({ isOpen, onClose, title, headerExtra, children, maxWidth = 'max-w-lg' }) {
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') onClose?.()
@@ -39,17 +39,20 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'ma
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
           >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/80 px-5 py-4 backdrop-blur-sm">
-              <h3 className="text-base font-semibold text-slate-900">{title}</h3>
-              <AppTooltip title="Close">
-                <button
-                  onClick={onClose}
-                  className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500"
-                  aria-label="Close"
-                >
-                  <X size={18} />
-                </button>
-              </AppTooltip>
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-slate-100 bg-white/80 px-5 py-4 backdrop-blur-sm">
+              <h3 className="min-w-0 truncate text-base font-semibold text-slate-900">{title}</h3>
+              <div className="flex shrink-0 items-center gap-3">
+                {headerExtra}
+                <AppTooltip title="Close">
+                  <button
+                    onClick={onClose}
+                    className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500"
+                    aria-label="Close"
+                  >
+                    <X size={18} />
+                  </button>
+                </AppTooltip>
+              </div>
             </div>
             <div className="p-5">{children}</div>
           </motion.div>

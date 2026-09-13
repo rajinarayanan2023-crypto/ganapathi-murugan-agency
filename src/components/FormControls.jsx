@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, Children } from 
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search, Eye, EyeOff } from 'lucide-react'
 import AppTooltip from './AppTooltip.jsx'
+import { useLanguage } from '../context/LanguageContext.jsx'
+import { COMMON_TEXT } from '../i18n/common.js'
 
 export function Field({ label, required, error, children, className = '' }) {
   return (
@@ -75,6 +77,8 @@ export function PasswordInput({ className = '', ...props }) {
 // gets a type-to-filter search box, which a plain <select> can't offer once
 // a dropdown (employees, customers, products, ...) grows past a handful of options.
 export function Select({ error, className = '', children, value, onChange, disabled, id, 'aria-label': ariaLabel, ...props }) {
+  const { language } = useLanguage()
+  const commonT = COMMON_TEXT[language]
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [menuPos, setMenuPos] = useState(null)
@@ -159,6 +163,16 @@ export function Select({ error, className = '', children, value, onChange, disab
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          // A focused <button> treats Enter as "click me" (toggle the
+          // menu) rather than submitting the form the way a native
+          // <select> does — so once a value is already picked and the
+          // menu is closed, forward Enter to the enclosing form instead.
+          if (e.key === 'Enter' && !open) {
+            e.preventDefault()
+            e.currentTarget.form?.requestSubmit()
+          }
+        }}
         className={`${baseInput} flex items-center justify-between gap-2 text-left disabled:cursor-not-allowed disabled:opacity-50 ${
           error ? 'border-rose-300' : 'border-slate-200'
         } ${className}`}
@@ -181,13 +195,13 @@ export function Select({ error, className = '', children, value, onChange, disab
                   ref={searchInputRef}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search..."
+                  placeholder={commonT.search}
                   className="w-full bg-transparent text-xs text-slate-700 outline-none placeholder:text-slate-400"
                 />
               </div>
               <ul className="max-h-56 overflow-y-auto py-1 text-sm">
                 {filtered.length === 0 ? (
-                  <li className="px-3 py-2 text-xs text-slate-400">No matches</li>
+                  <li className="px-3 py-2 text-xs text-slate-400">{commonT.noMatches}</li>
                 ) : (
                   filtered.map((o) => {
                     const isSelected = String(o.value) === String(value ?? '')
@@ -264,7 +278,7 @@ export function IconButton({ tone = 'neutral', className = '', type = 'button', 
     <AppTooltip title={title}>
       <button
         type={type}
-        className={`inline-flex items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
+        className={`inline-flex items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
         {...props}
       >
         {children}

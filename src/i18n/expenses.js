@@ -31,6 +31,8 @@ export const EXPENSES_TEXT = {
     loadError: 'Could not load expenses',
     moreItems: (n) => `+${n} more`,
     view: 'View',
+    saving: 'Saving…',
+    deleting: 'Deleting…',
   },
   ta: {
     colDate: 'தேதி',
@@ -64,5 +66,7 @@ export const EXPENSES_TEXT = {
     loadError: 'செலவு தரவை ஏற்ற முடியவில்லை',
     moreItems: (n) => `+${n} மேலும்`,
     view: 'காண்க',
+    saving: 'சேமிக்கிறது…',
+    deleting: 'நீக்குகிறது…',
   },
 }

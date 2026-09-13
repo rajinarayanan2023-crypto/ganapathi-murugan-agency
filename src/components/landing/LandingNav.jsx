@@ -37,11 +37,11 @@ export default function LandingNav({ station }) {
       }`}
     >
       <nav className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
-        <a href="#home" onClick={(e) => handleAnchorClick(e, '#home')} className="flex items-center gap-2.5">
-          <div className="flex h-9 w-14 items-center justify-center">
+        <a href="#home" onClick={(e) => handleAnchorClick(e, '#home')} className="flex items-center gap-2.5 md:shrink-0">
+          <div className="flex h-9 w-14 shrink-0 items-center justify-center">
             <img src={station.logo} alt={station.name} className="h-full w-full object-contain" />
           </div>
-          <span className="text-sm font-bold text-slate-900">{station.name}</span>
+          <span className="text-sm font-bold text-slate-900 md:whitespace-nowrap">{station.name}</span>
         </a>
 
         <div className="hidden items-center gap-1 md:flex">
@@ -60,13 +60,13 @@ export default function LandingNav({ station }) {
         <div className="flex items-center gap-2">
           <Link
             to="/login"
-            className="rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:from-brand-600 hover:to-brand-800 active:scale-[0.98]"
+            className="rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:from-brand-600 hover:to-brand-800 active:scale-[0.98]"
           >
             Login
           </Link>
           <button
             onClick={() => setMobileOpen((v) => !v)}
-            className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden"
+            className="rounded-lg p-3 text-slate-600 hover:bg-slate-100 md:hidden"
             aria-label="Toggle menu"
           >
             {mobileOpen ? <X size={20} /> : <Menu size={20} />}

@@ -1,18 +1,20 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, MessageSquareText, UserMinus } from 'lucide-react'
+import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, MessageSquareText, Trash2 } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { OFFERS_TEXT } from '../i18n/offers.js'
 import { formatDate } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
 const customerEmptyForm = { name: '', phone: '' }
 
@@ -55,7 +57,7 @@ export default function Offers() {
     offerCustomers,
     offerCustomersLoading,
     addOfferCustomer,
-    deactivateOfferCustomer,
+    deleteOfferCustomer,
     offerHistory,
     offerHistoryLoading,
     sendOffer,
@@ -64,7 +66,17 @@ export default function Offers() {
   const { language } = useLanguage()
   const t = OFFERS_TEXT[language]
 
-  const activeCustomers = useMemo(() => offerCustomers.filter((c) => c.active), [offerCustomers])
+  // nameWithPhoneExport mirrors the JSX `body` renderer below (name + phone
+  // shown together) — the bulk "Export CSV" button pulls the raw `name`
+  // field otherwise, which would silently drop the phone number from the
+  // exported file even though it's visible on screen for every row.
+  const activeCustomers = useMemo(
+    () =>
+      offerCustomers
+        .filter((c) => c.active)
+        .map((c) => ({ ...c, nameWithPhoneExport: c.phone ? `${c.name} (${c.phone})` : c.name })),
+    [offerCustomers],
+  )
 
   const [selectedCustomers, setSelectedCustomers] = useState([])
   const [message, setMessage] = useState('')
@@ -75,6 +87,15 @@ export default function Offers() {
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(customerEmptyForm)
   const [errors, setErrors] = useState({})
+  const [savingCustomer, setSavingCustomer] = useState(false)
+  // Per-row rather than one flag, so removing one customer doesn't visually
+  // gray out every other row too.
+  const [deletingId, setDeletingId] = useState(null)
+  const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState(null)
+  // One combined flag covering every kind of in-flight write this page can
+  // make (add customer, remove customer, send offer) — while any of them is
+  // running, every OTHER action on this screen is blocked too.
+  const busy = sending || savingCustomer || deletingId != null
 
   const templates = useMemo(() => buildTemplates(station), [station])
 
@@ -96,15 +117,33 @@ export default function Offers() {
   async function handleAddCustomer(e) {
     e.preventDefault()
     if (!validate()) return
-    await addOfferCustomer({ name: form.name, phone: form.phone })
-    toast.success(t.toastCustomerAdded)
-    setModalOpen(false)
+    setSavingCustomer(true)
+    try {
+      await addOfferCustomer({ name: form.name, phone: form.phone })
+      toast.success(t.toastCustomerAdded)
+      setModalOpen(false)
+    } catch (err) {
+      toast.error(err.message || t.errorSendFailed)
+    } finally {
+      setSavingCustomer(false)
+    }
   }
 
-  async function handleDeactivate(customer) {
-    await deactivateOfferCustomer(customer.id)
-    setSelectedCustomers((prev) => prev.filter((c) => c.id !== customer.id))
-    toast.success(t.toastCustomerRemoved(customer.name))
+  // Hard delete — removes the recipient from the database entirely, not
+  // just this list (see DataContext.deleteOfferCustomer), so it's behind a
+  // confirmation instead of a single click.
+  async function handleDeleteCustomer(customer) {
+    setDeletingId(customer.id)
+    try {
+      await deleteOfferCustomer(customer.id)
+      setSelectedCustomers((prev) => prev.filter((c) => c.id !== customer.id))
+      toast.success(t.toastCustomerRemoved(customer.name))
+      setConfirmDeleteCustomer(null)
+    } catch (err) {
+      toast.error(err.message || t.errorSendFailed)
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   function selectAll() {
@@ -146,9 +185,9 @@ export default function Offers() {
   const columns = [
     {
       field: 'name',
+      exportField: 'nameWithPhoneExport',
       header: t.colCustomer,
       sortable: true,
-      filter: true,
       style: { width: '78%' },
       body: (c) => (
         <>
@@ -166,8 +205,8 @@ export default function Offers() {
       style: { width: '12%' },
       body: (c) => (
         <div className="flex justify-end">
-          <IconButton onClick={() => handleDeactivate(c)} aria-label={t.removeCustomer} title={t.removeCustomer} tone="delete">
-            <UserMinus size={15} />
+          <IconButton onClick={() => setConfirmDeleteCustomer(c)} disabled={busy} aria-label={t.removeCustomer} title={t.removeCustomer} tone="delete">
+            <Trash2 size={15} />
           </IconButton>
         </div>
       ),
@@ -178,10 +217,12 @@ export default function Offers() {
     return <SkeletonTable rows={6} cols={3} />
   }
 
-  const sendDisabled = sending || selectedCustomers.length === 0 || !channel
+  const sendDisabled = busy || selectedCustomers.length === 0 || !channel
+  const busyLabel = sending ? t.sending : savingCustomer ? t.addingCustomer : deletingId != null ? t.removingCustomer : ''
 
   return (
     <div className="space-y-6">
+      {busy ? <FullPageLoader label={busyLabel} /> : null}
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
@@ -196,13 +237,15 @@ export default function Offers() {
             <div className="flex gap-2">
               <button
                 onClick={selectAll}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <CheckSquare size={13} /> {t.selectAll}
               </button>
               <button
                 onClick={clearSelection}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Square size={13} /> {t.clear}
               </button>
@@ -216,7 +259,7 @@ export default function Offers() {
                 title={t.emptyTitle}
                 description={t.emptyDesc}
                 action={
-                  <PrimaryButton onClick={openAdd}>
+                  <PrimaryButton onClick={openAdd} disabled={busy}>
                     <Plus size={16} /> {t.addCustomer}
                   </PrimaryButton>
                 }
@@ -230,14 +273,14 @@ export default function Offers() {
               globalFilterFields={['name', 'phone']}
               searchPlaceholder={t.searchPlaceholder}
               defaultSortField="name"
-              scrollable={false}
+              scrollHeight="calc(100vh - 390px)"
               selectable
               selection={selectedCustomers}
               onSelectionChange={setSelectedCustomers}
               exportFilename="offer-customers"
               dense
               toolbarActions={
-                <PrimaryButton onClick={openAdd} className="px-3.5 py-2 text-xs">
+                <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
                   <Plus size={14} /> {t.addCustomer}
                 </PrimaryButton>
               }
@@ -263,7 +306,8 @@ export default function Offers() {
                   setMessage(tpl.text)
                   setTemplateUsed(tpl.id)
                 }}
-                className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-100"
+                disabled={busy}
+                className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {tpl.label}
               </button>
@@ -280,6 +324,7 @@ export default function Offers() {
               }}
               placeholder={t.placeholderMessage}
               className="font-sans"
+              disabled={busy}
             />
           </Field>
 
@@ -289,7 +334,8 @@ export default function Offers() {
               <button
                 type="button"
                 onClick={() => setChannel('sms')}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                disabled={busy}
+                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   channel === 'sms' ? 'border-brand-400 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -298,7 +344,8 @@ export default function Offers() {
               <button
                 type="button"
                 onClick={() => setChannel('whatsapp')}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                disabled={busy}
+                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   channel === 'whatsapp' ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -354,10 +401,16 @@ export default function Offers() {
         )}
       </motion.div>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={t.editCustomerTitle}>
+      <Modal isOpen={modalOpen} onClose={savingCustomer ? () => {} : () => setModalOpen(false)} title={t.editCustomerTitle}>
         <form onSubmit={handleAddCustomer} className="space-y-4">
           <Field label={t.fieldCustomerName} required error={errors.name}>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t.placeholderCustomerName} error={errors.name} />
+            <Input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder={t.placeholderCustomerName}
+              error={errors.name}
+              disabled={savingCustomer}
+            />
           </Field>
           <Field label={t.fieldPhone} required error={errors.phone}>
             <Input
@@ -366,16 +419,28 @@ export default function Offers() {
               placeholder={t.placeholderPhone}
               inputMode="numeric"
               error={errors.phone}
+              disabled={savingCustomer}
             />
           </Field>
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setModalOpen(false)} disabled={savingCustomer}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{t.addCustomer}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={savingCustomer}>
+              {t.addCustomer}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={!!confirmDeleteCustomer}
+        onClose={() => setConfirmDeleteCustomer(null)}
+        onConfirm={() => handleDeleteCustomer(confirmDeleteCustomer)}
+        title={t.removeCustomerTitle}
+        description={confirmDeleteCustomer ? t.removeCustomerDesc(confirmDeleteCustomer.name) : ''}
+        loading={deletingId != null}
+      />
     </div>
   )
 }

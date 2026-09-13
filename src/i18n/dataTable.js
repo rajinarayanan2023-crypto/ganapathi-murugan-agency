@@ -3,14 +3,14 @@ export const DATA_TABLE_TEXT = {
     exportCsv: 'Export CSV',
     searchPlaceholder: 'Search...',
     emptyMessage: 'No records found.',
-    currentPageReport: '{first}-{last} of {totalRecords}',
-    searchColumn: (header) => `Search ${header || ''}`.trim(),
+    // {first}/{last}/{totalRecords} are substituted by PrimeReact itself —
+    // only the surrounding words are ours to translate.
+    paginatorReport: '{first}–{last} of {totalRecords}',
   },
   ta: {
     exportCsv: 'CSV ஏற்றுமதி',
     searchPlaceholder: 'தேடு...',
     emptyMessage: 'பதிவுகள் இல்லை.',
-    currentPageReport: '{first}-{last} / {totalRecords}',
-    searchColumn: (header) => `${header || ''} தேடு`.trim(),
+    paginatorReport: '{totalRecords} இல் {first}–{last}',
   },
 }

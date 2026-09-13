@@ -11,6 +11,7 @@ import ConfirmDialog from './ConfirmDialog.jsx'
 import Modal from './Modal.jsx'
 import { Field, PasswordInput, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
+import { FullPageLoader } from './Loader.jsx'
 
 const NAV_ITEMS = [
   { to: '/dashboard', key: 'dashboard', icon: LayoutDashboard },
@@ -31,12 +32,50 @@ const NAV_ITEMS = [
 const EXTRA_TITLE_ROUTES = [{ to: '/employee-credits', key: 'employeeCredits' }]
 
 export default function Layout() {
-  const { station, logout, changePassword } = useData()
+  const { station, logout, changePassword, currentUser, hasUnsavedChanges, saveUnsavedChangesHandler } = useData()
   const { language, toggleLanguage } = useLanguage()
   const t = LAYOUT_TEXT[language]
   const navigate = useNavigate()
   const location = useLocation()
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
+  // Set by whichever page currently has unsaved work (see DataContext) — a
+  // sidebar/bottom-nav click while that's true is intercepted here instead
+  // of navigating straight away, same prompt either nav renders through.
+  const [pendingNavTo, setPendingNavTo] = useState(null)
+  function handleNavClick(e, to) {
+    if (!hasUnsavedChanges) return
+    e.preventDefault()
+    setPendingNavTo(to)
+  }
+  function confirmNav() {
+    const to = pendingNavTo
+    setPendingNavTo(null)
+    if (to) navigate(to)
+  }
+  // "Save" in this prompt: ask whichever page registered a save handler
+  // (see DataContext) to actually save its dirty work, and only navigate
+  // once that's genuinely succeeded — a failed/blocked save leaves the
+  // manager on the current page, right where the error is.
+  async function handleSaveAndNav() {
+    const to = pendingNavTo
+    const ok = saveUnsavedChangesHandler ? await saveUnsavedChangesHandler() : true
+    setPendingNavTo(null)
+    if (ok && to) navigate(to)
+  }
+  // Covers what a click-through NavLink guard above can't: closing the tab,
+  // a real page refresh, typing a new URL, or the browser's own back/
+  // forward buttons. Only the browser's own generic prompt text is possible
+  // here (no custom modal can run during unload) — a firm, if plain, second
+  // line of defense under the nicer custom one above.
+  useEffect(() => {
+    if (!hasUnsavedChanges) return undefined
+    function onBeforeUnload(e) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [hasUnsavedChanges])
   const [collapsed, setCollapsed] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
@@ -79,11 +118,12 @@ export default function Layout() {
     setPasswordModalOpen(true)
   }
 
-  // Mirrors the backend's own validate_password_strength (app/schemas/user.py)
-  // so an obviously-too-weak password is caught here instead of round-
-  // tripping to the server just to get the same rejection back.
+  // Mirrors the backend's own validate_password_strength (app/schemas/user.py,
+  // PasswordChange's 8-character minimum) so an obviously-too-weak password
+  // is caught here instead of round-tripping to the server just to get the
+  // same rejection back.
   function passwordStrengthError(password) {
-    if (password.length < 10) return t.errorPasswordTooShort
+    if (password.length < 8) return t.errorPasswordTooShort
     if (!/[A-Z]/.test(password)) return t.errorPasswordNeedsUppercase
     if (!/[a-z]/.test(password)) return t.errorPasswordNeedsLowercase
     if (!/\d/.test(password)) return t.errorPasswordNeedsDigit
@@ -108,7 +148,13 @@ export default function Layout() {
       // The one error this endpoint actually returns for a bad request is a
       // wrong current password — surface it right on that field rather than
       // a generic toast, so it reads as "that's wrong" not "something broke".
-      setPasswordErrors({ currentPassword: err.message || t.errorCurrentPasswordWrong })
+      // Stores `true` as a "use the generic fallback" marker instead of
+      // baking t.errorCurrentPasswordWrong in here — the actual translated
+      // text is resolved at render time (see the Field below), so toggling
+      // language while this error is still showing re-localizes it
+      // immediately instead of leaving it stuck in whatever language it was
+      // originally shown in.
+      setPasswordErrors({ currentPassword: err.message || true })
       return
     }
     setSavingPassword(false)
@@ -167,6 +213,7 @@ export default function Layout() {
               <span className="block">
                 <NavLink
                   to={item.to}
+                  onClick={(e) => handleNavClick(e, item.to)}
                   className={({ isActive }) =>
                     collapsed
                       ? `mx-auto flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
@@ -233,9 +280,14 @@ export default function Layout() {
               <Languages size={14} />
               {language === 'en' ? 'தமிழ்' : 'English'}
             </button>
+            {/* Name is the prominent line (up to ~10 characters comfortably,
+                on one line via whitespace-nowrap — this sits in a flexible
+                trailing group, not a fixed-width box, so it can't clip a
+                longer one either) with the role as a small caption below it,
+                not the other way around. */}
             <div className="hidden text-right sm:block">
-              <p className="text-xs font-semibold text-slate-900">{t.admin}</p>
-              <p className="text-[11px] font-medium text-brand-900">{station.dealerName}</p>
+              <p className="whitespace-nowrap text-sm font-bold text-slate-900">{currentUser?.name || station.dealerName}</p>
+              <p className="whitespace-nowrap text-[11px] font-semibold text-brand-700">{t.admin}</p>
             </div>
             <AppTooltip title={t.changePassword}>
               <button
@@ -260,8 +312,18 @@ export default function Layout() {
 
         <main className="relative flex-1 px-4 pb-24 pt-5 sm:px-6 lg:min-h-0 lg:overflow-y-auto lg:px-8 lg:pb-8">
           <AnimatePresence mode="wait">
+            {/* lg:h-full (not unprefixed h-full) — below the lg breakpoint
+                `main` has no definite height of its own (mobile/tablet pages
+                just scroll the whole page normally, on purpose), so an
+                unconditional h-full would resolve against nothing. At lg+,
+                `main` IS definitely sized (flex-1 inside the lg:h-screen
+                shell above), so this gives a page that opts in (see
+                Employees.jsx) a real height to flex-fill instead of relying
+                on a guessed `calc(100vh - Npx)` pixel offset that drifts out
+                of sync the moment that page's own header content changes. */}
             <motion.div
               key={language}
+              className="lg:h-full"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -288,6 +350,7 @@ export default function Layout() {
             key={item.to}
             data-active={location.pathname.startsWith(item.to) || undefined}
             to={item.to}
+            onClick={(e) => handleNavClick(e, item.to)}
             className={({ isActive }) =>
               `flex min-w-[72px] shrink-0 flex-col items-center gap-0.5 px-1.5 py-2.5 text-center text-[11px] font-medium leading-tight transition-colors ${
                 isActive ? 'text-brand-600' : 'text-slate-400'
@@ -313,9 +376,31 @@ export default function Layout() {
         confirmLabel={t.logout}
       />
 
-      <Modal isOpen={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} title={t.changePassword}>
+      <ConfirmDialog
+        isOpen={!!pendingNavTo}
+        onClose={() => setPendingNavTo(null)}
+        onCancelClick={handleSaveAndNav}
+        onConfirm={confirmNav}
+        title={t.unsavedChangesTitle}
+        description={t.unsavedChangesDesc}
+        confirmLabel={t.unsavedChangesLeave}
+        cancelLabel={t.unsavedChangesStay}
+        confirmTone="leave"
+      />
+
+      {savingPassword ? <FullPageLoader label={t.savingPassword} /> : null}
+
+      <Modal
+        isOpen={passwordModalOpen}
+        onClose={savingPassword ? () => {} : () => setPasswordModalOpen(false)}
+        title={t.changePassword}
+      >
         <form onSubmit={submitPasswordChange} className="space-y-4">
-          <Field label={t.fieldCurrentPassword} required error={passwordErrors.currentPassword}>
+          <Field
+            label={t.fieldCurrentPassword}
+            required
+            error={passwordErrors.currentPassword === true ? t.errorCurrentPasswordWrong : passwordErrors.currentPassword}
+          >
             <PasswordInput
               autoFocus
               value={currentPassword}
@@ -343,7 +428,7 @@ export default function Layout() {
               {t.cancel}
             </SecondaryButton>
             <PrimaryButton type="submit" disabled={savingPassword}>
-              {savingPassword ? t.savingPassword : t.savePassword}
+              {t.savePassword}
             </PrimaryButton>
           </div>
         </form>

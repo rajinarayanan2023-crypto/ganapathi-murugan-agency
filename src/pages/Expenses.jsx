@@ -13,6 +13,7 @@ import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
 function makeItemId() {
   return `item-${Math.random().toString(36).slice(2, 9)}`
@@ -35,9 +36,23 @@ export default function Expenses() {
   const [errors, setErrors] = useState({})
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  // One combined flag covering every kind of in-flight write this page can
+  // make (add/edit, delete) — while any of them is running, every OTHER
+  // action on this screen is blocked too.
+  const busy = saving || deleting
 
   const rows = useMemo(
-    () => expenseDays.map((d) => ({ ...d, total: d.items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0) })),
+    () =>
+      expenseDays.map((d) => ({
+        ...d,
+        total: d.items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0),
+        // Plain-text mirror of the `items` chips rendered by the Items
+        // column's `body` — the raw `items` field is an array of objects,
+        // which the CSV export can't render, and the on-screen chips only
+        // show the first 3 anyway, so this lists every item for the export.
+        itemsExport: d.items.map((i) => `${i.label}: ${formatCurrency(i.amount)}`).join('; '),
+      })),
     [expenseDays],
   )
 
@@ -102,13 +117,15 @@ export default function Expenses() {
   }
 
   async function handleDelete() {
+    setDeleting(true)
     try {
       await deleteExpenseDay(confirmDeleteId)
       toast.success(t.toastDeleted)
+      setConfirmDeleteId(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
-      setConfirmDeleteId(null)
+      setDeleting(false)
     }
   }
 
@@ -122,6 +139,7 @@ export default function Expenses() {
     },
     {
       field: 'items',
+      exportField: 'itemsExport',
       header: t.colItems,
       style: { width: '52%' },
       body: (d) => (
@@ -153,10 +171,10 @@ export default function Expenses() {
       style: { width: '16%' },
       body: (d) => (
         <div className="flex justify-end gap-1">
-          <IconButton onClick={() => openEdit(d)} aria-label="Edit" title="Edit" tone="edit">
+          <IconButton onClick={() => openEdit(d)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
             <Pencil size={15} />
           </IconButton>
-          <IconButton onClick={() => setConfirmDeleteId(d.id)} aria-label="Delete" title="Delete" tone="delete">
+          <IconButton onClick={() => setConfirmDeleteId(d.id)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
             <Trash2 size={15} />
           </IconButton>
         </div>
@@ -172,8 +190,11 @@ export default function Expenses() {
     return <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-600">{t.loadError}: {expensesError}</div>
   }
 
+  const busyLabel = saving ? t.saving : deleting ? t.deleting : ''
+
   return (
     <div className="space-y-6">
+      {busy ? <FullPageLoader label={busyLabel} /> : null}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -187,7 +208,7 @@ export default function Expenses() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={openAdd}>
+                <PrimaryButton onClick={openAdd} disabled={busy}>
                   <Plus size={16} /> {t.addExpenseDay}
                 </PrimaryButton>
               }
@@ -203,7 +224,7 @@ export default function Expenses() {
             exportFilename="expenses"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAdd} className="px-3.5 py-2 text-xs">
+              <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
                 <Plus size={14} /> {t.addExpenseDay}
               </PrimaryButton>
             }
@@ -211,10 +232,14 @@ export default function Expenses() {
         )}
       </motion.div>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? t.editExpenseDay : t.addExpenseDay}>
+      <Modal
+        isOpen={modalOpen}
+        onClose={saving ? () => {} : () => setModalOpen(false)}
+        title={editingId ? t.editExpenseDay : t.addExpenseDay}
+      >
         <form onSubmit={handleSubmit} className="space-y-4">
           <Field label={t.fieldDate} required error={errors.date} className="max-w-xs">
-            <AppDatePicker value={date} onChange={setDate} className="w-full" />
+            <AppDatePicker value={date} onChange={setDate} className="w-full" disabled={saving} />
           </Field>
 
           <Field label={t.itemsLabel} error={errors.items}>
@@ -226,6 +251,7 @@ export default function Expenses() {
                     onChange={(e) => updateItem(item.id, 'label', e.target.value)}
                     placeholder={t.placeholderItemLabel}
                     className="flex-1"
+                    disabled={saving}
                   />
                   <div className="w-28 shrink-0">
                     <Input
@@ -235,6 +261,7 @@ export default function Expenses() {
                       value={item.amount}
                       onChange={(e) => updateItem(item.id, 'amount', e.target.value)}
                       placeholder={t.placeholderItemAmount}
+                      disabled={saving}
                     />
                   </div>
                   <IconButton
@@ -243,7 +270,7 @@ export default function Expenses() {
                     aria-label={t.removeItem}
                     title={t.removeItem}
                     tone="delete"
-                    disabled={items.length === 1}
+                    disabled={items.length === 1 || saving}
                   >
                     <X size={14} />
                   </IconButton>
@@ -253,7 +280,8 @@ export default function Expenses() {
             <button
               type="button"
               onClick={addItemRow}
-              className="mt-2 flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-100"
+              disabled={saving}
+              className="mt-2 flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-100 disabled:pointer-events-none disabled:opacity-50"
             >
               <Plus size={13} /> {t.addItem}
             </button>
@@ -265,7 +293,7 @@ export default function Expenses() {
           </div>
 
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setModalOpen(false)} disabled={saving}>
               {t.cancel}
             </SecondaryButton>
             <PrimaryButton type="submit" disabled={saving}>
@@ -281,6 +309,7 @@ export default function Expenses() {
         onConfirm={handleDelete}
         title={t.deleteTitle}
         description={t.deleteDesc}
+        loading={deleting}
       />
     </div>
   )

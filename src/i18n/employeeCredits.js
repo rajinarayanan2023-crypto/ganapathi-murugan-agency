@@ -1,9 +1,12 @@
 export const EMPLOYEE_CREDITS_TEXT = {
   en: {
     pageTitle: 'Employee Credits',
+    backToSalary: 'Back to Salary',
     addCredit: 'Add Credit',
     editCredit: 'Edit Credit',
     saveChanges: 'Save Changes',
+    saving: 'Saving…',
+    deleting: 'Removing…',
     cancel: 'Cancel',
     searchPlaceholder: 'Search employee or note...',
     colEmployee: 'Employee',
@@ -34,9 +37,12 @@ export const EMPLOYEE_CREDITS_TEXT = {
   },
   ta: {
     pageTitle: 'ஊழியர் கடன்கள்',
+    backToSalary: 'சம்பளத்திற்குத் திரும்பு',
     addCredit: 'கடன் சேர்',
     editCredit: 'கடனைத் திருத்து',
     saveChanges: 'மாற்றங்களைச் சேமி',
+    saving: 'சேமிக்கிறது…',
+    deleting: 'அகற்றுகிறது…',
     cancel: 'ரத்து செய்',
     searchPlaceholder: 'ஊழியர் அல்லது குறிப்பைத் தேடு...',
     colEmployee: 'ஊழியர்',

@@ -34,6 +34,7 @@ import { SkeletonTable } from '../components/Skeleton.jsx'
 import Modal from '../components/Modal.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { PrimaryButton, IconButton, Field, Input, SecondaryButton } from '../components/FormControls.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
 // "Today's Fuel Rate" — petrol/diesel change often enough (the government/
 // OMC can revise pump price almost daily) that the manager needs to confirm
@@ -157,6 +158,14 @@ function embeddableExtension(filename) {
   return EMBEDDABLE_EXT[ext] || null
 }
 
+// Same note values the cash-counting popover on the shift editor offers
+// (PumpDayEditor.jsx) — kept in sync manually since that one isn't exported.
+const NOTE_VALUES = [500, 200, 100, 50, 20, 10]
+function denominationTotal(denominations) {
+  const notesTotal = NOTE_VALUES.reduce((sum, note) => sum + note * (Number(denominations?.[note]) || 0), 0)
+  return notesTotal + (Number(denominations?.coins) || 0)
+}
+
 export default function FuelEntry() {
   const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, lubricants, creditCustomers } = useData()
   const { language } = useLanguage()
@@ -173,17 +182,26 @@ export default function FuelEntry() {
   const navigate = useNavigate()
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [deleting, setDeleting] = useState(false)
   // Only the row whose export is in flight shows a disabled state — fetching
   // bill images to embed can take a moment, but it shouldn't block any other
   // row's own Export button.
   const [exportingId, setExportingId] = useState(null)
+  // One combined flag covering every kind of in-flight write this page can
+  // make (delete, export) — while any of them is running, every OTHER
+  // action on this screen is blocked too.
+  const busy = deleting || exportingId != null
 
   async function handleDelete(id) {
+    setDeleting(true)
     try {
       await deleteFuelEntry(id)
       toast.success(t.toastDeleted)
+      setConfirmDeleteId(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -288,6 +306,20 @@ export default function FuelEntry() {
           p.type === 'credit' ? t.pumpEditor.creditLabel : p.type === 'employeeCredit' ? t.pumpEditor.employeeCreditLabel : p.type === 'expense' ? t.pumpEditor.expenseLabel : 'Cash / Card / QR'
         const label = p.type === 'credit' ? customerName(p.customerId) : p.type === 'employeeCredit' ? employeeName(p.employeeId) : p.label
         rows.push([type, label || '—', p.note || '', round2(Number(p.amount) || 0)])
+        // Cash note-count breakdown (the "Count Cash" popover on the shift
+        // editor) — only shown here when the manager actually counted this
+        // line, same as on screen where the breakdown only appears once
+        // denominations have been entered.
+        if ((!p.type || p.type === 'cash') && p.denominations && denominationTotal(p.denominations) > 0) {
+          NOTE_VALUES.filter((note) => Number(p.denominations?.[note]) > 0).forEach((note) => {
+            const count = Number(p.denominations[note])
+            rows.push(['', `₹${note} × ${count}`, '', round2(note * count)])
+          })
+          if (Number(p.denominations?.coins) > 0) {
+            rows.push(['', 'Coins', '', round2(Number(p.denominations.coins))])
+          }
+          rows.push(['', 'Cash Count Total', '', round2(denominationTotal(p.denominations))])
+        }
       })
     } else {
       rows.push(['—', '—', '', 0])
@@ -357,6 +389,7 @@ export default function FuelEntry() {
     setExportingId(entry.id)
     try {
       await exportEntry(entry)
+      toast.success(t.toastExported)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -512,7 +545,7 @@ export default function FuelEntry() {
               e.stopPropagation()
               handleExportEntry(row._entry)
             }}
-            disabled={exportingId === row.id}
+            disabled={busy}
             aria-label="Export"
             title="Export"
             tone="download"
@@ -524,6 +557,7 @@ export default function FuelEntry() {
               e.stopPropagation()
               navigate(`/fuel-entry/${row.id}/edit`)
             }}
+            disabled={busy}
             aria-label="Edit"
             title="Edit"
             tone="edit"
@@ -535,6 +569,7 @@ export default function FuelEntry() {
               e.stopPropagation()
               setConfirmDeleteId(row.id)
             }}
+            disabled={busy}
             aria-label="Delete"
             title="Delete"
             tone="delete"
@@ -550,15 +585,21 @@ export default function FuelEntry() {
     return <SkeletonTable rows={6} cols={6} />
   }
 
+  const busyLabel = deleting ? t.deleting : exportingId != null ? t.exporting : ''
+
   return (
-    <div className="space-y-6">
+    // Same fillHeight pattern as Employees/Attendance/Credit Bills — flex
+    // h-full lets the card below stretch to exactly fill whatever height
+    // `main` actually has, instead of a hand-guessed `calc(100vh - Npx)`.
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {busy ? <FullPageLoader label={busyLabel} /> : null}
       {/* TodayRateCard removed for now — <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} /> */}
 
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35 }}
-        className="rounded-xl border border-slate-200 bg-white shadow-card"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-card"
       >
         <div className="border-b border-slate-100 px-4 py-2.5">
           <h3 className="text-sm font-semibold text-slate-800">{t.entryHistory}</h3>
@@ -570,7 +611,7 @@ export default function FuelEntry() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={() => navigate('/fuel-entry/new')} className="px-3.5 py-2 text-xs">
+                <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">
                   <Plus size={14} /> {t.newDayEntry}
                 </PrimaryButton>
               }
@@ -585,12 +626,12 @@ export default function FuelEntry() {
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="date"
             defaultSortOrder={-1}
-            scrollable={false}
+            fillHeight
             exportFilename="fuel-entries"
             dense
-            onRowClick={(row) => navigate(`/fuel-entry/${row.id}/edit`)}
+            onRowClick={busy ? undefined : (row) => navigate(`/fuel-entry/${row.id}/edit`)}
             toolbarActions={
-              <PrimaryButton onClick={() => navigate('/fuel-entry/new')} className="px-3.5 py-2 text-xs">
+              <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">
                 <Plus size={14} /> {t.newDayEntry}
               </PrimaryButton>
             }
@@ -604,6 +645,7 @@ export default function FuelEntry() {
         onConfirm={() => handleDelete(confirmDeleteId)}
         title={t.deleteTitle}
         description={t.deleteDesc}
+        loading={deleting}
       />
     </div>
   )

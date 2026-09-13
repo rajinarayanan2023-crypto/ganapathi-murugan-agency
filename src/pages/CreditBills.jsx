@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote, ChevronUp, ChevronDown } from 'lucide-react'
+import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote, ChevronUp, ChevronDown, Search } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
 import { closingBalance, closingBalanceBreakdown } from '../data/mockData.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
+import { prepareBillFile } from '../utils/fileValidation.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -17,14 +18,11 @@ import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconBut
 import { WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import CalcBreakdown from '../components/CalcBreakdown.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
-const customerEmptyForm = { name: '', phone: '', openingBalance: 0, notes: '' }
+const customerEmptyForm = { name: '', phone: '', notes: '' }
 const creditEmptyForm = { fuelType: 'Diesel', ltr: '', rate: '100.45' }
 const paymentEmptyForm = { amount: '', mode: 'Cash' }
-
-function makeId() {
-  return `b-${Math.random().toString(36).slice(2, 9)}`
-}
 
 async function downloadFileFromUrl(url, filename) {
   const res = await fetch(url)
@@ -82,8 +80,8 @@ export default function CreditBills() {
   const [customerForm, setCustomerForm] = useState(customerEmptyForm)
   const [errors, setErrors] = useState({})
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [deletingCustomer, setDeletingCustomer] = useState(false)
   const [savingCustomer, setSavingCustomer] = useState(false)
-  const [uploadingCustomerBills, setUploadingCustomerBills] = useState(false)
 
   const [ledgerCustomerId, setLedgerCustomerId] = useState(null)
   // Only entries added manually (here, or from the Audit modal's "Customer
@@ -91,18 +89,38 @@ export default function CreditBills() {
   // fuel-entry payment (tx.sourceFuelEntryId set) stays tied to that entry;
   // deleting the fuel entry itself is what cleans that one up.
   const [confirmDeleteTx, setConfirmDeleteTx] = useState(null)
+  const [deletingTx, setDeletingTx] = useState(false)
   const [creditForm, setCreditForm] = useState(creditEmptyForm)
   const [paymentForm, setPaymentForm] = useState(paymentEmptyForm)
   const [creditBillFile, setCreditBillFile] = useState(null)
   const [uploadingCreditBill, setUploadingCreditBill] = useState(false)
   const [savingCredit, setSavingCredit] = useState(false)
   const [savingPayment, setSavingPayment] = useState(false)
-  const [customerBillFiles, setCustomerBillFiles] = useState([])
   // Uploading (or clearing) a bill directly against one Transaction History
   // row — id of whichever entry has a request in flight, so only that row's
   // control shows a busy state.
   const [uploadingTxBillId, setUploadingTxBillId] = useState(null)
   const [txSort, setTxSort] = useState({ field: 'date', dir: 'desc' })
+  const [txSearch, setTxSearch] = useState('')
+
+  // One combined flag covering every kind of in-flight write this page can
+  // make — while any of them is running, every OTHER action on this screen
+  // is blocked too via the FullPageLoader below, same pattern as Employees.
+  const busy =
+    savingCustomer ||
+    uploadingCreditBill ||
+    savingCredit ||
+    savingPayment ||
+    uploadingTxBillId != null ||
+    deletingCustomer ||
+    deletingTx
+  const busyLabel = deletingCustomer
+    ? t.removingCustomer
+    : deletingTx
+      ? t.removingTransaction
+      : uploadingTxBillId != null || uploadingCreditBill
+        ? t.uploadingBillPrompt
+        : t.saving
 
   const rows = useMemo(
     () => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c), billsCount: (c.bills?.length || 0) + (c.ledger || []).filter((e) => e.billUrl).length })),
@@ -135,6 +153,39 @@ export default function CreditBills() {
     return list
   }, [ledgerCustomer, txSort])
 
+  // Same "Details" text the table itself renders for a row — shared so the
+  // search below can never match against wording the manager doesn't
+  // actually see on screen.
+  function txDetailsText(tx) {
+    return tx.type === 'credit'
+      ? tx.ltr != null && tx.rate != null
+        ? `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
+        : t.fromFuelEntry
+      : t.modeLabel[tx.mode] || tx.mode
+  }
+
+  // Free-text search across every column actually shown in the table below
+  // (date, type, details, reason/note, amount) — a manager remembering "the
+  // diesel credit from last Tuesday" or "that ₹5000 payment" can find it
+  // without knowing which column it'd sort under.
+  const filteredLedger = useMemo(() => {
+    const q = txSearch.trim().toLowerCase()
+    if (!q) return sortedLedger
+    return sortedLedger.filter((tx) => {
+      const haystack = [
+        formatDate(tx.date),
+        tx.type === 'credit' ? t.credit : t.payment,
+        txDetailsText(tx),
+        tx.note || '',
+        formatCurrency(tx.amount),
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(q)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedLedger, txSearch])
+
   function toggleTxSort(field) {
     setTxSort((prev) => (prev.field === field ? { field, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: field === 'date' ? 'desc' : 'asc' }))
   }
@@ -143,60 +194,42 @@ export default function CreditBills() {
     setEditingCustomerId(null)
     setCustomerForm(customerEmptyForm)
     setErrors({})
-    setCustomerBillFiles([])
     setCustomerModalOpen(true)
   }
 
   function openEditCustomer(c) {
     setEditingCustomerId(c.id)
-    setCustomerForm({ name: c.name, phone: c.phone, openingBalance: c.openingBalance, notes: c.notes || '' })
+    setCustomerForm({ name: c.name, phone: c.phone, notes: c.notes || '' })
     setErrors({})
-    setCustomerBillFiles([])
     setCustomerModalOpen(true)
-  }
-
-  async function uploadAsBill(file) {
-    const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
-    return { id: makeId(), name, url: key, date: todayISO() }
-  }
-
-  async function handleCustomerBillFilesChange(e) {
-    const files = Array.from(e.target.files || [])
-    e.target.value = ''
-    if (!files.length) return
-    setUploadingCustomerBills(true)
-    try {
-      const uploaded = await Promise.all(files.map(uploadAsBill))
-      setCustomerBillFiles((prev) => [...prev, ...uploaded])
-    } catch (err) {
-      toast.error(err.message || t.toastSaveFailed)
-    } finally {
-      setUploadingCustomerBills(false)
-    }
-  }
-
-  // Staged in this modal only — the customer isn't created/updated until
-  // the form submits, so nothing has told the backend this bill exists yet.
-  // Deleting the S3 object directly here (rather than waiting on a save
-  // that might not come) is what keeps a picked-then-unpicked file from
-  // leaking in the bucket forever with no DB row to ever clean it up from.
-  async function removeCustomerBillFile(id) {
-    const file = customerBillFiles.find((f) => f.id === id)
-    setCustomerBillFiles((prev) => prev.filter((f) => f.id !== id))
-    if (file?.url) {
-      try {
-        await deleteUpload(file.url)
-      } catch {
-        // Best-effort — an orphaned object here has no DB reference that
-        // could ever surface it again, but it isn't worth failing over.
-      }
-    }
   }
 
   function validateCustomer() {
     const e = {}
-    if (!customerForm.name.trim()) e.name = t.errorNameRequired
-    if (!customerForm.phone.trim()) e.phone = t.errorPhoneRequired
+    const name = customerForm.name.trim()
+    const phone = customerForm.phone.trim()
+    if (!name) e.name = t.errorNameRequired
+    if (!phone) e.phone = t.errorPhoneRequired
+    else if (!/^\d{10}$/.test(phone)) e.phone = t.errorPhoneInvalid
+
+    // Name and phone are each checked separately — two different customers
+    // sharing a name (or, more tellingly, two "different" customers sharing
+    // one phone number) are exactly the mix-ups this needs to catch, not
+    // just the narrower "re-added the exact same customer" case matching
+    // both at once used to require. Whitespace/case-insensitive, and
+    // excludes the customer currently being edited from the check against
+    // itself.
+    if (name) {
+      const duplicateName = creditCustomers.some(
+        (c) => c.id !== editingCustomerId && c.name.trim().toLowerCase() === name.toLowerCase(),
+      )
+      if (duplicateName) e.name = t.errorDuplicateCustomerName
+    }
+    if (phone && !e.phone) {
+      const duplicatePhone = creditCustomers.some((c) => c.id !== editingCustomerId && (c.phone || '').trim() === phone)
+      if (duplicatePhone) e.phone = t.errorDuplicateCustomerPhone
+    }
+
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -207,22 +240,17 @@ export default function CreditBills() {
     const payload = {
       name: customerForm.name,
       phone: customerForm.phone,
-      openingBalance: Number(customerForm.openingBalance) || 0,
       notes: customerForm.notes,
     }
-    const newBills = customerBillFiles.map((f) => ({ id: f.id, name: f.name, url: f.url, date: f.date }))
     setSavingCustomer(true)
     try {
       if (editingCustomerId) {
-        const existing = creditCustomers.find((c) => c.id === editingCustomerId)
-        if (newBills.length) payload.bills = [...(existing?.bills || []), ...newBills]
         await updateCustomer(editingCustomerId, payload)
         toast.success(t.toastCustomerUpdated)
       } else {
-        await addCustomer({ ...payload, ledger: [], bills: newBills })
-        toast.success(newBills.length ? t.toastCustomerAddedWithBill(newBills.length) : t.toastCustomerAdded)
+        await addCustomer({ ...payload, ledger: [], bills: [] })
+        toast.success(t.toastCustomerAdded)
       }
-      setCustomerBillFiles([])
       setCustomerModalOpen(false)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
@@ -231,12 +259,17 @@ export default function CreditBills() {
     }
   }
 
-  async function handleDeleteCustomer(id) {
+  async function handleDeleteCustomer() {
+    const id = confirmDeleteId
+    setDeletingCustomer(true)
     try {
       await deleteCustomer(id)
       toast.success(t.toastCustomerRemoved)
+      setConfirmDeleteId(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setDeletingCustomer(false)
     }
   }
 
@@ -281,7 +314,12 @@ export default function CreditBills() {
     if (!file || !ledgerCustomer) return
     setUploadingTxBillId(tx.id)
     try {
-      const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
+      const { file: preparedFile, error } = await prepareBillFile(file)
+      if (error) {
+        toast.error(error === 'size' ? t.errorBillTooLarge : t.errorBillFileType)
+        return
+      }
+      const { name, key } = await uploadBillFile(preparedFile, 'credit-customer-bills')
       await updateLedgerEntryBill(ledgerCustomer.id, tx.id, { billName: name, billUrl: key })
       toast.success(t.toastBillUploaded)
     } catch (err) {
@@ -309,6 +347,7 @@ export default function CreditBills() {
     setCreditForm({ fuelType: 'Diesel', ltr: '', rate: String(fuelRates.diesel) })
     setPaymentForm(paymentEmptyForm)
     setCreditBillFile(null)
+    setTxSearch('')
   }
 
   async function handleBillFileChange(e) {
@@ -320,7 +359,12 @@ export default function CreditBills() {
     }
     setUploadingCreditBill(true)
     try {
-      const { name, key } = await uploadBillFile(file, 'credit-customer-bills')
+      const { file: preparedFile, error } = await prepareBillFile(file)
+      if (error) {
+        toast.error(error === 'size' ? t.errorBillTooLarge : t.errorBillFileType)
+        return
+      }
+      const { name, key } = await uploadBillFile(preparedFile, 'credit-customer-bills')
       setCreditBillFile({ name, url: key })
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
@@ -404,13 +448,15 @@ export default function CreditBills() {
 
   async function handleRemoveLedgerEntry() {
     if (!confirmDeleteTx) return
+    setDeletingTx(true)
     try {
       await removeLedgerEntry(confirmDeleteTx.customerId, confirmDeleteTx.entryId)
       toast.success(t.toastTransactionRemoved)
+      setConfirmDeleteTx(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
-      setConfirmDeleteTx(null)
+      setDeletingTx(false)
     }
   }
 
@@ -419,11 +465,10 @@ export default function CreditBills() {
       field: 'name',
       header: t.colCustomer,
       sortable: true,
-      filter: true,
-      style: { width: '26%' },
+      style: { width: '34%' },
       body: (c) => (
         <>
-          <button onClick={() => openLedger(c.id)} className="text-left font-medium text-slate-800 hover:text-brand-700">
+          <button onClick={() => openLedger(c.id)} disabled={busy} className="text-left font-medium text-slate-800 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-60">
             {c.name}
           </button>
           <p className="text-xs font-medium text-slate-400">{c.phone}</p>
@@ -431,23 +476,17 @@ export default function CreditBills() {
       ),
     },
     {
-      field: 'openingBalance',
-      header: t.colOpeningBalance,
-      sortable: true,
-      style: { width: '16%' },
-      body: (c) => <span className="font-medium text-slate-600">{formatCurrency(c.openingBalance)}</span>,
-    },
-    {
       field: 'balance',
-      header: t.colClosingBalance,
+      header: t.colBalance,
       sortable: true,
-      style: { width: '16%' },
+      style: { width: '20%' },
       body: (c) => (
         <span className={`font-semibold ${c.balance > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>{formatCurrency(c.balance)}</span>
       ),
     },
     {
       field: 'bills',
+      exportField: 'billsCount',
       header: t.colBills,
       align: 'center',
       style: { width: '10%' },
@@ -455,8 +494,9 @@ export default function CreditBills() {
         c.billsCount > 0 ? (
           <button
             onClick={() => openLedger(c.id)}
+            disabled={busy}
             title={t.billsUploaded(c.billsCount)}
-            className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700 hover:bg-brand-100"
+            className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Paperclip size={12} /> {c.billsCount}
           </button>
@@ -484,13 +524,13 @@ export default function CreditBills() {
       style: { width: '17%' },
       body: (c) => (
         <div className="flex items-center justify-end gap-1">
-          <IconButton onClick={() => openLedger(c.id)} aria-label="View ledger" title="View ledger" tone="info">
+          <IconButton onClick={() => openLedger(c.id)} disabled={busy} aria-label="View ledger" title="View ledger" tone="info">
             <ReceiptText size={15} />
           </IconButton>
-          <IconButton onClick={() => openEditCustomer(c)} aria-label="Edit" title="Edit" tone="edit">
+          <IconButton onClick={() => openEditCustomer(c)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
             <Pencil size={15} />
           </IconButton>
-          <IconButton onClick={() => setConfirmDeleteId(c.id)} aria-label="Delete" title="Delete" tone="delete">
+          <IconButton onClick={() => setConfirmDeleteId(c.id)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
             <Trash2 size={15} />
           </IconButton>
         </div>
@@ -507,12 +547,16 @@ export default function CreditBills() {
   }
 
   return (
-    <div className="space-y-6">
+    // Same fillHeight pattern as Employees.jsx/Attendance.jsx — flex h-full
+    // lets the card below stretch to exactly fill whatever height `main`
+    // actually has, instead of a hand-guessed `calc(100vh - Npx)`.
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {busy ? <FullPageLoader label={busyLabel} /> : null}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35 }}
-        className="rounded-xl border border-slate-200 bg-white shadow-card"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-card"
       >
         {rows.length === 0 ? (
           <div className="p-5">
@@ -527,11 +571,11 @@ export default function CreditBills() {
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="balance"
             defaultSortOrder={-1}
-            scrollHeight="calc(100vh - 170px)"
+            fillHeight
             exportFilename="credit-customers"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAddCustomer} className="px-3.5 py-2 text-xs">
+              <PrimaryButton onClick={openAddCustomer} disabled={busy} className="px-3.5 py-2 text-xs">
                 <Plus size={14} /> {t.addCustomer}
               </PrimaryButton>
             }
@@ -540,10 +584,20 @@ export default function CreditBills() {
       </motion.div>
 
       {/* Add / Edit customer */}
-      <Modal isOpen={customerModalOpen} onClose={() => setCustomerModalOpen(false)} title={editingCustomerId ? t.editCustomer : t.addCustomer}>
+      <Modal
+        isOpen={customerModalOpen}
+        onClose={savingCustomer ? () => {} : () => setCustomerModalOpen(false)}
+        title={editingCustomerId ? t.editCustomer : t.addCustomer}
+      >
         <form onSubmit={handleCustomerSubmit} className="space-y-4">
           <Field label={t.fieldCustomerName} required error={errors.name}>
-            <Input value={customerForm.name} onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })} placeholder={t.placeholderCustomerName} error={errors.name} />
+            <Input
+              value={customerForm.name}
+              onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
+              placeholder={t.placeholderCustomerName}
+              error={errors.name}
+              disabled={savingCustomer}
+            />
           </Field>
           <Field label={t.fieldPhone} required error={errors.phone}>
             <Input
@@ -552,10 +606,8 @@ export default function CreditBills() {
               placeholder={t.placeholderPhone}
               inputMode="numeric"
               error={errors.phone}
+              disabled={savingCustomer}
             />
-          </Field>
-          <Field label={t.fieldOpeningBalance}>
-            <Input type="number" min="0" value={customerForm.openingBalance} onChange={(e) => setCustomerForm({ ...customerForm, openingBalance: e.target.value })} />
           </Field>
           <Field label={t.fieldAdditionalInfo}>
             <Textarea
@@ -563,40 +615,14 @@ export default function CreditBills() {
               value={customerForm.notes}
               onChange={(e) => setCustomerForm({ ...customerForm, notes: e.target.value })}
               placeholder={t.placeholderNotes}
+              disabled={savingCustomer}
             />
           </Field>
-          <Field label={t.fieldUploadBill}>
-            <div className="space-y-1.5">
-              {customerBillFiles.map((f) => (
-                <div key={f.id} className="flex items-center justify-between gap-2 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs">
-                  <span className="flex min-w-0 items-center gap-1.5 text-brand-700">
-                    <Paperclip size={13} className="shrink-0" />
-                    <span className="truncate">{f.name}</span>
-                  </span>
-                  <AppTooltip title={t.removeAttachment}>
-                    <button
-                      type="button"
-                      onClick={() => removeCustomerBillFile(f.id)}
-                      className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-rose-500"
-                      aria-label={t.removeAttachment}
-                    >
-                      <X size={13} />
-                    </button>
-                  </AppTooltip>
-                </div>
-              ))}
-              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-2.5 text-xs font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700">
-                <Upload size={14} />
-                {t.uploadBillPrompt}
-                <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={handleCustomerBillFilesChange} />
-              </label>
-            </div>
-          </Field>
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setCustomerModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setCustomerModalOpen(false)} disabled={savingCustomer}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit" disabled={savingCustomer || uploadingCustomerBills}>
+            <PrimaryButton type="submit" disabled={savingCustomer}>
               {editingCustomerId ? t.saveChanges : t.addCustomer}
             </PrimaryButton>
           </div>
@@ -604,39 +630,40 @@ export default function CreditBills() {
       </Modal>
 
       {/* Ledger detail */}
-      <Modal isOpen={!!ledgerCustomerId} onClose={() => setLedgerCustomerId(null)} title={ledgerCustomer?.name || ''} maxWidth="max-w-6xl">
+      <Modal
+        isOpen={!!ledgerCustomerId}
+        onClose={busy ? () => {} : () => setLedgerCustomerId(null)}
+        title={ledgerCustomer?.name || ''}
+        maxWidth="max-w-6xl"
+        headerExtra={
+          ledgerCustomer ? (
+            <AppTooltip
+              title={
+                <CalcBreakdown
+                  rows={[
+                    { label: t.credit, value: `+ ${formatCurrency(balanceBreakdown.totalCredit)}` },
+                    { label: t.payment, value: `− ${formatCurrency(balanceBreakdown.totalPayments)}` },
+                  ]}
+                  formula={`${formatCurrency(balanceBreakdown.totalCredit)} − ${formatCurrency(balanceBreakdown.totalPayments)} = ${t.colBalance} (${formatCurrency(balanceBreakdown.balance)})`}
+                />
+              }
+            >
+              <span className="flex cursor-help items-baseline gap-1.5 whitespace-nowrap">
+                <span className="text-xs font-medium text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">{t.colBalance}</span>
+                <span className={`text-base font-bold ${closingBalance(ledgerCustomer) > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>
+                  {formatCurrency(closingBalance(ledgerCustomer))}
+                </span>
+              </span>
+            </AppTooltip>
+          ) : null
+        }
+      >
         {ledgerCustomer ? (
           <div className="space-y-5">
-            <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3">
-              <div>
-                <p className="text-xs text-slate-500">{t.colOpeningBalance}</p>
-                <p className="text-sm font-semibold text-slate-700">{formatCurrency(ledgerCustomer.openingBalance)}</p>
-              </div>
-              <div className="text-right">
-                <AppTooltip
-                  title={
-                    <CalcBreakdown
-                      rows={[
-                        { label: t.colOpeningBalance, value: formatCurrency(balanceBreakdown.openingBalance) },
-                        { label: t.credit, value: `+ ${formatCurrency(balanceBreakdown.totalCredit)}` },
-                        { label: t.payment, value: `− ${formatCurrency(balanceBreakdown.totalPayments)}` },
-                      ]}
-                      formula={`${formatCurrency(balanceBreakdown.openingBalance)} + ${formatCurrency(balanceBreakdown.totalCredit)} − ${formatCurrency(balanceBreakdown.totalPayments)} = ${t.colClosingBalance} (${formatCurrency(balanceBreakdown.balance)})`}
-                    />
-                  }
-                >
-                  <p className="cursor-help text-xs text-slate-500 underline decoration-dotted decoration-slate-300 underline-offset-4">{t.colClosingBalance}</p>
-                </AppTooltip>
-                <p className={`text-lg font-bold ${closingBalance(ledgerCustomer) > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>
-                  {formatCurrency(closingBalance(ledgerCustomer))}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <form onSubmit={handleAddCredit} className="rounded-xl border border-slate-200 p-4">
-                <h4 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t.recordCredit}</h4>
-                <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <form onSubmit={handleAddCredit} className="rounded-xl border border-slate-200 p-3">
+                <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.recordCredit}</h4>
+                <div className="space-y-2">
                   <Field label={t.fieldFuelType}>
                     <Select
                       value={creditForm.fuelType}
@@ -645,6 +672,7 @@ export default function CreditBills() {
                         const rate = fuelType === 'Petrol' ? fuelRates.petrol : fuelRates.diesel
                         setCreditForm({ ...creditForm, fuelType, rate: String(rate) })
                       }}
+                      disabled={savingCredit || uploadingCreditBill}
                     >
                       <option value="Diesel">{t.fuelTypeLabel.Diesel}</option>
                       <option value="Petrol">{t.fuelTypeLabel.Petrol}</option>
@@ -652,10 +680,25 @@ export default function CreditBills() {
                   </Field>
                   <div className="grid grid-cols-2 gap-2">
                     <Field label={t.fieldLtr}>
-                      <Input type="number" min="0" value={creditForm.ltr} onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })} placeholder="0" />
+                      <Input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={creditForm.ltr}
+                        onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })}
+                        placeholder="0"
+                        disabled={savingCredit || uploadingCreditBill}
+                      />
                     </Field>
                     <Field label={t.fieldRate}>
-                      <Input type="number" min="0" value={creditForm.rate} onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })} />
+                      <Input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={creditForm.rate}
+                        onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })}
+                        disabled={savingCredit || uploadingCreditBill}
+                      />
                     </Field>
                   </div>
                   <p className="text-xs text-slate-500">
@@ -676,7 +719,8 @@ export default function CreditBills() {
                           <button
                             type="button"
                             onClick={removeStagedCreditBill}
-                            className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-rose-500"
+                            disabled={savingCredit || uploadingCreditBill}
+                            className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label={t.removeAttachment}
                           >
                             <X size={13} />
@@ -684,10 +728,20 @@ export default function CreditBills() {
                         </AppTooltip>
                       </div>
                     ) : (
-                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-2.5 text-xs font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700">
+                      <label
+                        className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-2.5 text-xs font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 ${
+                          savingCredit || uploadingCreditBill ? 'pointer-events-none opacity-50' : ''
+                        }`}
+                      >
                         <Upload size={14} />
                         {t.uploadBillPrompt}
-                        <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleBillFileChange} />
+                        <input
+                          type="file"
+                          accept="image/*,application/pdf"
+                          className="hidden"
+                          disabled={savingCredit || uploadingCreditBill}
+                          onChange={handleBillFileChange}
+                        />
                       </label>
                     )}
                   </Field>
@@ -698,16 +752,24 @@ export default function CreditBills() {
                 </div>
               </form>
 
-              <form onSubmit={handleAddPayment} className="rounded-xl border border-slate-200 p-4">
-                <h4 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <form onSubmit={handleAddPayment} className="rounded-xl border border-slate-200 p-3">
+                <h4 className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
                   <BadgeIndianRupee size={13} /> {t.recordPayment}
                 </h4>
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <Field label={t.fieldAmount}>
-                    <Input type="number" min="0" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} placeholder="0" />
+                    <Input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={paymentForm.amount}
+                      onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+                      placeholder="0"
+                      disabled={savingPayment}
+                    />
                   </Field>
                   <Field label={t.fieldMode}>
-                    <Select value={paymentForm.mode} onChange={(e) => setPaymentForm({ ...paymentForm, mode: e.target.value })}>
+                    <Select value={paymentForm.mode} onChange={(e) => setPaymentForm({ ...paymentForm, mode: e.target.value })} disabled={savingPayment}>
                       <option value="Cash">{t.modeLabel.Cash}</option>
                       <option value="Card">{t.modeLabel.Card}</option>
                       <option value="Online">{t.modeLabel.Online}</option>
@@ -721,9 +783,24 @@ export default function CreditBills() {
             </div>
 
             <div>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.transactionHistory}</h4>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500">{t.transactionHistory}</h4>
+                {ledgerCustomer.ledger.length > 0 ? (
+                  <div className="relative w-full sm:w-64">
+                    <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      value={txSearch}
+                      onChange={(e) => setTxSearch(e.target.value)}
+                      placeholder={t.searchTransactionsPlaceholder}
+                      className="py-1.5 pl-8 text-xs"
+                    />
+                  </div>
+                ) : null}
+              </div>
               {ledgerCustomer.ledger.length === 0 ? (
                 <EmptyState icon={ReceiptText} title={t.noTransactionsTitle} description={t.noTransactionsDesc} />
+              ) : filteredLedger.length === 0 ? (
+                <EmptyState icon={Search} title={t.noMatchingTransactionsTitle} description={t.noMatchingTransactionsDesc} />
               ) : (
                 <div className="max-h-[28rem] overflow-y-auto rounded-lg border border-slate-100">
                   <table className="w-full text-left text-xs">
@@ -765,7 +842,7 @@ export default function CreditBills() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sortedLedger.map((tx) => (
+                      {filteredLedger.map((tx) => (
                         <tr key={tx.id} className="border-t border-slate-100">
                           <td className="px-3 py-2 text-slate-600">{formatDate(tx.date)}</td>
                           <td className="px-3 py-2">
@@ -773,13 +850,7 @@ export default function CreditBills() {
                               {tx.type === 'credit' ? t.credit : t.payment}
                             </span>
                           </td>
-                          <td className="px-3 py-2 text-slate-500">
-                            {tx.type === 'credit'
-                              ? tx.ltr != null && tx.rate != null
-                                ? `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
-                                : t.fromFuelEntry
-                              : t.modeLabel[tx.mode] || tx.mode}
-                          </td>
+                          <td className="px-3 py-2 text-slate-500">{txDetailsText(tx)}</td>
                           <td className="max-w-[160px] px-3 py-2 text-slate-500">
                             <span className="block truncate" title={tx.note || undefined}>
                               {tx.note || '—'}
@@ -793,8 +864,9 @@ export default function CreditBills() {
                                 <button
                                   type="button"
                                   onClick={() => openBill(tx.billUrl)}
+                                  disabled={busy}
                                   title={tx.billName || t.viewAttachedBill}
-                                  className="flex min-w-0 items-center gap-1 text-brand-600 hover:underline"
+                                  className="flex min-w-0 items-center gap-1 text-brand-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   <Paperclip size={12} className="shrink-0" />
                                   <span className="max-w-[100px] truncate">{tx.billName || t.view}</span>
@@ -803,7 +875,7 @@ export default function CreditBills() {
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveTxBill(tx)}
-                                    disabled={uploadingTxBillId === tx.id}
+                                    disabled={busy}
                                     className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                     aria-label={t.removeBill}
                                   >
@@ -812,14 +884,18 @@ export default function CreditBills() {
                                 </AppTooltip>
                               </div>
                             ) : (
-                              <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-dashed border-slate-300 px-1.5 py-1 text-[11px] font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700">
+                              <label
+                                className={`inline-flex cursor-pointer items-center gap-1 rounded border border-dashed border-slate-300 px-1.5 py-1 text-[11px] font-medium text-slate-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 ${
+                                  busy ? 'pointer-events-none opacity-50' : ''
+                                }`}
+                              >
                                 <Upload size={11} />
                                 {uploadingTxBillId === tx.id ? t.uploadingBillPrompt : t.attachBill}
                                 <input
                                   type="file"
                                   accept="image/*,application/pdf"
                                   className="hidden"
-                                  disabled={uploadingTxBillId === tx.id}
+                                  disabled={busy}
                                   onChange={(e) => handleTxBillUpload(e, tx)}
                                 />
                               </label>
@@ -834,7 +910,8 @@ export default function CreditBills() {
                                 <button
                                   type="button"
                                   onClick={() => sendTransactionReminder(ledgerCustomer, tx)}
-                                  className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"
+                                  disabled={busy}
+                                  className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t.tooltipWhatsApp}
                                 >
                                   <WhatsAppIcon size={15} />
@@ -845,7 +922,8 @@ export default function CreditBills() {
                                   <button
                                     type="button"
                                     onClick={() => setConfirmDeleteTx({ customerId: ledgerCustomer.id, entryId: tx.id })}
-                                    className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+                                    disabled={busy}
+                                    className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                                     aria-label={t.removeTransaction}
                                   >
                                     <X size={13} />
@@ -868,9 +946,10 @@ export default function CreditBills() {
       <ConfirmDialog
         isOpen={!!confirmDeleteId}
         onClose={() => setConfirmDeleteId(null)}
-        onConfirm={() => handleDeleteCustomer(confirmDeleteId)}
+        onConfirm={handleDeleteCustomer}
         title={t.removeCustomerTitle}
         description={t.removeCustomerDesc}
+        loading={deletingCustomer}
       />
 
       <ConfirmDialog
@@ -879,6 +958,7 @@ export default function CreditBills() {
         onConfirm={handleRemoveLedgerEntry}
         title={t.removeTransactionTitle}
         description={t.removeTransactionDesc}
+        loading={deletingTx}
       />
     </div>
   )

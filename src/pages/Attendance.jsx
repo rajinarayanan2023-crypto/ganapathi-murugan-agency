@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { Link } from 'react-router-dom'
-import { Users, Phone, CalendarDays, UserPlus, ChevronLeft, ChevronRight, Briefcase, Pencil } from 'lucide-react'
+import { Users, Phone, CalendarDays, UserPlus, ChevronLeft, ChevronRight, Pencil } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { ATTENDANCE_TEXT } from '../i18n/attendance.js'
@@ -17,6 +17,7 @@ import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTimePicker from '../components/AppTimePicker.jsx'
+import { FullPageLoader } from '../components/Loader.jsx'
 
 const STATUS_STYLES = {
   oneShift: 'bg-emerald-500',
@@ -24,6 +25,7 @@ const STATUS_STYLES = {
   absent: 'bg-rose-500',
   leave: 'bg-amber-400',
   dutyOff: 'bg-slate-300',
+  companyOff: 'bg-violet-500',
 }
 const DEFAULT_START_TIME = '08:00'
 
@@ -63,7 +65,11 @@ export default function Attendance() {
   const [editTarget, setEditTarget] = useState(null)
   const [modalStatus, setModalStatus] = useState('oneShift')
   const [modalStartTime, setModalStartTime] = useState(DEFAULT_START_TIME)
+  // Covers both markAll (mark-all-staff buttons) and saveEditAttendance (the
+  // per-employee edit modal) — whichever is in flight, every other control
+  // on this screen is blocked too via `busy` below.
   const [saving, setSaving] = useState(false)
+  const busy = saving
 
   // History tab browses a different month than "today" — load whichever
   // month is actually being viewed/marked; loadAttendanceMonth no-ops if
@@ -162,8 +168,28 @@ export default function Attendance() {
   // showing the pre-save status until something else forces a full remount
   // (e.g. a page refresh).
   const selectedDateData = useMemo(
-    () => activeEmployees.map((emp) => ({ ...emp, attendanceRecord: attendance[emp.id]?.[selectedDate] || null })),
-    [activeEmployees, attendance, selectedDate],
+    () =>
+      activeEmployees.map((emp) => {
+        const record = attendance[emp.id]?.[selectedDate] || null
+        const status = record?.status
+        const isShiftDay = status === 'oneShift' || status === 'doubleShift'
+        // Plain-text mirrors of what's visually shown, used only for CSV
+        // export (via exportField below) — the name cell's body renders
+        // father's name and role alongside the name, and the status cell has
+        // no `field` at all (it's derived from `attendanceRecord`, not a flat
+        // row property), so without these the export would drop them.
+        return {
+          ...emp,
+          attendanceRecord: record,
+          nameExport: [emp.name, emp.fatherName ? `${t.sonOf} ${emp.fatherName}` : '', roleLabels[emp.role] || emp.role]
+            .filter(Boolean)
+            .join(' - '),
+          attendanceExport: status
+            ? `${t.statusLabel[status]}${isShiftDay ? ` (${formatTime12h(record?.startTime || DEFAULT_START_TIME)})` : ''}`
+            : t.noRecord,
+        }
+      }),
+    [activeEmployees, attendance, selectedDate, t, roleLabels],
   )
 
   const columns = [
@@ -171,8 +197,8 @@ export default function Attendance() {
       field: 'name',
       header: t.colEmployee,
       sortable: true,
-      filter: true,
       style: { width: '20%' },
+      exportField: 'nameExport',
       body: (emp) => (
         <>
           <p className="font-medium text-slate-800">{emp.name}</p>
@@ -181,9 +207,6 @@ export default function Attendance() {
               {t.sonOf} {emp.fatherName}
             </p>
           ) : null}
-          <p className="flex items-center gap-1 text-xs font-medium text-slate-400">
-            <Briefcase size={11} /> {roleLabels[emp.role] || emp.role}
-          </p>
         </>
       ),
     },
@@ -191,7 +214,6 @@ export default function Attendance() {
       field: 'phone',
       header: t.colPhone,
       sortable: true,
-      filter: true,
       style: { width: '13%' },
       body: (emp) => (
         <span className="flex items-center gap-1.5 font-medium text-slate-700">
@@ -200,9 +222,18 @@ export default function Attendance() {
       ),
     },
     {
+      // A truthy `field` is required for this column to be exported at all —
+      // PrimeReact's own exportCSV only ever reads `exportField` for a
+      // column that ALSO has `field` set (`exportable !== false && field`,
+      // checked before exportField is ever consulted). Without this, the
+      // status column silently vanished from the downloaded file even
+      // though attendanceExport was already computed correctly and
+      // exportField named it right — exportable: true alone can't
+      // substitute for a missing field.
+      field: 'attendanceExport',
       header: t.colStatus,
       style: { width: '40%', minWidth: '220px' },
-      exportable: false,
+      exportField: 'attendanceExport',
       body: (emp) => {
         const record = emp.attendanceRecord
         const status = record?.status
@@ -227,7 +258,7 @@ export default function Attendance() {
                 <p className="mt-1 text-[10px] font-medium text-slate-400">{t.shiftWindow(formatTime12h(startTime), formatTime12h(end), rolledOver)}</p>
               ) : null}
             </div>
-            <IconButton onClick={() => openEditAttendance(emp)} aria-label={t.editAttendance} title={t.editAttendance} tone="edit">
+            <IconButton onClick={() => openEditAttendance(emp)} disabled={busy} aria-label={t.editAttendance} title={t.editAttendance} tone="edit">
               <Pencil size={15} />
             </IconButton>
           </div>
@@ -262,7 +293,8 @@ export default function Attendance() {
         <button
           key={tab.key}
           onClick={() => setActiveTab(tab.key)}
-          className={`relative px-4 py-2.5 text-sm font-semibold transition-colors ${
+          disabled={busy}
+          className={`relative px-4 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
             activeTab === tab.key ? 'text-brand-700' : 'text-slate-500 hover:text-slate-700'
           }`}
         >
@@ -277,12 +309,18 @@ export default function Attendance() {
   const showOwnHeader = activeTab === 'history' || activeEmployees.length === 0
 
   return (
-    <div className="space-y-6">
+    // Same fillHeight pattern as Employees.jsx — flex h-full lets the card
+    // below (and, inside it, whichever tab is active) stretch to exactly
+    // fill whatever height `main` actually has, instead of a hand-guessed
+    // `calc(100vh - Npx)` that has to be re-tuned by hand and still drifts
+    // across browsers/zoom.
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {busy ? <FullPageLoader label={t.saving} /> : null}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35 }}
-        className="rounded-xl border border-slate-200 bg-white shadow-card"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-card"
       >
         {showOwnHeader ? (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
@@ -293,8 +331,9 @@ export default function Attendance() {
                 <AppTooltip title="Previous month">
                   <button
                     onClick={goPrevMonth}
+                    disabled={busy}
                     aria-label="Previous month"
-                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
+                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <ChevronLeft size={16} />
                   </button>
@@ -303,7 +342,7 @@ export default function Attendance() {
                 <AppTooltip title="Next month">
                   <button
                     onClick={goNextMonth}
-                    disabled={isCurrentMonth}
+                    disabled={isCurrentMonth || busy}
                     aria-label="Next month"
                     className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -317,7 +356,14 @@ export default function Attendance() {
 
         <AnimatePresence mode="wait">
           {activeTab === 'mark' ? (
-            <motion.div key="mark" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+            <motion.div
+              key="mark"
+              className="flex min-h-0 flex-1 flex-col"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
               {activeEmployees.length === 0 ? (
                 <div className="p-5">
                   <EmptyState
@@ -342,7 +388,7 @@ export default function Attendance() {
                   globalFilterFields={['name', 'phone', 'role', 'fatherName']}
                   searchPlaceholder={t.searchPlaceholder}
                   defaultSortField="name"
-                  scrollHeight="calc(100vh - 105px)"
+                  fillHeight
                   exportFilename={`attendance-${selectedDate}`}
                   dense
                   leadingContent={tabsNav}
@@ -360,21 +406,21 @@ export default function Attendance() {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <button
                           onClick={() => markAll('oneShift')}
-                          disabled={saving}
+                          disabled={busy}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {t.markAllOneShift}
                         </button>
                         <button
                           onClick={() => markAll('absent')}
-                          disabled={saving}
+                          disabled={busy}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {t.markAllAbsent}
                         </button>
                         <button
                           onClick={() => markAll('leave')}
-                          disabled={saving}
+                          disabled={busy}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {t.markAllLeave}
@@ -392,12 +438,12 @@ export default function Attendance() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="p-5"
+              className="flex min-h-0 flex-1 flex-col p-5"
             >
               {activeEmployees.length === 0 ? (
                 <EmptyState icon={CalendarDays} title={t.emptyHistoryTitle} description={t.emptyHistoryDesc} />
               ) : (
-                <div className="max-h-[calc(100vh-260px)] overflow-auto rounded-lg bg-white ring-1 ring-slate-100">
+                <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-white ring-1 ring-slate-100">
                   <table className="w-full border-separate border-spacing-y-1 text-left text-xs">
                     <thead>
                       <tr>
@@ -463,7 +509,11 @@ export default function Attendance() {
         </AnimatePresence>
       </motion.div>
 
-      <Modal isOpen={!!editTarget} onClose={() => setEditTarget(null)} title={editTarget ? t.editAttendanceTitle(editTarget.name) : ''}>
+      <Modal
+        isOpen={!!editTarget}
+        onClose={saving ? () => {} : () => setEditTarget(null)}
+        title={editTarget ? t.editAttendanceTitle(editTarget.name) : ''}
+      >
         {editTarget ? (
           <div className="space-y-4">
             <div className="flex flex-wrap gap-1.5">
@@ -472,7 +522,8 @@ export default function Attendance() {
                   key={s}
                   type="button"
                   onClick={() => setModalStatus(s)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all active:scale-95 ${
+                  disabled={saving}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${
                     modalStatus === s ? `${STATUS_STYLES[s]} text-white shadow-sm` : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                   }`}
                 >
@@ -483,7 +534,7 @@ export default function Attendance() {
 
             {modalStatus === 'oneShift' || modalStatus === 'doubleShift' ? (
               <Field label={t.startTime}>
-                <AppTimePicker value={modalStartTime} onChange={setModalStartTime} className="w-full" />
+                <AppTimePicker value={modalStartTime} onChange={setModalStartTime} className="w-full" disabled={saving} />
                 <p className="mt-1 text-xs text-slate-400">
                   {t.shiftWindow(
                     formatTime12h(modalStartTime),
@@ -495,7 +546,7 @@ export default function Attendance() {
             ) : null}
 
             <div className="flex justify-end gap-2 pt-1">
-              <SecondaryButton type="button" onClick={() => setEditTarget(null)}>
+              <SecondaryButton type="button" onClick={() => setEditTarget(null)} disabled={saving}>
                 {t.cancel}
               </SecondaryButton>
               <PrimaryButton type="button" onClick={saveEditAttendance} disabled={saving}>

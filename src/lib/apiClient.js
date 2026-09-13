@@ -31,6 +31,24 @@ export function setAuthTokens(tokens) {
   refreshToken = tokens?.refreshToken || null
 }
 
+// Refresh tokens are single-use/rotating on the backend (see
+// AuthService.refresh) — the moment ANY tab uses one, the server revokes it
+// and hands back a new one. Every OTHER open tab (or this same tab after a
+// plain reload, since the access token itself is never persisted — see
+// DataContext's login comment) still holds the now-revoked one in this
+// module-level variable, with nothing to tell it that changed, until it
+// eventually tries to refresh with it and gets rejected as invalid — which
+// looks like a random, unexplained logout. DataContext listens for the
+// `storage` event (fired in every OTHER tab whenever one tab rotates the
+// token into localStorage) and calls this to keep this copy current instead
+// of it silently going stale. Deliberately updates ONLY the refresh token —
+// this tab's own access token is still perfectly valid until it expires on
+// its own; there's no equivalent to hand it here since access tokens are
+// in-memory-only per tab.
+export function syncRefreshToken(token) {
+  refreshToken = token || null
+}
+
 export function setSessionExpiredHandler(handler) {
   onSessionExpired = handler
 }
@@ -138,6 +156,10 @@ export function addSalaryRevision(employeeId, { amount, effective_from }) {
   return apiAuthPost(`/employees/${employeeId}/salary-history`, { amount, effective_from })
 }
 
+export function deleteSalaryRevision(employeeId, revisionId) {
+  return apiDelete(`/employees/${employeeId}/salary-history/${revisionId}`)
+}
+
 // Employee Credits — also returned embedded in GET /employees (no separate
 // bulk read endpoint needed), these three are the write side.
 export function addEmployeeCredit(employeeId, data) {
@@ -175,6 +197,21 @@ export function addPriceRevision(id, { rate, effective_from }) {
 
 export function recordPurchase(id, { qty, cost, date }) {
   return apiAuthPost(`/lubricants/${id}/purchases`, { qty, cost, date })
+}
+
+// Corrects a mis-entered purchase — the backend rejects (409) a qty change
+// that would drive stock negative (units from the wrong original quantity
+// already sold), rather than silently corrupting the running stock total.
+export function updatePurchase(productId, purchaseId, data) {
+  return apiPatch(`/lubricants/${productId}/purchases/${purchaseId}`, data)
+}
+
+export function deletePurchase(productId, purchaseId) {
+  return apiDelete(`/lubricants/${productId}/purchases/${purchaseId}`)
+}
+
+export function getLubricantSalesHistory(id) {
+  return apiGet(`/lubricants/${id}/sales-history`)
 }
 
 // ---------- Expenses ----------
@@ -239,10 +276,15 @@ export function createOfferCustomer(data) {
   return apiAuthPost('/offer-customers', data)
 }
 
-// No hard delete — "removing" a recipient is done by soft-deactivating
-// (active: false) via this same generic update.
 export function updateOfferCustomer(id, data) {
   return apiPatch(`/offer-customers/${id}`, data)
+}
+
+// Hard delete — the Offers screen removes a recipient outright rather than
+// soft-deactivating it (unlike Employees/Lubricants/Credit Customers, which
+// stay soft-delete-only).
+export function deleteOfferCustomer(id) {
+  return apiDelete(`/offer-customers/${id}`)
 }
 
 // ---------- Offers ----------
@@ -313,8 +355,49 @@ export function getFuelEntries({ pumpKey, date, before, limit, offset } = {}) {
   return apiGet(`/fuel-entries${qs ? `?${qs}` : ''}`)
 }
 
+// Sends an already-built audit report (see AuditModal's buildWorkbookBlob)
+// to toEmail as a real email, server-side over SMTP — the file itself is
+// never rebuilt or re-validated on the backend, only attached and sent.
+// apiAuthPost already passes a FormData body straight through untouched
+// (see rawRequest's isFormData branch), so no separate low-level helper is
+// needed here.
+export function sendAuditEmail({ toEmail, subject, bodyText, workbookBlob, filename }) {
+  const formData = new FormData()
+  formData.set('to_email', toEmail)
+  formData.set('subject', subject)
+  formData.set('body_text', bodyText)
+  formData.set('attachment', workbookBlob, filename)
+  return apiAuthPost('/fuel-entries/send-audit-email', formData)
+}
+
 export function getFuelEntry(id) {
   return apiGet(`/fuel-entries/${id}`)
+}
+
+// ---------- Commission Rates ----------
+// Replaces the existing row instead of erroring when effective_from matches
+// one already on record (see app/services/commission_service.py) — same
+// create-or-revise pattern as salary/price history elsewhere.
+export function createOrReviseCommissionRate(data) {
+  return apiAuthPost('/commission-rates', data)
+}
+
+// Full revision history, newest first (see CommissionRateRepository.list_all).
+export function getCommissionRateHistory() {
+  return apiGet('/commission-rates')
+}
+
+export function deleteCommissionRate(id) {
+  return apiDelete(`/commission-rates/${id}`)
+}
+
+// ---------- Dashboard ----------
+// month is 'YYYY-MM'. Server-side aggregate (litres/commission/expenses/
+// profit) computed from historically-correct commission rates — see
+// app/services/dashboard_service.py. Also cached server-side (5 min TTL);
+// DataContext adds its own short session-lifetime cache on top of this.
+export function getDashboardSummary(month) {
+  return apiGet(`/dashboard/summary?month=${month}`)
 }
 
 export function createFuelEntry(data) {

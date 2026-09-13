@@ -12,6 +12,7 @@ import {
   createEmployee as apiCreateEmployee,
   updateEmployee as apiUpdateEmployee,
   addSalaryRevision as apiAddSalaryRevision,
+  deleteSalaryRevision as apiDeleteSalaryRevision,
   addEmployeeCredit as apiAddEmployeeCredit,
   updateEmployeeCredit as apiUpdateEmployeeCredit,
   deleteEmployeeCredit as apiDeleteEmployeeCredit,
@@ -21,6 +22,8 @@ import {
   deleteLubricant as apiDeleteLubricant,
   addPriceRevision as apiAddPriceRevision,
   recordPurchase as apiRecordPurchase,
+  updatePurchase as apiUpdatePurchase,
+  deletePurchase as apiDeletePurchase,
   getExpenses,
   createExpenseDay as apiCreateExpenseDay,
   updateExpenseDay as apiUpdateExpenseDay,
@@ -35,6 +38,7 @@ import {
   getOfferCustomers,
   createOfferCustomer as apiCreateOfferCustomer,
   updateOfferCustomer as apiUpdateOfferCustomer,
+  deleteOfferCustomer as apiDeleteOfferCustomer,
   sendOffer as apiSendOffer,
   getOfferHistory,
   getAttendanceMonth,
@@ -45,11 +49,16 @@ import {
   updateFuelEntry as apiUpdateFuelEntry,
   deleteFuelEntry as apiDeleteFuelEntry,
   setAuthTokens,
+  syncRefreshToken,
   setSessionExpiredHandler,
   setTokensRefreshedHandler,
   getMe,
   apiPost,
   changePassword as apiChangePassword,
+  createOrReviseCommissionRate as apiCreateOrReviseCommissionRate,
+  getCommissionRateHistory as apiGetCommissionRateHistory,
+  deleteCommissionRate as apiDeleteCommissionRate,
+  getDashboardSummary as apiGetDashboardSummary,
 } from '../lib/apiClient.js'
 
 const DataContext = createContext(null)
@@ -96,7 +105,7 @@ export function DataProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null)
 
   // Employees now comes from the real API (see loadEmployees below) rather
-  // than localStorage/mockData — every other slice here is still unwired.
+  // than localStorage/mockData — same as every other slice below it now too.
   const [employees, setEmployees] = useState([])
   const [employeesLoading, setEmployeesLoading] = useState(false)
   const [employeesError, setEmployeesError] = useState(null)
@@ -186,6 +195,31 @@ export function DataProvider({ children }) {
     })
   }, [])
 
+  // Cross-tab counterpart of the rotation handler right above: the refresh
+  // token is single-use, so the instant ANY tab rotates it, every OTHER
+  // open tab's own in-memory copy (in apiClient.js) is already stale —
+  // silently so, until that tab eventually tries to use it and gets
+  // rejected as invalid, which looks like a random, unexplained logout.
+  // `storage` only ever fires in tabs OTHER than the one that made the
+  // write, so this can never loop back on the tab that just rotated its
+  // own token. Removed (another tab explicitly logged out) is treated the
+  // same way a manager would expect on a shared station terminal: signed
+  // out here too, rather than silently left in a stale "still logged in"
+  // UI that would only fail later on its next request.
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key !== REFRESH_TOKEN_KEY) return
+      if (e.newValue) {
+        syncRefreshToken(e.newValue)
+        setRefreshToken(e.newValue)
+      } else {
+        logout()
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [logout])
+
   // On first load (a real browser refresh, or a freshly opened tab), silently
   // trade a saved refresh token for a new session instead of forcing a
   // re-login — ProtectedRoute (see App.jsx) waits on authRestoring so it
@@ -224,6 +258,26 @@ export function DataProvider({ children }) {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // Set by whichever page currently has genuinely unsaved work the manager
+  // could lose by navigating away (right now, only Fuel Entry — see
+  // FuelEntryForm/PumpDayEditor) — Layout's sidebar/bottom nav read this to
+  // confirm before leaving instead of navigating straight away. Deliberately
+  // NOT scoped to a specific page here: this is a small, generic "is it safe
+  // to navigate away right now" flag any page can opt into later, the same
+  // way isAuthenticated is a generic flag Login/ProtectedRoute both read.
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  // The same page registers a way to actually SAVE that unsaved work — so a
+  // "Save" button offered from entirely outside that page (Layout's
+  // sidebar/bottom-nav prompt) can trigger a real save instead of just
+  // dismissing the prompt. Stored as `() => fn` (not `fn` directly): passing
+  // a plain function straight to a useState setter is indistinguishable
+  // from a functional state UPDATE, which would call it immediately instead
+  // of storing it.
+  const [saveUnsavedChangesHandler, setSaveUnsavedChangesHandlerState] = useState(null)
+  const setSaveUnsavedChangesHandler = useCallback((fn) => {
+    setSaveUnsavedChangesHandlerState(() => fn)
+  }, [])
+
   // Revokes every refresh token for the account server-side on success (see
   // apiClient's changePassword) — the caller is responsible for logging the
   // user out right after this resolves, since their current session is
@@ -237,10 +291,80 @@ export function DataProvider({ children }) {
     setStation((prev) => ({ ...prev, ...patch }))
   }, [])
 
-  // The OMC commission agreement is renegotiated rarely, so this is just a
-  // flat, current figure — no history to track.
-  const updateCommissionRates = useCallback((patch) => {
-    setCommissionRates((prev) => ({ ...prev, ...patch }))
+  // ---------- Dashboard summary (session-lifetime cache) ----------
+  // Kept in refs, not React state — callers store the resolved value in
+  // their own render state, so this cache exists purely to skip a redundant
+  // network round-trip for a month asked for again shortly after, not to
+  // drive a re-render by itself. Cleared on browser refresh/new session by
+  // design (not localStorage) — dashboard figures should reflect the
+  // backend's current truth each session, not stale numbers from days ago.
+  const DASHBOARD_FRESHNESS_MS = 2 * 60 * 1000
+  const dashboardCacheRef = useRef({}) // { [month]: { data, fetchedAt } }
+  const dashboardInFlightRef = useRef({}) // { [month]: Promise } — dedupes concurrent requests for the same month (e.g. the trend chart's 6 months and the current-month stat cards asking at once)
+
+  const getDashboardSummaryCached = useCallback(async (month) => {
+    const cached = dashboardCacheRef.current[month]
+    if (cached && Date.now() - cached.fetchedAt < DASHBOARD_FRESHNESS_MS) {
+      return cached.data
+    }
+    if (dashboardInFlightRef.current[month]) {
+      return dashboardInFlightRef.current[month]
+    }
+    const promise = apiGetDashboardSummary(month)
+      .then((data) => {
+        dashboardCacheRef.current[month] = { data, fetchedAt: Date.now() }
+        return data
+      })
+      .finally(() => {
+        delete dashboardInFlightRef.current[month]
+      })
+    dashboardInFlightRef.current[month] = promise
+    return promise
+  }, [])
+
+  const invalidateDashboardSummariesFrom = useCallback((month) => {
+    for (const key of Object.keys(dashboardCacheRef.current)) {
+      if (key >= month) delete dashboardCacheRef.current[key]
+    }
+  }, [])
+
+  // Writes a real dated revision to Commission_Rate_History — effective on
+  // patch.effectiveFrom (defaults to today if the caller omits it) — so the
+  // dashboard summary's server-side, historically-correct commission
+  // calculation actually has real data to use. Same effective_from
+  // create-or-revise semantics as salary/price history: submitting a date
+  // that already has a row replaces it, which is also how a wrongly-typed
+  // past revision gets corrected (pick that same date again and resave).
+  // The local copy below still exists only to pre-fill the "Edit Commission
+  // Rates" modal's form with sensible current values.
+  const updateCommissionRates = useCallback(
+    async (patch) => {
+      const effectiveFrom = patch.effectiveFrom || todayISO()
+      const saved = await apiCreateOrReviseCommissionRate({
+        effective_from: effectiveFrom,
+        petrol: Number(patch.petrol) || 0,
+        diesel: Number(patch.diesel) || 0,
+        oil: Number(patch.oil) || 0,
+        oil_packet: Number(patch.oilPacket) || 0,
+        oil_cane: Number(patch.oilCane) || 0,
+      })
+      setCommissionRates((prev) => ({ ...prev, ...patch }))
+      invalidateDashboardSummariesFrom(effectiveFrom.slice(0, 7))
+      return saved
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  // On-demand read (no session cache — the modal fetches it fresh each time
+  // it opens, and the list is small since rate changes are rare).
+  const getCommissionRateHistory = useCallback(() => apiGetCommissionRateHistory(), [])
+
+  const deleteCommissionRate = useCallback(async (id, effectiveFrom) => {
+    await apiDeleteCommissionRate(id)
+    // Same reasoning as updateCommissionRates: removing a revision changes
+    // the applicable rate for its month and every later one.
+    invalidateDashboardSummariesFrom(effectiveFrom.slice(0, 7))
   }, [])
 
   // Adds (or replaces, if effectiveFrom matches an existing entry) a
@@ -270,7 +394,7 @@ export function DataProvider({ children }) {
       joinDate: e.join_date,
       active: e.active,
       notes: e.notes || '',
-      salaryHistory: (e.salary_history || []).map((h) => ({ effectiveFrom: h.effective_from, amount: Number(h.amount) })),
+      salaryHistory: (e.salary_history || []).map((h) => ({ id: h.id, effectiveFrom: h.effective_from, amount: Number(h.amount) })),
       credits: (e.credits || []).map((c) => ({
         id: c.id,
         date: c.date,
@@ -359,6 +483,23 @@ export function DataProvider({ children }) {
     [normalizeEmployee],
   )
 
+  // Removes a wrongly-added salary revision outright — the one way to fix a
+  // revision that has the WRONG effective-from date too (reviseSalary above
+  // can only correct the amount, by resubmitting the same date). The API
+  // refuses to delete an employee's last remaining revision (there must
+  // always be one to derive "current pay" from) and returns the employee's
+  // full, fresh salary_history, same response-updates-local-state pattern
+  // as reviseSalary.
+  const deleteSalaryRevision = useCallback(
+    async (employeeId, revisionId) => {
+      const updated = await apiDeleteSalaryRevision(employeeId, revisionId)
+      const employee = normalizeEmployee(updated)
+      setEmployees((prev) => prev.map((e) => (e.id === employeeId ? employee : e)))
+      return employee
+    },
+    [normalizeEmployee],
+  )
+
   // Employee Credits — advances taken against pay, managed from their own
   // standalone screen. Same response-updates-local-state pattern as
   // reviseSalary above: the API returns the whole employee, re-normalized.
@@ -411,6 +552,7 @@ export function DataProvider({ children }) {
     absent: 'absent',
     leave: 'leave',
     dutyOff: 'duty_off',
+    companyOff: 'company_off',
   }
   const ATTENDANCE_STATUS_FROM_API = {
     one_shift: 'oneShift',
@@ -418,6 +560,7 @@ export function DataProvider({ children }) {
     absent: 'absent',
     leave: 'leave',
     duty_off: 'dutyOff',
+    company_off: 'companyOff',
   }
   const normalizeAttendanceRecord = (r) => ({
     status: ATTENDANCE_STATUS_FROM_API[r.status] || r.status,
@@ -514,7 +657,18 @@ export function DataProvider({ children }) {
   // audit columns) are deliberately NOT copied onto the normalized entry —
   // utils/fuelCalc.js stays the sole source of live totals, never the
   // server's authoritative-but-not-live figures.
-  const normalizeFuelReading = (r) => ({ opening: r?.opening ?? '', closing: r?.closing ?? '', testing: r?.testing ?? '', rate: r?.rate ?? '' })
+  // Same Decimal-comes-back-as-a-JSON-string gotcha as normalizeFuelOilRow
+  // below (FuelReadingOut's opening/closing/testing/rate are plain Decimal
+  // too) — left un-Number()'d here, a saved "500.000" would still DISPLAY
+  // fine as a string, but anything doing a strict/type-sensitive comparison
+  // against it downstream wouldn't see a plain number. Number()'d the same
+  // way for consistency with every other Decimal field this file normalizes.
+  const normalizeFuelReading = (r) => ({
+    opening: r?.opening != null ? Number(r.opening) : '',
+    closing: r?.closing != null ? Number(r.closing) : '',
+    testing: r?.testing != null ? Number(r.testing) : '',
+    rate: r?.rate != null ? Number(r.rate) : '',
+  })
   const normalizeFuelNozzles = (n) => (n ? { nozzle1: normalizeFuelReading(n.nozzle1), nozzle2: normalizeFuelReading(n.nozzle2) } : undefined)
   // stock_count/stock_rate are Decimal on the backend, which Pydantic
   // serializes as JSON STRINGS (e.g. "10.00") to avoid float precision loss
@@ -563,13 +717,25 @@ export function DataProvider({ children }) {
   // Frontend camelCase -> API snake_case for a write, with the '' -> 0/null
   // coercions the write schema needs (Decimal fields reject '', UUID fields
   // reject '' too).
-  const toApiNum = (v) => (v === '' || v == null ? 0 : Number(v))
+  // The API's Decimal fields cap precision (3dp for readings/quantities, 2dp
+  // for money — see FuelReadingIn/PaymentLineIn in the backend schema), but
+  // every number input here uses step="any" with no matching client-side
+  // cap, so nothing ever turns red for a value typed/pasted with one extra
+  // digit of precision. Left unrounded, that value sails through every
+  // on-screen check and then 422s the moment it's actually saved, surfacing
+  // as a bare "Validation error." toast with no field highlighted — rounding
+  // here to the same precision the API accepts closes that gap the same way
+  // a cash register rounds a fraction of a paisa, rather than rejecting it.
+  const toApiNum = (v, decimals = 3) => {
+    const n = v === '' || v == null ? 0 : Number(v)
+    return Number.isFinite(n) ? Number(n.toFixed(decimals)) : 0
+  }
   const toApiReading = (r) => ({ opening: toApiNum(r?.opening), closing: toApiNum(r?.closing), testing: toApiNum(r?.testing), rate: toApiNum(r?.rate) })
   const toApiNozzles = (n) => ({ nozzle1: toApiReading(n?.nozzle1), nozzle2: toApiReading(n?.nozzle2) })
-  const toApiOilRow = (row) => ({ product_id: row.productId || null, stock_count: toApiNum(row.stockCount), stock_rate: toApiNum(row.stockRate) })
+  const toApiOilRow = (row) => ({ product_id: row.productId || null, stock_count: toApiNum(row.stockCount), stock_rate: toApiNum(row.stockRate, 2) })
   const toApiPaymentLine = (p) => ({
     label: p.label || '',
-    amount: toApiNum(p.amount),
+    amount: toApiNum(p.amount, 2),
     type: p.type === 'employeeCredit' ? 'employee_credit' : p.type,
     customer_id: p.customerId || null,
     employee_id: p.employeeId || null,
@@ -589,7 +755,7 @@ export function DataProvider({ children }) {
       oil: entry.oil ? toApiNozzles(entry.oil) : null,
       oil_rows: (entry.oilRows || []).map(toApiOilRow),
       cane_oil_rows: (entry.caneOilRows || []).map(toApiOilRow),
-      cane_oil_offer: toApiNum(entry.caneOilOffer),
+      cane_oil_offer: toApiNum(entry.caneOilOffer, 2),
       payments: (entry.payments || []).map(toApiPaymentLine),
       bills: (entry.bills || []).map((b) => ({ file_name: b.name, file_url: b.url, uploaded_date: b.date })),
       notes: entry.notes || null,
@@ -681,6 +847,8 @@ export function DataProvider({ children }) {
       stock: Number(p.stock),
       priceHistory: (p.price_history || []).map((h) => ({ effectiveFrom: h.effective_from, rate: Number(h.rate) })),
       purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
+      lastSoldDate: p.last_sold_date || null,
+      totalSold: Number(p.total_sold) || 0,
     }),
     [],
   )
@@ -786,21 +954,31 @@ export function DataProvider({ children }) {
     [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects],
   )
 
-  const deleteFuelEntry = useCallback((id) => {
-    let previous
-    setFuelEntries((prev) => {
-      previous = prev.find((f) => f.id === id)
-      return prev.filter((f) => f.id !== id)
-    })
-    return (async () => {
-      try {
-        await apiDeleteFuelEntry(id)
-      } catch (err) {
-        if (previous) setFuelEntries((prev) => [previous, ...prev])
-        throw err
-      }
-    })()
-  }, [])
+  const deleteFuelEntry = useCallback(
+    (id) => {
+      let previous
+      setFuelEntries((prev) => {
+        previous = prev.find((f) => f.id === id)
+        return prev.filter((f) => f.id !== id)
+      })
+      return (async () => {
+        try {
+          await apiDeleteFuelEntry(id)
+          // Deleting a FINAL entry reverses the same credit-ledger/employee-
+          // credit/oil-stock cascade its own save originally applied (see
+          // FuelEntryService.delete) — creditCustomers/employees/lubricants
+          // need the same post-save refresh addFuelEntry/updateFuelEntry
+          // already trigger, or they keep showing the now-reversed figures
+          // until the next full reload.
+          if (previous?.status === 'final') refreshFuelEntrySideEffects(previous)
+        } catch (err) {
+          if (previous) setFuelEntries((prev) => [previous, ...prev])
+          throw err
+        }
+      })()
+    },
+    [refreshFuelEntrySideEffects],
+  )
 
   // ---------- Lubricants ----------
   // (normalizeLubricant/loadLubricants themselves are declared earlier,
@@ -868,6 +1046,39 @@ export function DataProvider({ children }) {
   const addPurchase = useCallback(
     async (productId, { qty, date, cost }) => {
       const updated = await apiRecordPurchase(productId, { qty: Number(qty), date, cost: Number(cost) || 0 })
+      const product = normalizeLubricant(updated)
+      setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
+      return product
+    },
+    [normalizeLubricant],
+  )
+
+  // Corrects a mis-entered purchase (wrong qty/cost/date) — only fields the
+  // caller actually passes are sent, so this doubles as both "just fix the
+  // date" and "fix everything" without a separate partial-update helper.
+  // The API rejects (409, surfaced via ApiError.message) a qty change that
+  // would leave stock negative — units already sold against the ORIGINAL
+  // wrong quantity can't just be wished away, so that's blocked server-side
+  // rather than silently corrupting the running stock count here.
+  const updatePurchase = useCallback(
+    async (productId, purchaseId, { qty, date, cost } = {}) => {
+      const payload = {}
+      if (qty !== undefined) payload.qty = Number(qty)
+      if (date !== undefined) payload.date = date
+      if (cost !== undefined) payload.cost = Number(cost)
+      const updated = await apiUpdatePurchase(productId, purchaseId, payload)
+      const product = normalizeLubricant(updated)
+      setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
+      return product
+    },
+    [normalizeLubricant],
+  )
+
+  // Same negative-stock guard as updatePurchase above, applied as a full
+  // removal instead of a partial correction.
+  const deletePurchase = useCallback(
+    async (productId, purchaseId) => {
+      const updated = await apiDeletePurchase(productId, purchaseId)
       const product = normalizeLubricant(updated)
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
       return product
@@ -1021,17 +1232,12 @@ export function DataProvider({ children }) {
     [normalizeOfferCustomer],
   )
 
-  // No hard delete — deactivating just flips `active`, so it drops out of
-  // the recipient list (see Offers.jsx) without losing its history on
-  // already-sent offers.
-  const deactivateOfferCustomer = useCallback(
-    async (id) => {
-      const updated = await apiUpdateOfferCustomer(id, { active: false })
-      const customer = normalizeOfferCustomer(updated)
-      setOfferCustomers((prev) => prev.map((c) => (c.id === id ? customer : c)))
-    },
-    [normalizeOfferCustomer],
-  )
+  // Hard delete — the Offers screen removes a recipient outright rather
+  // than soft-deactivating it (see apiClient.deleteOfferCustomer).
+  const deleteOfferCustomer = useCallback(async (id) => {
+    await apiDeleteOfferCustomer(id)
+    setOfferCustomers((prev) => prev.filter((c) => c.id !== id))
+  }, [])
 
   // ---------- Offers ----------
   const normalizeOfferSend = useCallback(
@@ -1044,7 +1250,6 @@ export function DataProvider({ children }) {
       sentByName: s.created_by_name || null,
       statusCounts: s.status_counts || {},
       recipients: (s.recipients || []).map((r) => ({
-        customerId: r.offer_customer_id,
         customerName: r.customer_name,
         status: r.status,
         providerResponse: r.provider_response || null,
@@ -1147,12 +1352,19 @@ export function DataProvider({ children }) {
       reviseFuelRate,
       commissionRates,
       updateCommissionRates,
+      getCommissionRateHistory,
+      deleteCommissionRate,
+      getDashboardSummaryCached,
       isAuthenticated,
       authRestoring,
       accessToken,
       refreshToken,
       currentUser,
       login,
+      hasUnsavedChanges,
+      setHasUnsavedChanges,
+      saveUnsavedChangesHandler,
+      setSaveUnsavedChangesHandler,
       logout,
       changePassword,
       employees,
@@ -1162,6 +1374,7 @@ export function DataProvider({ children }) {
       updateEmployee,
       deleteEmployee,
       reviseSalary,
+      deleteSalaryRevision,
       addEmployeeCredit,
       updateEmployeeCredit,
       deleteEmployeeCredit,
@@ -1184,6 +1397,8 @@ export function DataProvider({ children }) {
       deleteLubricant,
       reviseLubricantPrice,
       addPurchase,
+      updatePurchase,
+      deletePurchase,
       creditCustomers,
       creditCustomersLoading,
       creditCustomersError,
@@ -1197,7 +1412,7 @@ export function DataProvider({ children }) {
       offerCustomersLoading,
       offerCustomersError,
       addOfferCustomer,
-      deactivateOfferCustomer,
+      deleteOfferCustomer,
       offerHistory,
       offerHistoryLoading,
       offerHistoryError,
@@ -1216,12 +1431,19 @@ export function DataProvider({ children }) {
       reviseFuelRate,
       commissionRates,
       updateCommissionRates,
+      getCommissionRateHistory,
+      deleteCommissionRate,
+      getDashboardSummaryCached,
       isAuthenticated,
       authRestoring,
       accessToken,
       refreshToken,
       currentUser,
       login,
+      hasUnsavedChanges,
+      setHasUnsavedChanges,
+      saveUnsavedChangesHandler,
+      setSaveUnsavedChangesHandler,
       logout,
       changePassword,
       employees,
@@ -1231,6 +1453,7 @@ export function DataProvider({ children }) {
       updateEmployee,
       deleteEmployee,
       reviseSalary,
+      deleteSalaryRevision,
       addEmployeeCredit,
       updateEmployeeCredit,
       deleteEmployeeCredit,
@@ -1253,6 +1476,8 @@ export function DataProvider({ children }) {
       deleteLubricant,
       reviseLubricantPrice,
       addPurchase,
+      updatePurchase,
+      deletePurchase,
       creditCustomers,
       creditCustomersLoading,
       creditCustomersError,
@@ -1266,7 +1491,7 @@ export function DataProvider({ children }) {
       offerCustomersLoading,
       offerCustomersError,
       addOfferCustomer,
-      deactivateOfferCustomer,
+      deleteOfferCustomer,
       offerHistory,
       offerHistoryLoading,
       offerHistoryError,

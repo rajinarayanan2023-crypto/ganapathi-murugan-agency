@@ -8,14 +8,26 @@ import { DATA_TABLE_TEXT } from '../i18n/dataTable.js'
 
 // Thin wrapper around PrimeReact's DataTable: a global search box, per-column
 // row filters, sortable headers, an internally scrolling body so the body
-// never has to be so tall that the whole page scrolls, and a CSV export button.
+// never has to be so tall that the whole page scrolls, pagination with a
+// rows-per-page picker, and a CSV export button.
 //
-// columns: [{ field, header, sortable, filter, body: (row) => node, align, filterPlaceholder, exportable, exportField }]
+// columns: [{ field, header, sortable, body: (row) => node, align, exportable, exportField }]
 // exportField: which row property the "Export CSV" button reads for this
 // column, when it differs from `field` — needed whenever `body` renders
 // something a raw field value can't (a formatted/joined string, a code
 // mapped to a label, JSX built from several row properties) so the CSV
 // isn't left with the raw code or blank cells for that column.
+// exportCSV() (below, wired to the toolbar's Export button) always exports
+// every row regardless of the current page — pagination only limits what's
+// on screen, never what's in the CSV.
+//
+// Pagination + the internal scroll (scrollHeight) work together, not as
+// alternatives: pagination caps how many rows render at once (so a table
+// with thousands of rows doesn't choke the DOM), while scrollHeight caps how
+// tall even one page of rows is allowed to get — e.g. rowsPerPageOptions
+// lets a manager pick 50 or 100 rows per page, and THAT'S when the internal
+// scrollbar actually earns its keep instead of sitting unused at the
+// default 10-per-page size.
 export default function DataTable({
   columns,
   data,
@@ -31,37 +43,55 @@ export default function DataTable({
   selectable = false,
   selection,
   onSelectionChange,
-  paginator = true,
-  rows = 5,
-  rowsPerPageOptions = [5, 10, 20, 50],
   dense = false,
   toolbarActions,
   leadingContent,
   trailingContent,
   scrollable = true,
   hideExport = false,
+  paginator = true,
+  rows = 10,
+  rowsPerPageOptions = [10, 25, 50, 100],
+  // When true, the table fills exactly whatever height its own container
+  // gives it (that container must itself be height-bounded — e.g. a flex
+  // child with min-h-0 inside a page that opts into `lg:h-full`, see
+  // Layout.jsx/Employees.jsx) instead of using a guessed `calc(100vh - Npx)`
+  // pixel offset for `scrollHeight`. A fixed offset has to be re-tuned by
+  // hand every time that page's own header/toolbar content changes height,
+  // and still drifts across browsers/zoom/font-rendering differences —
+  // this self-adjusts instead, so the table can never be responsible for
+  // the page needing to scroll.
+  fillHeight = false,
 }) {
   const { language } = useLanguage()
   const dt = DATA_TABLE_TEXT[language]
   const [globalFilter, setGlobalFilter] = useState('')
   const tableRef = useRef(null)
-
-  // When a row is added (data grows), jump back to page 1 — otherwise a new
-  // row can land on a later page (via sorting) and adding it silently looks
-  // like nothing happened.
-  const [first, setFirst] = useState(0)
-  const prevLengthRef = useRef(data.length)
+  // Controlled (rather than left to PrimeReact's own internal state) purely
+  // so the search box below can reset back to page 1 — otherwise typing a
+  // search that narrows 80 rows down to 3 could leave the paginator sitting
+  // on "page 4 of 1", showing an empty table for a query that actually has
+  // matches.
+  const [pageState, setPageState] = useState({ first: 0, rows })
   useEffect(() => {
-    if (data.length > prevLengthRef.current) {
-      setFirst(0)
-    }
-    prevLengthRef.current = data.length
-  }, [data.length])
+    setPageState((p) => (p.first === 0 ? p : { ...p, first: 0 }))
+  }, [globalFilter])
 
   const showToolbar = !!globalFilterFields || !!toolbarActions || !!leadingContent || !!trailingContent || !hideExport
 
   return (
-    <div>
+    // overflow-x-auto so that if the table's rendered width ever exceeds its
+    // container by even a pixel or two (e.g. a header/body scrollbar-gutter
+    // mismatch on a system with always-visible scrollbars, or a very narrow
+    // window) that overflow scrolls locally, right here, instead of forcing
+    // a horizontal scrollbar on the whole page — the same problem the
+    // vertical scrollHeight cap already solves for height.
+    // flex-1 (not h-full) — some fillHeight call sites (e.g. Fuel Entry's
+    // "Entry History" title bar) render a sibling ABOVE this in the same
+    // flex-col card; h-full would size this to 100% of the card regardless
+    // of what that sibling already took, overflowing the card's own bounds.
+    // flex-1 correctly shares whatever's actually left over instead.
+    <div className={fillHeight ? 'flex min-h-0 flex-1 flex-col overflow-x-auto' : 'overflow-x-auto'}>
       {showToolbar ? (
         <div
           className={`flex flex-col gap-3 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between ${
@@ -101,27 +131,20 @@ export default function DataTable({
         </div>
       ) : null}
 
+      <div className={fillHeight ? 'min-h-0 flex-1' : undefined}>
       <PrimeTable
         ref={tableRef}
         value={data}
         dataKey={rowKey}
         locale={language === 'ta' ? 'ta' : 'en'}
         scrollable={scrollable}
-        scrollHeight={scrollable ? scrollHeight : undefined}
+        scrollHeight={scrollable ? (fillHeight ? 'flex' : scrollHeight) : undefined}
         tableStyle={dense ? { tableLayout: 'fixed', width: '100%' } : undefined}
         globalFilter={globalFilter}
         globalFilterFields={globalFilterFields}
         sortField={defaultSortField}
         sortOrder={defaultSortOrder}
         removableSort
-        paginator={paginator}
-        rows={rows}
-        first={first}
-        onPage={(e) => setFirst(e.first)}
-        rowsPerPageOptions={rowsPerPageOptions}
-        alwaysShowPaginator
-        paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
-        currentPageReportTemplate={dt.currentPageReport}
         emptyMessage={emptyMessage ?? dt.emptyMessage}
         className={
           [
@@ -136,6 +159,13 @@ export default function DataTable({
         exportFilename={exportFilename}
         selection={selectable ? selection : undefined}
         onSelectionChange={selectable && onSelectionChange ? (e) => onSelectionChange(e.value) : undefined}
+        paginator={paginator}
+        first={pageState.first}
+        rows={pageState.rows}
+        rowsPerPageOptions={rowsPerPageOptions}
+        onPage={(e) => setPageState({ first: e.first, rows: e.rows })}
+        paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
+        currentPageReportTemplate={dt.paginatorReport}
       >
         {selectable ? <Column selectionMode="multiple" headerStyle={{ width: '3rem' }} /> : null}
         {columns.map((col) => (
@@ -144,8 +174,6 @@ export default function DataTable({
             field={col.field}
             header={col.header}
             sortable={col.sortable}
-            filter={col.filter}
-            filterPlaceholder={col.filterPlaceholder || dt.searchColumn(col.header)}
             body={col.body}
             style={col.style}
             align={col.align}
@@ -155,6 +183,7 @@ export default function DataTable({
           />
         ))}
       </PrimeTable>
+      </div>
     </div>
   )
 }

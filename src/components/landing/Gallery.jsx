@@ -71,10 +71,10 @@ export default function Gallery({ station }) {
               <img src={active.src} alt={active.alt} className="max-h-[85vh] w-full rounded-lg object-contain" />
               <button
                 onClick={() => setActive(null)}
-                className="absolute -top-3 -right-3 flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg hover:bg-slate-50"
+                className="absolute -top-3 -right-3 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg hover:bg-slate-50"
                 aria-label="Close"
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </motion.div>
           </motion.div>

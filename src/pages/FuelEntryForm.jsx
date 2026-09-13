@@ -7,12 +7,14 @@ import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
 import { formatCurrency, todayISO } from '../utils/format.js'
 import { aggregateEntries, withCarriedOpenings, sortPumpEntries } from '../utils/fuelCalc.js'
+import { isPresentRecord } from '../utils/attendance.js'
 import EmptyState from '../components/EmptyState.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import CalcBreakdown from '../components/CalcBreakdown.jsx'
 import PumpDayEditor from '../components/PumpDayEditor.jsx'
 import AuditModal from '../components/AuditModal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
 
 // Each shift is its own independently-saved record now (see PumpDayEditor —
 // every shift card has its own Save/Save-as-Draft). This page is just the
@@ -22,10 +24,94 @@ import AuditModal from '../components/AuditModal.jsx'
 export default function FuelEntryForm() {
   const { entryId } = useParams()
   const navigate = useNavigate()
-  const { fuelEntries, fuelEntriesLoading, fuelRates, employees, creditCustomers, lubricants, station, updateStation, attendance, loadAttendanceMonth } = useData()
+  const {
+    fuelEntries,
+    fuelEntriesLoading,
+    fuelRates,
+    employees,
+    creditCustomers,
+    lubricants,
+    station,
+    updateStation,
+    attendance,
+    loadAttendanceMonth,
+    setHasUnsavedChanges,
+    setSaveUnsavedChangesHandler,
+  } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
   const activeEmployees = useMemo(() => employees.filter((e) => e.active !== false), [employees])
+
+  // Each PumpDayEditor reports its own dirty state up here (see its
+  // onDirtyChange prop) — neither pump's shift cards ever actually unmount
+  // just from switching tabs (both stay mounted, only hidden via CSS), so
+  // nothing is technically at risk there, but the manager asked for the
+  // reminder anyway: it's easy to switch away from a half-finished shift and
+  // forget to come back and click Save Entry. Changing the date, or leaving
+  // this page/screen entirely, DOES throw the unsaved state away for real
+  // (see PumpDayEditor's `key` prop below and its own localStorage restore).
+  const [pump1Dirty, setPump1Dirty] = useState(false)
+  const [pump2Dirty, setPump2Dirty] = useState(false)
+  const anyDirty = pump1Dirty || pump2Dirty
+  const pump1Ref = useRef(null)
+  const pump2Ref = useRef(null)
+
+  // Saves whatever's currently dirty on EITHER pump — used by every "Save"
+  // button below (this page's own prompts, and Layout's sidebar/bottom-nav
+  // prompt, via setSaveUnsavedChangesHandler). Returns true only once
+  // everything dirty has genuinely saved; a validation failure or a failed
+  // request on any one shift (already surfaced right on that shift's own
+  // card) means the caller should not proceed with the navigation it was
+  // about to do.
+  async function attemptSaveAllDirty() {
+    const results = await Promise.all([
+      pump1Ref.current?.attemptSaveDirtyShifts() ?? true,
+      pump2Ref.current?.attemptSaveDirtyShifts() ?? true,
+    ])
+    return results.every(Boolean)
+  }
+
+  useEffect(() => {
+    setHasUnsavedChanges(anyDirty)
+  }, [anyDirty, setHasUnsavedChanges])
+  // Only the true unmount (leaving this page) should ever clear the global
+  // flag — not a dependency-change cleanup, which would otherwise flip it
+  // false-then-true again on every single dirty/clean transition.
+  useEffect(() => () => setHasUnsavedChanges(false), [setHasUnsavedChanges])
+
+  // Lets Layout's sidebar/bottom-nav unsaved-changes prompt's "Save" button
+  // reach this page's own save logic — that prompt fires from entirely
+  // outside this component tree.
+  useEffect(() => {
+    setSaveUnsavedChangesHandler(attemptSaveAllDirty)
+    return () => setSaveUnsavedChangesHandler(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setSaveUnsavedChangesHandler])
+
+  // Holds whatever the manager just clicked (switch pump tab, change date,
+  // leave the page) until they confirm they really want to — a plain
+  // function to run on confirm, or null while no prompt is open.
+  const [pendingLeaveAction, setPendingLeaveAction] = useState(null)
+  function guardedRun(hasUnsaved, action) {
+    if (hasUnsaved) {
+      setPendingLeaveAction(() => action)
+      return
+    }
+    action()
+  }
+  function confirmLeave() {
+    pendingLeaveAction?.()
+    setPendingLeaveAction(null)
+  }
+  // "Save" in this page's own prompts (switch pump, change date, back to
+  // history): save first, and only actually proceed once that's genuinely
+  // succeeded.
+  async function handleSaveAndLeave() {
+    const action = pendingLeaveAction
+    const ok = await attemptSaveAllDirty()
+    setPendingLeaveAction(null)
+    if (ok) action?.()
+  }
 
   // Arriving via a History row (entryId set) jumps straight to that shift's
   // day + pump; arriving via "New Day Entry" starts on today, Pump 1.
@@ -40,16 +126,20 @@ export default function FuelEntryForm() {
     loadAttendanceMonth(year, month - 1)
   }, [date, loadAttendanceMonth])
 
-  // An employee marked absent/leave/duty-off for this date shouldn't be
-  // assignable to work a shift on it — ShiftCard (PumpDayEditor) still shows
-  // whoever is ALREADY assigned even if they're in this set, so correcting
-  // someone's attendance after the fact never leaves an existing shift
-  // assignment looking blank.
+  // Only an employee actually marked present for this date (oneShift/
+  // doubleShift/companyOff — see isPresentRecord) is assignable to work a
+  // shift on it. Previously this only blocked explicit absent/leave/dutyOff,
+  // which meant anyone with NO attendance marked at all for the date (the
+  // common case before attendance is even taken) still showed up as
+  // assignable — this is an allowlist instead, so "not marked present" (for
+  // any reason, including simply not marked yet) is unavailable by default.
+  // ShiftCard (PumpDayEditor) still shows whoever is ALREADY assigned even if
+  // they're in this set, so correcting someone's attendance after the fact
+  // never leaves an existing shift assignment looking blank.
   const unavailableEmployeeIds = useMemo(() => {
-    const notWorking = new Set(['absent', 'leave', 'dutyOff'])
     const ids = new Set()
     for (const emp of activeEmployees) {
-      if (notWorking.has(attendance[emp.id]?.[date]?.status)) ids.add(emp.id)
+      if (!isPresentRecord(attendance[emp.id]?.[date])) ids.add(emp.id)
     }
     return ids
   }, [activeEmployees, attendance, date])
@@ -60,20 +150,42 @@ export default function FuelEntryForm() {
   const [shift3AuditOpen, setShift3AuditOpen] = useState(false)
 
   // fuelEntries now loads from the API asynchronously — a hard refresh (or a
-  // bookmark) landing directly on a specific entry's URL can mount before
-  // that fetch resolves, so date/activeTab above may have fallen back to
-  // "today, Pump 1" even though a real entryId was given. Once loading
-  // finishes, jump to the entry's actual date/pump — once only, so this
-  // never fights a manager who's already switched tabs by the time it lands.
-  const resyncedLinkedEntryRef = useRef(false)
+  // bookmark) landing directly on a specific entry's URL mounts this well
+  // before that fetch (and the auth-restore silent refresh ahead of it) ever
+  // resolves, so date/activeTab above fall back to "today, Pump 1" at first,
+  // even though a real entryId was given. Once linkedEntry actually becomes
+  // available, jump to its real date/pump.
+  //
+  // This USED to gate on fuelEntriesLoading turning false, on the
+  // assumption that only ever happens once, after a real fetch — but
+  // fuelEntriesLoading starts false (its plain useState default) and only
+  // ever flips true once DataContext's own effect notices isAuthenticated
+  // and calls loadFuelEntries(). Before auth restore resolves,
+  // isAuthenticated is still false, so that effect hasn't fired yet either —
+  // fuelEntriesLoading reads as false not because loading finished, but
+  // because it hasn't started. This effect used to run right then, see
+  // linkedEntry still unresolved (fuelEntries is still `[]`), and — because
+  // the guard was a one-shot boolean — permanently mark itself "done"
+  // without ever having actually synced anything. The real fetch would
+  // still complete moments later with the correct entry, but nothing was
+  // listening anymore: the page silently stayed on "today, Pump 1" for
+  // good, with no error and no visual difference from a genuinely blank
+  // new entry — exactly the kind of confusing state a manager could start
+  // editing without ever noticing it was the wrong day/pump.
+  //
+  // Keying the guard on entryId itself (rather than a boolean) instead
+  // fires the moment linkedEntry is genuinely found, however many renders
+  // that takes, and still fires again correctly if entryId itself ever
+  // changes under this same mounted instance (e.g. editing entry A, then
+  // entry B, without the route unmounting in between — React Router
+  // doesn't remount on a param-only change against the same route).
+  const resyncedForEntryIdRef = useRef(null)
   useEffect(() => {
-    if (!entryId || fuelEntriesLoading || resyncedLinkedEntryRef.current) return
-    resyncedLinkedEntryRef.current = true
-    if (linkedEntry) {
-      setDate(linkedEntry.date)
-      setActiveTab(linkedEntry.pumpKey)
-    }
-  }, [entryId, fuelEntriesLoading, linkedEntry])
+    if (!entryId || !linkedEntry || resyncedForEntryIdRef.current === entryId) return
+    resyncedForEntryIdRef.current = entryId
+    setDate(linkedEntry.date)
+    setActiveTab(linkedEntry.pumpKey)
+  }, [entryId, linkedEntry])
 
   // Combined Pump 1 + Pump 2 totals for the viewed date, from whatever
   // shifts are currently saved — updates live as each shift card is saved.
@@ -92,6 +204,13 @@ export default function FuelEntryForm() {
   // hooks can never come after a conditional return or their call order
   // changes between "still loading" and "loaded" renders, which is exactly
   // what threw "Rendered more hooks than during the previous render" here.
+  // The audit report reads straight off whatever's actually saved for this
+  // date (dayBreakdown below, built from this same fuelEntries filter) — a
+  // brand new, still-unsaved add has nothing for it to summarize yet, so the
+  // button stays disabled (with a hint) until the first draft/final save for
+  // this date lands, rather than opening to a report that's all zeros.
+  const hasSavedEntryForDate = useMemo(() => fuelEntries.some((e) => e.date === date), [fuelEntries, date])
+
   const dayBreakdown = useMemo(() => {
     const dayEntries = fuelEntries.filter((e) => e.date === date)
     const perPump = { pump1: [], pump2: [] }
@@ -151,7 +270,7 @@ export default function FuelEntryForm() {
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <button
               type="button"
-              onClick={() => navigate('/fuel-entry')}
+              onClick={() => guardedRun(anyDirty, () => navigate('/fuel-entry'))}
               className="flex items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-slate-700"
             >
               <ArrowLeft size={15} /> {t.entryHistory}
@@ -161,11 +280,18 @@ export default function FuelEntryForm() {
           </div>
           <div className="flex items-center gap-1.5">
             <span className="shrink-0 text-xs font-semibold text-slate-600">{t.fieldDate}</span>
-            <AppDatePicker value={date} onChange={setDate} variant="compact" className="w-[148px] shrink-0" />
+            <AppDatePicker
+              value={date}
+              onChange={(next) => guardedRun(anyDirty, () => setDate(next))}
+              variant="compact"
+              className="w-[148px] shrink-0"
+            />
             <button
               type="button"
               onClick={() => setAuditOpen(true)}
-              className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-700 shadow-sm ring-1 ring-brand-200 transition-colors hover:bg-brand-50"
+              disabled={!hasSavedEntryForDate}
+              title={hasSavedEntryForDate ? undefined : t.auditDisabledHint}
+              className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-700 shadow-sm ring-1 ring-brand-200 transition-colors hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
             >
               <ClipboardCheck size={13} /> {t.auditButton}
             </button>
@@ -223,12 +349,25 @@ export default function FuelEntryForm() {
         ) : null}
 
         <div className="flex items-center gap-2 border-b border-slate-100">
-          <PumpTab active={activeTab === 'pump1'} onClick={() => setActiveTab('pump1')} label={t.pump1} accentText="text-violet-600" accentBar="bg-violet-600" />
-          <PumpTab active={activeTab === 'pump2'} onClick={() => setActiveTab('pump2')} label={t.pump2} accentText="text-ocean-600" accentBar="bg-ocean-600" />
+          <PumpTab
+            active={activeTab === 'pump1'}
+            onClick={() => guardedRun(activeTab === 'pump2' && pump2Dirty, () => setActiveTab('pump1'))}
+            label={t.pump1}
+            accentText="text-violet-600"
+            accentBar="bg-violet-600"
+          />
+          <PumpTab
+            active={activeTab === 'pump2'}
+            onClick={() => guardedRun(activeTab === 'pump1' && pump1Dirty, () => setActiveTab('pump2'))}
+            label={t.pump2}
+            accentText="text-ocean-600"
+            accentBar="bg-ocean-600"
+          />
         </div>
 
         <div className={`pt-3 ${activeTab === 'pump1' ? '' : 'hidden'}`}>
           <PumpDayEditor
+            ref={pump1Ref}
             key={`pump1-${date}`}
             pumpKey="pump1"
             label={t.pump1}
@@ -239,10 +378,12 @@ export default function FuelEntryForm() {
             unavailableEmployeeIds={unavailableEmployeeIds}
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
+            onDirtyChange={setPump1Dirty}
           />
         </div>
         <div className={`pt-3 ${activeTab === 'pump2' ? '' : 'hidden'}`}>
           <PumpDayEditor
+            ref={pump2Ref}
             key={`pump2-${date}`}
             pumpKey="pump2"
             label={t.pump2}
@@ -254,9 +395,22 @@ export default function FuelEntryForm() {
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
             lubricants={lubricants}
+            onDirtyChange={setPump2Dirty}
           />
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={!!pendingLeaveAction}
+        onClose={() => setPendingLeaveAction(null)}
+        onCancelClick={handleSaveAndLeave}
+        onConfirm={confirmLeave}
+        title={t.unsavedChangesTitle}
+        description={t.unsavedChangesDesc}
+        confirmLabel={t.unsavedChangesLeave}
+        cancelLabel={t.unsavedChangesStay}
+        confirmTone="leave"
+      />
 
       <AuditModal
         isOpen={auditOpen}

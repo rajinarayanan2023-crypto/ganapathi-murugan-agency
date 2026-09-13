@@ -90,16 +90,6 @@
   border-radius: 0;
 }
 
-.p-datatable .p-paginator {
-  border-color: #f6d3b8;
-  padding: 0.5rem;
-}
-
-.p-datatable .p-paginator .p-paginator-page.p-highlight {
-  background: #c46f36;
-  color: #ffffff;
-}
-
 .p-inputtext:enabled:focus {
   border-color: #dd8a4f;
   box-shadow: 0 0 0 1px #dd8a4f;
@@ -141,6 +131,38 @@
 
 .p-datatable .p-datatable-thead .p-checkbox .p-checkbox-box {
   background: #ffffff;
+}
+
+/* Paginator bar — PrimeReact's default is noticeably taller/larger-type than
+   the rest of this dense-styled table, so it reads as a mismatched strip of
+   chrome tacked onto the bottom. Shrunk to match: smaller page buttons,
+   smaller "rows per page" dropdown, smaller "1-10 of 11" report text, less
+   padding around the whole bar. */
+.p-paginator {
+  padding: 0.35rem 0.5rem;
+  gap: 0.125rem;
+}
+
+.p-paginator .p-paginator-element {
+  min-width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.7rem;
+}
+
+.p-paginator .p-paginator-current {
+  height: 1.75rem;
+  font-size: 0.7rem;
+}
+
+.p-paginator .p-dropdown {
+  height: 1.75rem;
+  min-width: 3.25rem;
+  font-size: 0.7rem;
+}
+
+.p-paginator .p-dropdown .p-dropdown-label {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
 }
 
 /* Mobile: our `dense` tables use fixed, percentage-based column widths on

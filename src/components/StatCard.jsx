@@ -25,7 +25,8 @@ export default function StatCard({ icon: Icon, label, value, formatter, suffix, 
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: index * 0.06, ease: 'easeOut' }}
-      whileHover={{ y: -2 }}
+      whileHover={{ y: -3, scale: 1.015 }}
+      whileTap={{ scale: 0.98 }}
       className={`cursor-pointer rounded-xl border border-slate-200 shadow-card ring-1 transition-shadow duration-200 hover:shadow-card-hover ${dense ? 'p-2.5' : 'p-5'} ${theme.card}`}
     >
       <div className="flex items-center justify-between">
@@ -37,9 +38,14 @@ export default function StatCard({ icon: Icon, label, value, formatter, suffix, 
           </p>
         </div>
         {Icon ? (
-          <div className={`flex shrink-0 items-center justify-center rounded-lg ${dense ? 'h-7 w-7' : 'h-10 w-10'} ${theme.icon}`}>
+          <motion.div
+            initial={{ scale: 0, rotate: -20 }}
+            animate={{ scale: 1, rotate: 0 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 15, delay: index * 0.06 + 0.1 }}
+            className={`flex shrink-0 items-center justify-center rounded-lg ${dense ? 'h-7 w-7' : 'h-10 w-10'} ${theme.icon}`}
+          >
             <Icon size={dense ? 14 : 20} strokeWidth={2} />
-          </div>
+          </motion.div>
         ) : null}
       </div>
     </motion.div>

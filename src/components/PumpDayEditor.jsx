@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
 import {
@@ -17,6 +18,7 @@ import {
   AlertTriangle,
   TrendingUp,
   Trash2,
+  ExternalLink,
 } from 'lucide-react'
 import {
   FUEL_KEYS_BY_PUMP,
@@ -38,11 +40,13 @@ import {
   aggregateEntries,
   PAYMENT_METHOD_OPTIONS,
 } from '../utils/fuelCalc.js'
-import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatEmployeeName, todayISO } from '../utils/format.js'
 import { currentRate, purchaseBatchesByCost, sortedPriceHistory, stockAvailableAtRate, availableAtRateBreakdown, round3 } from '../utils/lubricants.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
+import { prepareBillFile } from '../utils/fileValidation.js'
 import { Input, Select, Textarea, IconButton, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
+import { FullPageLoader } from './Loader.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
 import { useData } from '../context/DataContext.jsx'
@@ -153,14 +157,86 @@ function denominationTotal(denominations) {
   return notesTotal + (Number(denominations.coins) || 0)
 }
 
-// Clamps a typed count so it can never exceed the product's available stock
-// (when a product is selected and its stock is known).
-function clampToStock(v, available) {
-  if (v === '') return ''
-  const n = Number(v)
-  if (Number.isNaN(n)) return v
-  const max = available == null ? Infinity : available
-  return String(Math.min(Math.max(n, 0), max))
+// A typed Sold Count is flagged when it exceeds available stock, never
+// silently clamped to it. Clamping used to make a wrongly-large count
+// impossible to fix once available stock dropped below it — e.g. another
+// shift's sale of the same product got finalized after this one already had
+// a big number typed in — because every fresh keystroke snapped straight
+// back down to whatever the new (lower) ceiling was: retyping a smaller
+// REPLACEMENT number one digit at a time kept getting reverted mid-edit,
+// which just looked like the field refusing to change at all. Same pattern
+// as Closing-below-Opening and an out-of-range reading elsewhere on this
+// screen — inline warning, the actual typed number always accepted, only
+// blocked at Save.
+function isOilCountOverStock(count, available) {
+  return available != null && count !== '' && count != null && Number(count) > available
+}
+
+// A closing reading below opening+testing would mean the meter ran
+// backwards — physically impossible for a running total, and almost always
+// means the manager typed a standalone liters figure into Closing instead
+// of the actual meter reading. Blank Closing (not yet typed) is never
+// flagged — only an actually-entered value that doesn't add up.
+function isReadingClosingTooLow(reading) {
+  const closingRaw = reading?.closing
+  const hasClosing = closingRaw !== '' && closingRaw != null
+  return hasClosing && (Number(closingRaw) || 0) - (Number(reading.opening) || 0) - (Number(reading.testing) || 0) < 0
+}
+
+// The API stores every reading field as a Decimal capped at 12 total digits,
+// 3 of them after the point (see FuelReadingIn in the backend schema) — i.e.
+// nothing at or past one billion. Every reading input here is a plain
+// type="number" with no matching client-side cap, so a value that crosses
+// that line sails through every on-screen check same as excess decimal
+// precision did (see toApiNum in DataContext.jsx) and only 422s once
+// Save Entry actually sends it (a draft never reaches the backend at all —
+// see PumpDayEditor's localStorage persistence) — a bare "Validation error." toast
+// with no field highlighted, and the edit that triggered it never actually
+// saved. Checked as its own thing rather than folded into toApiNum's
+// rounding, since a value this size isn't noise to clean up quietly — it's
+// almost always a mistyped extra digit, so it has to stop the manager here
+// instead.
+const MAX_READING_VALUE = 999999999.999
+function isReadingValueTooLarge(reading) {
+  return ['opening', 'closing', 'testing', 'rate'].some((field) => {
+    const raw = reading?.[field]
+    if (raw === '' || raw == null) return false
+    const n = Number(raw)
+    return Number.isFinite(n) && n > MAX_READING_VALUE
+  })
+}
+
+// isReadingClosingTooLow/isReadingValueTooLarge only ever catch a reading
+// that's internally inconsistent (closing behind opening) or past the
+// database's own raw storage limit (~1 billion) — neither one objects to a
+// reading that's merely absurd for what one shift could plausibly sell,
+// e.g. closing typed with an extra couple of digits, or opening still
+// carrying forward bad historical data (see blankShiftEntry's carry-forward
+// above) that a normal closing value then reads as "hundreds of millions of
+// litres sold." 100,000 L is already far beyond any real shift/day at a
+// single nozzle — generous on purpose, so this only ever catches an
+// obvious typo or bad carried-forward figure, never a genuinely busy day.
+const MAX_REALISTIC_SHIFT_LITERS = 100000
+function isReadingLitersUnrealistic(reading) {
+  return readingLiters(reading) > MAX_REALISTIC_SHIFT_LITERS
+}
+
+// First fuel/nozzle combination (in display order) whose reading fails
+// either check above, or null if every reading on this shift is internally
+// consistent and in bounds. Used to block "Save Entry" and to know exactly
+// which input to scroll to and focus, the same way duplicate oil/payment
+// rows already do.
+function findInvalidReading(value, fuelKeys) {
+  for (const fuelKey of fuelKeys) {
+    for (const nozzleKey of NOZZLE_KEYS) {
+      const reading = value[fuelKey]?.[nozzleKey]
+      if (!reading) continue
+      if (isReadingValueTooLarge(reading)) return { fuelKey, nozzleKey, reason: 'tooLarge' }
+      if (isReadingClosingTooLow(reading)) return { fuelKey, nozzleKey, reason: 'closingTooLow' }
+      if (isReadingLitersUnrealistic(reading)) return { fuelKey, nozzleKey, reason: 'litersTooLarge' }
+    }
+  }
+  return null
 }
 
 // The same product at the same rate should only ever be one row — picking
@@ -177,6 +253,75 @@ function duplicateRowIds(rows) {
     const key = `${row.productId}::${row.stockRate}`
     if (!seen.has(key)) seen.set(key, [])
     seen.get(key).push(row.id)
+  }
+  const duplicates = new Set()
+  for (const ids of seen.values()) {
+    if (ids.length > 1) ids.forEach((id) => duplicates.add(id))
+  }
+  return duplicates
+}
+
+// Same available-stock derivation OilRow itself uses, so "Save Entry" can
+// never disagree with what the row is already showing inline.
+function oilRowAvailable(row, lubricants, committedCount) {
+  const product = (lubricants || []).find((p) => p.id === row.productId)
+  if (!product) return null
+  const available = row.stockRate ? stockAvailableAtRate(product, row.stockRate) : round3(Number(product.stock) || 0)
+  return available + (Number(committedCount) || 0)
+}
+
+// First oil/cane-oil row (in display order) whose Sold Count exceeds its
+// product's available stock, or null if every row is within bounds — same
+// "find the exact offender, then block+focus" pattern as findInvalidReading
+// and duplicateRowIds above. `committedCountFor(rowId)` supplies the same
+// already-committed-for-a-final-shift adjustment OilRow itself applies (see
+// its comment) — passed in rather than recomputed here so Save can never
+// disagree with what the row is already showing inline.
+function findOilRowExceedingStock(oilRows, caneOilRows, lubricants, committedCountFor) {
+  for (const row of [...(oilRows || []), ...(caneOilRows || [])]) {
+    const committed = committedCountFor ? committedCountFor(row.id) : 0
+    if (isOilCountOverStock(row.stockCount, oilRowAvailable(row, lubricants, committed))) return row
+  }
+  return null
+}
+
+// A payment line's "key" — whichever field actually identifies who/what the
+// money is for. Cash and expense lines key off their (free-typed or
+// dropdown) label; credit/employeeCredit key off the selected
+// customer/employee instead, since two credit lines could share a label
+// ("Credit") but must never share a customer.
+function paymentLineKeyValue(p) {
+  if (p.type === 'credit') return p.customerId || ''
+  if (p.type === 'employeeCredit') return p.employeeId || ''
+  return (p.label || '').trim().toLowerCase()
+}
+
+// A line with money entered but no key would still count toward Payments
+// Collected (paymentsTotal sums every line unconditionally) while never
+// actually reaching anyone's ledger/expense record — the amount looks
+// "accounted for" here but silently goes nowhere. A line with NO value
+// entered is exempt entirely, key or no key — there's nothing to lose track
+// of yet, so it's not worth blocking the save over.
+function paymentLineMissingKey(p) {
+  if (!(Number(p.amount) > 0)) return false
+  return !paymentLineKeyValue(p)
+}
+
+// Same "one key, one row" rule as duplicateRowIds above, applied to payment
+// lines — grouped by type first so a customer id can never collide with an
+// employee id or a payment-method label that happens to look similar. Rows
+// with no value entered are exempt (same reasoning as paymentLineMissingKey
+// above) — a duplicate blank row isn't a real problem, only a duplicate row
+// that actually counts toward the total is.
+function duplicatePaymentLineIds(payments) {
+  const seen = new Map()
+  for (const p of payments || []) {
+    if (!(Number(p.amount) > 0)) continue
+    const key = paymentLineKeyValue(p)
+    if (!key) continue
+    const groupKey = `${p.type}::${key}`
+    if (!seen.has(groupKey)) seen.set(groupKey, [])
+    seen.get(groupKey).push(p.id)
   }
   const duplicates = new Set()
   for (const ids of seen.values()) {
@@ -227,9 +372,25 @@ function PurchaseBatches({ t, product }) {
 // them via two separate calls let the second silently clobber the first
 // (both closed over the same not-yet-updated `value`), so a rate change
 // could get lost the instant it also re-clamped the count.
-function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate }) {
+function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, committedCount }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
   const available = selectedProduct ? (rate ? stockAvailableAtRate(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
+
+  // A FINAL shift already had this exact row's count subtracted from the
+  // product's stock the moment it was finalized (see _apply_oil_stock on the
+  // backend) — so reopening it to edit something else shows `available`
+  // already short by however much THIS row itself is holding, and the row's
+  // own already-saved count then reads as "exceeding" stock that, from this
+  // row's own point of view, it already legitimately claimed. Reopening a
+  // final entry (touching nothing) must never show a validation error it
+  // didn't have when it was saved — so `committedCount` (this row's count as
+  // of when the shift card was first opened — see ShiftCard's
+  // committedOilCountFor, the same lookup the Save-time check below also
+  // uses, so the two can never disagree) is added back to `available`
+  // before checking it. ShiftCard already zeroes this out entirely for a
+  // draft shift, which never reserved anything against real stock in the
+  // first place — this component doesn't need to know draft vs final at all.
+  const effectiveAvailable = available == null ? null : available + (Number(committedCount) || 0)
 
   // Same breakdown stockAvailableAtRate() itself used to reach `available` —
   // read fresh from the live product/rate every render, so the tooltip can
@@ -255,18 +416,19 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
         : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedInPeriod}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
     : ''
   const availableTooltipNote = availableBreakdown && !availableBreakdown.singleRate && !availableBreakdown.rateNotFound ? t.availableApproxNote : undefined
+  const isOverStock = isOilCountOverStock(count, effectiveAvailable)
 
   function handleCountChange(v) {
-    onRateAndCountChange(rate, clampToStock(v, available))
+    onRateAndCountChange(rate, v)
   }
 
+  // Switching rate no longer auto-clamps Count down either — same reasoning
+  // as handleCountChange above. A rate change can legitimately land the
+  // count over the new rate's own available stock; isOverStock flags it the
+  // same way, rather than silently rewriting a number the manager didn't
+  // touch.
   function handleRateChange(newRate) {
-    if (selectedProduct && newRate) {
-      const newAvailable = stockAvailableAtRate(selectedProduct, newRate)
-      onRateAndCountChange(newRate, Number(count) > newAvailable ? String(newAvailable) : count)
-    } else {
-      onRateAndCountChange(newRate, count)
-    }
+    onRateAndCountChange(newRate, count)
   }
 
   return (
@@ -317,13 +479,12 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
           <Input
             type="number"
             min="0"
-            max={available ?? undefined}
             step="any"
             value={count || ''}
             onChange={(e) => handleCountChange(e.target.value)}
             placeholder="0"
-            title={available != null ? t.soldCountHint(available) : undefined}
-            className="text-xs"
+            title={isOverStock ? t.oilCountExceedsStockHint(effectiveAvailable) : available != null ? t.soldCountHint(available) : undefined}
+            className={`text-xs ${isOverStock ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           />
         </div>
         <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
@@ -337,33 +498,42 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
         ) : null}
       </div>
       {selectedProduct ? <PurchaseBatches t={t} product={selectedProduct} /> : null}
-      {isDuplicate ? <p className="mt-1.5 text-xs font-medium text-rose-500">{t.duplicateOilRowHint}</p> : null}
+      {isOverStock ? (
+        <p className="mt-1.5 text-xs font-medium text-rose-500">{t.oilCountExceedsStockHint(effectiveAvailable)}</p>
+      ) : isDuplicate ? (
+        <p className="mt-1.5 text-xs font-medium text-rose-500">{t.duplicateOilRowHint}</p>
+      ) : null}
     </div>
   )
 }
 
 // One employee's shift — a fully independent, separately-saved record.
 // There's no "Save as Draft" button: any edit here quietly persists itself
-// (debounced) as a draft, so switching pages or refreshing the browser
-// never loses progress. "Save Entry" stays a deliberate action — it's the
-// only thing that finalizes a shift (requires bills, applies attendance/
-// credit/stock effects) — so autosave never touches an already-final shift.
-function ShiftCard({
-  t,
-  tRoot,
-  pumpKey,
-  value,
-  onChange,
-  isDerivedOpening,
-  employees,
-  unavailableEmployeeIds,
-  creditCustomers,
-  lubricants,
-  onSaveDraft,
-  onSaveFinal,
-  savingFinal,
-  onDiscardDraft,
-}) {
+// (debounced) into this browser's localStorage (see PumpDayEditor's `cards`
+// persistence effect below), so switching pages or refreshing never loses
+// progress — but never into the database. "Save Entry" stays a deliberate
+// action — it's the only thing that ever reaches the backend, the only
+// thing that finalizes a shift (applies attendance/credit/stock effects).
+const ShiftCard = forwardRef(function ShiftCard(
+  {
+    t,
+    tRoot,
+    pumpKey,
+    value,
+    onChange,
+    isDerivedOpening,
+    employees,
+    unavailableEmployeeIds,
+    creditCustomers,
+    lubricants,
+    onSaveDraft,
+    onSaveFinal,
+    savingFinal,
+    onDiscardDraft,
+    suppressFlushRef,
+  },
+  ref,
+) {
   const fuelKeys = FUEL_KEYS_BY_PUMP[pumpKey]
   // Employees marked absent/leave/duty-off for this shift's date shouldn't
   // be assignable to work it — but never hide whoever is ALREADY assigned
@@ -394,6 +564,30 @@ function ShiftCard({
   const [pendingFocusId, setPendingFocusId] = useState(null)
   const paymentRowRefs = useRef(new Map())
   const oilRowRefs = useRef(new Map())
+  const readingRowRefs = useRef(new Map())
+  const employeeFieldRef = useRef(null)
+  // Snapshot of this shift's oil/cane-oil rows as they were the moment this
+  // card first mounted — i.e., for an already-final shift, exactly how much
+  // of each row's own count is already subtracted from the product's live
+  // stock (see _apply_oil_stock on the backend). Deliberately captured once
+  // (useRef's initial value is only ever read on the first render) rather
+  // than kept live, so a fresh edit to THIS row's own count can't "add
+  // itself back" and defeat the over-stock check entirely — only a NEW
+  // edit's count is ever compared against the ORIGINAL committed amount.
+  const committedOilRowsRef = useRef(value.oilRows)
+  const committedCaneOilRowsRef = useRef(value.caneOilRows)
+  // A draft never reserved anything against real stock in the first place
+  // (see PumpDayEditor's handleSaveDraft/handleSaveFinal split — only a
+  // final save applies oil-stock side effects), so this stays 0 for one and
+  // only ever adds back a final shift's own already-committed share.
+  function committedOilCountFor(rowId) {
+    if (value.status !== 'final') return 0
+    return (
+      committedOilRowsRef.current?.find((r) => r.id === rowId)?.stockCount ??
+      committedCaneOilRowsRef.current?.find((r) => r.id === rowId)?.stockCount ??
+      0
+    )
+  }
   // Id of a just-added oil/cane-oil row still briefly highlighted so it's
   // obvious where the new row landed — cleared automatically a moment later.
   const [highlightedRowId, setHighlightedRowId] = useState(null)
@@ -425,12 +619,20 @@ function ShiftCard({
     setPendingFocusId(null)
   }, [pendingFocusId])
 
-  // Snapshot of `value` as of the last time this effect actually scheduled a
-  // save (or, initially, as of first render) — comparing by reference rather
-  // than a one-shot boolean flag survives React StrictMode's dev-only double
-  // invocation of effects, which would otherwise consume a "skip the first
-  // run" flag on its extra invocation and fire a phantom save on mount.
-  const lastSeenValue = useRef(value)
+  // Snapshot of value._editGen (see updateCard's comment in the parent) as
+  // of the last time this effect actually scheduled a save, or initially —
+  // NOT plain object identity: withCarriedOpenings hands a shift a brand
+  // new object reference the instant an EARLIER shift's closing changes
+  // (its derived Opening tracks that live), even though nobody touched
+  // THIS shift. Comparing raw `value` there fired a spurious autosave for
+  // an untouched shift — including resurrecting one just discarded, the
+  // moment an earlier shift was edited again. _editGen only moves on a
+  // genuine edit to this specific card, so that's what's compared instead.
+  // Starting from value._editGen (rather than a one-shot boolean flag)
+  // still survives React StrictMode's dev-only double invocation of
+  // effects, which would otherwise consume a "skip the first run" flag on
+  // its extra invocation and fire a phantom save on mount.
+  const lastSeenGen = useRef(value._editGen)
 
   // Lets a manual save (handleSaveFinalClick below) cancel a pending
   // autosave outright, instead of leaving its setTimeout free to fire a
@@ -441,23 +643,90 @@ function ShiftCard({
   // uq_fuel_readings_entry_type_nozzle.
   const autoSaveTimerRef = useRef(null)
 
+  // The edit this card would still save once its 900ms pause elapses — kept
+  // outside the timer itself so a true unmount (see below) can tell "there's
+  // an edit still waiting to go out" from "nothing pending right now",
+  // without needing to inspect the timer handle.
+  const pendingValueRef = useRef(null)
+
+  // Set true exactly once, the instant this ShiftCard instance is actually
+  // torn down — never on a plain re-render. An empty deps array means this
+  // effect's cleanup only ever runs on unmount, which is what makes it a
+  // reliable signal (the debounce effect below re-runs on every edit, so its
+  // OWN cleanup can't by itself tell "superseded by the next edit" apart
+  // from "the page navigated away mid-edit").
+  const isUnmountingRef = useRef(false)
+  useEffect(() => () => { isUnmountingRef.current = true }, [])
+
   // Debounced autosave — waits for a pause in typing before persisting, and
   // never fires on mount (that would just re-save data that's already
   // exactly as loaded) or once the shift has been finalized.
   useEffect(() => {
     if (value.status === 'final') return
-    if (value === lastSeenValue.current) return
-    lastSeenValue.current = value
+    if (value._editGen === lastSeenGen.current) return
+    lastSeenGen.current = value._editGen
+    // A reading past the API's Decimal cap (see isReadingValueTooLarge) can
+    // never actually be saved — sending it 422s. Unlike an inconsistent-but-
+    // plausible closing/opening pair, drafts have no business trying this
+    // one anyway: skip scheduling until it's fixed, same as a finalized
+    // shift skips autosaving at all, rather than firing a save that's
+    // guaranteed to fail and surfaces nothing the manager can see why.
+    if (findInvalidReading(value, fuelKeys)?.reason === 'tooLarge') {
+      pendingValueRef.current = null
+      return
+    }
     setAutoSaveStatus('pending')
+    pendingValueRef.current = value
     const timer = setTimeout(() => {
       autoSaveTimerRef.current = null
+      pendingValueRef.current = null
       onSaveDraft(value)
       setAutoSaveStatus('saved')
     }, 900)
     autoSaveTimerRef.current = timer
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      // A manager who types a closing reading and then immediately navigates
+      // away (switches pump/date, or leaves the page entirely) before the
+      // 900ms pause elapses used to lose that edit outright: this cleanup
+      // only ever cancelled the timer, so the draft PUT/POST that would have
+      // carried it never went out, and the field silently reverted to
+      // whatever was last actually saved. Deferring the check to a
+      // microtask — rather than reading isUnmountingRef synchronously here —
+      // sidesteps having to know whether THIS cleanup or the isUnmountingRef
+      // effect's own cleanup runs first in React's unmount pass: by the time
+      // a microtask runs, every cleanup for this commit has already
+      // completed, so the flag is settled either way.
+      queueMicrotask(() => {
+        if (!isUnmountingRef.current) return // just superseded by a newer edit
+        if (pendingValueRef.current !== value) return // a final save already claimed/cleared this edit
+        // Discarding or removing this exact shift deliberately throws its
+        // edit away — flushing here would silently resurrect the very draft
+        // the manager just asked to delete, right after its DELETE request.
+        if (suppressFlushRef?.current?.has(value.localOnlyId)) return
+        pendingValueRef.current = null
+        onSaveDraft(value)
+      })
+    }
+    // Deliberately NOT `[value]`: the parent's own reconciliation effect
+    // (merging in real server data once fuelEntries loads) can attach a new
+    // id/status via a plain bookkeeping patch that — same as
+    // withCarriedOpenings elsewhere — hands this card a brand new object
+    // reference without touching _editGen. If a LATER edit's own 900ms timer
+    // was still pending at that
+    // exact moment, depending on `value` itself made that bookkeeping-only
+    // reference change look like "the effect's inputs changed": React would
+    // tear down and rebuild it, and since _editGen hadn't actually moved the
+    // rebuilt run always took the early-return branch, cancelling the
+    // pending save with nothing left to replace it — silently dropping
+    // whatever the manager typed next, with no further edit forthcoming to
+    // ever reschedule it. Depending on just the two primitives that this
+    // effect's own logic actually branches on means a bookkeeping patch
+    // that changes neither one no longer touches this effect at all, and
+    // the pending timer (and its captured `value` closure, already holding
+    // everything genuinely typed so far) survives to fire on schedule.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value])
+  }, [value._editGen, value.status])
 
   const packetProducts = (lubricants || []).filter((p) => p.packaging !== 'cane')
   const caneProducts = (lubricants || []).filter((p) => p.packaging === 'cane')
@@ -543,13 +812,20 @@ function ShiftCard({
     if (!file) return
     setUploadingBill(true)
     try {
+      // For an oversized image this transparently shrinks it under the cap
+      // instead of rejecting it outright — see prepareBillFile.
+      const { file: preparedFile, error } = await prepareBillFile(file)
+      if (error) {
+        toast.error(error === 'size' ? tRoot.errorBillTooLarge : tRoot.errorBillFileType)
+        return
+      }
       // Uploads straight to S3 (see apiClient.uploadBillFile) — the backend
       // only ever learns the resulting key, on the next save, never the
       // file bytes themselves. `url` here holds that key, unchanged, for as
       // long as this bill sits untouched — that's what lets the backend's
       // own diff-on-save recognize it as the same bill and skip re-touching
       // it in S3 or Postgres.
-      const { name, key } = await uploadBillFile(file, 'fuel-entry-bills')
+      const { name, key } = await uploadBillFile(preparedFile, 'fuel-entry-bills')
       const newBill = { id: makeBillId(), name, url: key, date: todayISO() }
       updateBills((bills) => [...bills, newBill])
       toast.success(tRoot.toastBillAttached(file.name))
@@ -656,56 +932,196 @@ function ShiftCard({
   const shiftEmployeeMissing = attemptedSubmit && !value.employeeId
   const isDraft = value.status === 'draft'
   // A blank/just-discarded shift is internally `status: 'draft'` too (that's
-  // what makes it autosave-eligible), but there's nothing real to discard
-  // until it's actually been autosaved with an id — same condition the
-  // "Draft" badge above already uses, so the two stay in sync.
-  const hasDraftToDiscard = isDraft && Boolean(value.id)
+  // what makes it autosave-eligible) — but drafts are now local-only (see
+  // PumpDayEditor's localStorage persistence) and never acquire a server id
+  // until Save Entry succeeds, so gating this on `value.id` alone left
+  // Discard Draft permanently disabled for exactly the shifts that most
+  // need it: a locally-typed, never-saved draft. `_dirty` is what actually
+  // means "there's real unsaved content sitting here" — `value.id` is kept
+  // as a second, OR'd condition purely for a legacy draft row that was
+  // autosaved to the server before that change and hasn't been touched
+  // since (so `_dirty` alone wouldn't catch it).
+  const hasDraftToDiscard = isDraft && (Boolean(value.id) || Boolean(value._dirty))
   // Same product at the same rate should only ever be one row — checked
   // separately per section (a pocket-oil duplicate never flags a cane-oil row).
   const duplicateOilRowIds = useMemo(() => duplicateRowIds(value.oilRows), [value.oilRows])
   const duplicateCaneOilRowIds = useMemo(() => duplicateRowIds(value.caneOilRows), [value.caneOilRows])
   const hasDuplicateOilRows = duplicateOilRowIds.size > 0 || duplicateCaneOilRowIds.size > 0
+  // Live, not gated by attemptedSubmit — same as the oil-row duplicate check
+  // above, a duplicate payment-line key is unambiguously wrong the moment it
+  // happens, not just at save time.
+  const duplicatePaymentIds = useMemo(() => duplicatePaymentLineIds(value.payments), [value.payments])
 
-  function handleSaveFinalClick() {
+  // Scrolls to and focuses whichever payment line failed validation, and
+  // switches to the Payments tab first if the manager was on Reading — so
+  // "there's a problem" always comes with "here's exactly where", instead of
+  // just a toast the manager then has to go hunting for the row themselves.
+  function focusPaymentLine(id) {
+    setActiveShiftTab('payments')
+    requestAnimationFrame(() => {
+      const row = paymentRowRefs.current.get(id)
+      row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      row?.querySelector('input, select')?.focus()
+    })
+  }
+
+  // Same pattern as focusPaymentLine above, for a bad meter reading — the
+  // Closing input is always the 2nd of the row's 4 inputs (Opening/Closing/
+  // Testing/Rate), so that's the one actually focused, not just the row
+  // scrolled into view.
+  function focusReadingRow(fuelKey, nozzleKey) {
+    setActiveShiftTab('reading')
+    requestAnimationFrame(() => {
+      const row = readingRowRefs.current.get(`${fuelKey}-${nozzleKey}`)
+      row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const inputs = row?.querySelectorAll('input')
+      ;(inputs?.[1] || inputs?.[0])?.focus()
+    })
+  }
+
+  // Same pattern as focusPaymentLine/focusReadingRow above, minus the tab
+  // switch — the employee picker sits above the Reading/Payments tabs, so
+  // it's always on screen already. Select is a custom combobox rendered as
+  // a <button> (see FormControls.jsx), not a real <select>, hence querying
+  // for "button" specifically rather than "input, select".
+  function focusEmployeeField() {
+    requestAnimationFrame(() => {
+      const field = employeeFieldRef.current
+      field?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      field?.querySelector('button')?.focus()
+    })
+  }
+
+  // Oil/cane-oil rows live on the Reading tab, same as focusReadingRow above
+  // — flashRow already scrolls/focuses/highlights via oilRowRefs (it's also
+  // what a newly-added row uses), this just also makes sure that tab is
+  // actually showing first.
+  function focusOilRow(rowId) {
+    setActiveShiftTab('reading')
+    flashRow(rowId)
+  }
+
+  // Returns whether the save actually went through — false on any
+  // validation block (the manager sees the same shake/toast/focus-jump as
+  // always) or a failed API call, true once it's genuinely saved. This lets
+  // an external caller (see attemptSave below, used by the unsaved-changes
+  // prompt's "Save" button) know whether it's safe to also proceed with
+  // whatever navigation that prompt was guarding, without duplicating a
+  // single line of this validation.
+  async function handleSaveFinalClick() {
+    // A bill still mid-compress/upload hasn't been added to value.bills yet
+    // — saving right now would go through without it, and the compressed
+    // file would land a moment later with nothing left listening for it.
+    // The Save button below is already disabled while this is true; this is
+    // the belt-and-braces guard for the function itself.
+    if (uploadingBill) return false
+    // A closing reading below opening+testing means the meter ran
+    // backwards — physically impossible, and the UI already shows this as
+    // an inline error the moment it happens. That visual warning alone
+    // never stopped the save going through; this is what actually blocks
+    // it, checked first since a meter reading this wrong makes everything
+    // downstream (litres, amount, totals) meaningless too.
+    const invalidReading = findInvalidReading(value, fuelKeys)
+    if (invalidReading) {
+      setAttemptedSubmit(true)
+      toast.error(
+        invalidReading.reason === 'tooLarge'
+          ? t.readingTooLargeHint
+          : invalidReading.reason === 'litersTooLarge'
+            ? t.readingLitersUnrealisticHint
+            : t.closingTooLowHint,
+      )
+      focusReadingRow(invalidReading.fuelKey, invalidReading.nozzleKey)
+      return false
+    }
     if (hasDuplicateOilRows) {
       toast.error(tRoot.errorDuplicateOilRow)
-      return
+      return false
     }
-    // A credit line with money in it but no customer/employee attached would
-    // still count toward Payments Collected (paymentsTotal sums every line
-    // unconditionally), but silently never reach anyone's ledger — the
-    // amount would look "accounted for" here while nobody's balance actually
-    // reflects it. Block the save instead of letting that slip through.
-    const missingCreditCustomer = (value.payments || []).some((p) => p.type === 'credit' && Number(p.amount) > 0 && !p.customerId)
-    const missingCreditEmployee = (value.payments || []).some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0 && !p.employeeId)
-    if (missingCreditCustomer || missingCreditEmployee) {
+    // A Sold Count can end up over its product's available stock without
+    // the manager ever having typed something absurd — e.g. another shift's
+    // sale of the same product got finalized after this row's count was
+    // already set. The field itself never blocks typing (see
+    // isOilCountOverStock above), so this is what actually stops the save.
+    const overStockRow = findOilRowExceedingStock(value.oilRows, value.caneOilRows, lubricants, committedOilCountFor)
+    if (overStockRow) {
+      toast.error(tRoot.errorOilCountExceedsStock)
+      focusOilRow(overStockRow.id)
+      return false
+    }
+    // A payment line with money entered but no key (no method picked, no
+    // customer/employee selected, no expense name typed) would still count
+    // toward Payments Collected (paymentsTotal sums every line
+    // unconditionally), but silently never reach anyone's ledger/expense
+    // record — the amount looks "accounted for" here while it actually goes
+    // nowhere. Block the save and take the manager straight to that exact
+    // row instead of letting it slip through with just a toast.
+    const missingKeyLine = (value.payments || []).find(paymentLineMissingKey)
+    if (missingKeyLine) {
       setAttemptedSubmit(true)
-      setShakeKey((k) => k + 1)
-      toast.error(missingCreditCustomer ? tRoot.errorCreditCustomerRequired : tRoot.errorCreditEmployeeRequired)
-      return
+      const message =
+        missingKeyLine.type === 'credit'
+          ? tRoot.errorCreditCustomerRequired
+          : missingKeyLine.type === 'employeeCredit'
+            ? tRoot.errorCreditEmployeeRequired
+            : missingKeyLine.type === 'expense'
+              ? tRoot.errorExpenseLabelRequired
+              : tRoot.errorPaymentMethodRequired
+      toast.error(message)
+      focusPaymentLine(missingKeyLine.id)
+      return false
+    }
+    // Two rows for the same customer/employee/payment method/expense name
+    // would double-count that one payment — same "one key, one row" rule as
+    // the oil-row duplicate check above.
+    if (duplicatePaymentIds.size > 0) {
+      const duplicateLine = (value.payments || []).find((p) => duplicatePaymentIds.has(p.id))
+      toast.error(tRoot.errorDuplicatePaymentKey)
+      if (duplicateLine) focusPaymentLine(duplicateLine.id)
+      return false
     }
     // Bill-upload requirement temporarily disabled — see shiftBillsMissing above.
     if (!value.employeeId /* || !value.bills || value.bills.length === 0 */) {
       setAttemptedSubmit(true)
       setShakeKey((k) => k + 1)
-      if (!value.employeeId) toast.error(tRoot.errorEmployeeRequired)
-      return
+      // No toast here — the rose-colored hint under the field (driven by
+      // shiftEmployeeMissing) plus the shake and the focus jump below are
+      // the error; a toast on top just repeated the same message a beat
+      // later, since it has to wait for its own mount/animate-in.
+      if (!value.employeeId) focusEmployeeField()
+      return false
     }
     setAttemptedSubmit(true)
     // A pending autosave firing during/after this save's own PUT is exactly
     // the concurrent-write race described above — cancel it and mark this
-    // value as already "seen" so the autosave effect doesn't reschedule one
-    // right after, either.
+    // value's generation as already "seen" so the autosave effect doesn't
+    // reschedule one right after, either.
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current)
       autoSaveTimerRef.current = null
     }
-    lastSeenValue.current = value
-    onSaveFinal(value)
+    pendingValueRef.current = null
+    lastSeenGen.current = value._editGen
+    return (await onSaveFinal(value)) !== false
+  }
+
+  useImperativeHandle(ref, () => ({ attemptSave: handleSaveFinalClick }))
+
+  // This card isn't a <form> (it holds several tab sections plus its own
+  // internal "add row"/tab-switch buttons, which would need their own
+  // type="button" auditing if it were), so pressing Enter never reaches
+  // Save Entry on its own. Mirror native form Enter-to-submit behavior by
+  // hand: only for a plain text/number <input> (never a <textarea>, and
+  // never a <button> — that would double up with the browser's own
+  // Enter-triggers-click on whichever button is focused, e.g. "Add row").
+  function handleCardKeyDown(e) {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return
+    e.preventDefault()
+    handleSaveFinalClick()
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white/80 p-4">
+    <div className="rounded-lg border border-slate-200 bg-white/80 p-4" onKeyDown={handleCardKeyDown}>
       <div className="mb-3.5 flex flex-wrap items-center gap-2">
         {value.id ? (
           isDraft ? (
@@ -724,6 +1140,7 @@ function ShiftCard({
           </span>
         ) : null}
         <motion.div
+          ref={employeeFieldRef}
           key={`employee-${shakeKey}`}
           animate={shiftEmployeeMissing ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
           transition={{ duration: 0.45, ease: 'easeInOut' }}
@@ -737,7 +1154,7 @@ function ShiftCard({
             <option value="">{t.selectEmployee}</option>
             {assignableEmployees.map((emp) => (
               <option key={emp.id} value={emp.id}>
-                {emp.name}
+                {formatEmployeeName(emp)}
                 {unavailableEmployeeIds?.has(emp.id) ? ` (${tRoot.employeeUnavailableSuffix})` : ''}
               </option>
             ))}
@@ -747,7 +1164,7 @@ function ShiftCard({
         <SecondaryButton
           type="button"
           onClick={onDiscardDraft}
-          disabled={!hasDraftToDiscard}
+          disabled={!hasDraftToDiscard || uploadingBill}
           title={hasDraftToDiscard ? undefined : tRoot.discardDraftDisabledHint}
           className={
             hasDraftToDiscard
@@ -759,19 +1176,21 @@ function ShiftCard({
         </SecondaryButton>
       </div>
 
-      <div className="mb-3.5 flex gap-2 border-b border-slate-200">
-        {['reading', 'payments'].map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => setActiveShiftTab(tab)}
-            className={`-mb-px border-b-2 px-1 pb-2 text-sm font-semibold transition-colors ${
-              activeShiftTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            {tab === 'reading' ? t.readingTabLabel : t.payments}
-          </button>
-        ))}
+      <div className="mb-3.5 border-b border-slate-200 pb-3.5">
+        <div className="inline-flex gap-2 rounded-full border border-slate-200 p-1">
+          {['reading', 'payments'].map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveShiftTab(tab)}
+              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+                activeShiftTab === tab ? 'bg-brand-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              }`}
+            >
+              {tab === 'reading' ? t.readingTabLabel : t.payments}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className={activeShiftTab === 'reading' ? '' : 'hidden'}>
@@ -812,12 +1231,25 @@ function ShiftCard({
                 {NOZZLE_KEYS.map((nozzleKey, nozzleIdx) => {
                   const reading = value[fuelKey][nozzleKey]
                   const closingRaw = reading.closing
-                  const hasClosing = closingRaw !== '' && closingRaw != null
                   const netLiters = readingLiters(reading)
-                  const isClosingTooLow =
-                    hasClosing && (Number(closingRaw) || 0) - (Number(reading.opening) || 0) - (Number(reading.testing) || 0) < 0
+                  const isClosingTooLow = isReadingClosingTooLow(reading)
+                  const isRowTooLarge = isReadingValueTooLarge(reading)
+                  const isLitersUnrealistic = !isRowTooLarge && !isClosingTooLow && isReadingLitersUnrealistic(reading)
+                  const tooLargeField = (field) => {
+                    const raw = reading[field]
+                    if (raw === '' || raw == null) return false
+                    const n = Number(raw)
+                    return Number.isFinite(n) && n > MAX_READING_VALUE
+                  }
                   return (
-                    <div key={nozzleKey}>
+                    <div
+                      key={nozzleKey}
+                      ref={(el) => {
+                        const rowKey = `${fuelKey}-${nozzleKey}`
+                        if (el) readingRowRefs.current.set(rowKey, el)
+                        else readingRowRefs.current.delete(rowKey)
+                      }}
+                    >
                       <div className="grid grid-cols-[0.6fr_1.7fr_1.7fr_0.7fr_1.5fr_1fr_1.1fr] items-center gap-2">
                         <span className="pl-2 text-xs font-medium text-slate-500">{t.nozzleLabel(nozzleIdx + 1)}</span>
                         <Input
@@ -826,8 +1258,8 @@ function ShiftCard({
                           value={reading.opening}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'opening', e.target.value)}
                           placeholder="0"
-                          className="px-2.5 py-2"
-                          title={isDerivedOpening ? t.autoFromHandover : undefined}
+                          className={`px-2.5 py-2 ${tooLargeField('opening') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+                          title={isDerivedOpening ? t.autoFromHandover : tooLargeField('opening') ? t.readingTooLargeHint : undefined}
                         />
                         <Input
                           type="number"
@@ -835,8 +1267,20 @@ function ShiftCard({
                           value={closingRaw}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'closing', e.target.value)}
                           placeholder="0"
-                          className={`px-2.5 py-2 ${isClosingTooLow ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
-                          title={isClosingTooLow ? t.closingTooLowHint : undefined}
+                          className={`px-2.5 py-2 ${
+                            isClosingTooLow || isLitersUnrealistic || tooLargeField('closing')
+                              ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100'
+                              : ''
+                          }`}
+                          title={
+                            tooLargeField('closing')
+                              ? t.readingTooLargeHint
+                              : isClosingTooLow
+                                ? t.closingTooLowHint
+                                : isLitersUnrealistic
+                                  ? t.readingLitersUnrealisticHint
+                                  : undefined
+                          }
                         />
                         <Input
                           type="number"
@@ -844,7 +1288,8 @@ function ShiftCard({
                           value={reading.testing}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'testing', e.target.value)}
                           placeholder="0"
-                          className="px-2.5 py-2"
+                          className={`px-2.5 py-2 ${tooLargeField('testing') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+                          title={tooLargeField('testing') ? t.readingTooLargeHint : undefined}
                         />
                         <Input
                           type="number"
@@ -852,21 +1297,28 @@ function ShiftCard({
                           value={reading.rate}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'rate', e.target.value)}
                           placeholder="0.00"
-                          className="px-2.5 py-2"
+                          className={`px-2.5 py-2 ${tooLargeField('rate') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+                          title={tooLargeField('rate') ? t.readingTooLargeHint : undefined}
                         />
                         <span
-                          className={`text-right text-sm ${isClosingTooLow ? 'font-semibold text-rose-500' : 'text-slate-500'}`}
-                          title={isClosingTooLow ? t.closingTooLowHint : t.litersHint}
+                          className={`text-right text-sm ${isClosingTooLow || isLitersUnrealistic ? 'font-semibold text-rose-500' : 'text-slate-500'}`}
+                          title={isClosingTooLow ? t.closingTooLowHint : isLitersUnrealistic ? t.readingLitersUnrealisticHint : t.litersHint}
                         >
                           {netLiters.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
-                        <span className={`text-right text-sm font-semibold ${isClosingTooLow ? 'text-rose-500' : 'text-slate-700'}`}>
+                        <span className={`text-right text-sm font-semibold ${isClosingTooLow || isLitersUnrealistic ? 'text-rose-500' : 'text-slate-700'}`}>
                           {formatCurrency(readingAmount(reading))}
                         </span>
                       </div>
-                      {isClosingTooLow ? (
+                      {isRowTooLarge ? (
+                        <p className="pl-2 pt-1 text-xs font-medium text-rose-500">{t.readingTooLargeHint}</p>
+                      ) : isClosingTooLow ? (
                         <p className="pl-2 pt-1 text-xs font-medium text-rose-500">
                           {t.closingTooLowHint} ({t.opening.toLowerCase()}: {Number(reading.opening).toLocaleString('en-IN')})
+                        </p>
+                      ) : isLitersUnrealistic ? (
+                        <p className="pl-2 pt-1 text-xs font-medium text-rose-500">
+                          {t.readingLitersUnrealisticHint} ({netLiters.toLocaleString('en-IN', { maximumFractionDigits: 0 })} L)
                         </p>
                       ) : null}
                     </div>
@@ -952,6 +1404,7 @@ function ShiftCard({
                     onRemove={() => removeOilRow(row.id)}
                     showRemove
                     isDuplicate={duplicateOilRowIds.has(row.id)}
+                    committedCount={committedOilCountFor(row.id)}
                   />
                 </div>
               ))}
@@ -1024,6 +1477,7 @@ function ShiftCard({
                     onRemove={() => removeCaneOilRow(row.id)}
                     showRemove
                     isDuplicate={duplicateCaneOilRowIds.has(row.id)}
+                    committedCount={committedOilCountFor(row.id)}
                   />
                 </div>
               ))}
@@ -1113,6 +1567,8 @@ function ShiftCard({
             // A large cash line is worth a second look before saving — the
             // amber highlight keeps it noticeable without needing a click.
             const isBigCash = isCash && Number(p.amount) >= BIG_CASH_THRESHOLD
+            const isDuplicateKey = duplicatePaymentIds.has(p.id)
+            const isMissingKey = attemptedSubmit && paymentLineMissingKey(p)
             return (
               <div
                 key={p.id}
@@ -1128,11 +1584,11 @@ function ShiftCard({
                         value={p.customerId || ''}
                         onChange={(e) => updatePaymentLine(p.id, 'customerId', e.target.value)}
                         className={
-                          attemptedSubmit && !p.customerId && Number(p.amount) > 0
+                          isMissingKey || isDuplicateKey
                             ? 'border-rose-400 text-rose-600 focus:border-rose-500 focus:ring-rose-100'
                             : 'text-rose-600'
                         }
-                        title={attemptedSubmit && !p.customerId && Number(p.amount) > 0 ? tRoot.errorCreditCustomerRequired : undefined}
+                        title={isDuplicateKey ? tRoot.duplicatePaymentKeyHint : isMissingKey ? tRoot.errorCreditCustomerRequired : undefined}
                       >
                         <option value="">{t.selectCustomer}</option>
                         {(creditCustomers || []).map((c) => (
@@ -1146,16 +1602,16 @@ function ShiftCard({
                         value={p.employeeId || ''}
                         onChange={(e) => updatePaymentLine(p.id, 'employeeId', e.target.value)}
                         className={
-                          attemptedSubmit && !p.employeeId && Number(p.amount) > 0
+                          isMissingKey || isDuplicateKey
                             ? 'border-rose-400 text-violet-600 focus:border-rose-500 focus:ring-rose-100'
                             : 'text-violet-600'
                         }
-                        title={attemptedSubmit && !p.employeeId && Number(p.amount) > 0 ? tRoot.errorCreditEmployeeRequired : undefined}
+                        title={isDuplicateKey ? tRoot.duplicatePaymentKeyHint : isMissingKey ? tRoot.errorCreditEmployeeRequired : undefined}
                       >
                         <option value="">{t.selectEmployee}</option>
                         {(employees || []).map((emp) => (
                           <option key={emp.id} value={emp.id}>
-                            {emp.name}
+                            {formatEmployeeName(emp)}
                           </option>
                         ))}
                       </Select>
@@ -1164,10 +1620,16 @@ function ShiftCard({
                         value={p.label}
                         onChange={(e) => updatePaymentLine(p.id, 'label', e.target.value)}
                         placeholder={t.placeholderExpenseLabel}
-                        className="text-amber-700"
+                        className={isMissingKey || isDuplicateKey ? 'border-rose-400 text-amber-700 focus:border-rose-500 focus:ring-rose-100' : 'text-amber-700'}
+                        title={isDuplicateKey ? tRoot.duplicatePaymentKeyHint : isMissingKey ? tRoot.errorExpenseLabelRequired : undefined}
                       />
                     ) : (
-                      <Select value={p.label} onChange={(e) => updatePaymentLine(p.id, 'label', e.target.value)}>
+                      <Select
+                        value={p.label}
+                        onChange={(e) => updatePaymentLine(p.id, 'label', e.target.value)}
+                        className={isMissingKey || isDuplicateKey ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}
+                        title={isDuplicateKey ? tRoot.duplicatePaymentKeyHint : isMissingKey ? tRoot.errorPaymentMethodRequired : undefined}
+                      >
                         <option value="">{t.selectPaymentMethod}</option>
                         {PAYMENT_METHOD_OPTIONS.map((method) => (
                           <option key={method} value={method}>
@@ -1241,6 +1703,18 @@ function ShiftCard({
                     <X size={15} />
                   </IconButton>
                 </div>
+                {isDuplicateKey ? <p className="mt-1 text-xs font-medium text-rose-500">{tRoot.duplicatePaymentKeyHint}</p> : null}
+                {isMissingKey ? (
+                  <p className="mt-1 text-xs font-medium text-rose-500">
+                    {p.type === 'credit'
+                      ? tRoot.errorCreditCustomerRequired
+                      : p.type === 'employeeCredit'
+                        ? tRoot.errorCreditEmployeeRequired
+                        : p.type === 'expense'
+                          ? tRoot.errorExpenseLabelRequired
+                          : tRoot.errorPaymentMethodRequired}
+                  </p>
+                ) : null}
 
                 {isCounting ? (
                   <div className="mt-2 grid grid-cols-4 gap-2 rounded-lg border border-brand-100 bg-brand-50/50 p-3 sm:grid-cols-7">
@@ -1340,7 +1814,7 @@ function ShiftCard({
             </h4>
           </div>
           {value.bills?.length > 0 ? (
-            <ul className="mb-2 space-y-1.5">
+            <ul className="mb-2 max-h-40 space-y-1.5 overflow-y-auto pr-1">
               {value.bills.map((bill) => (
                 <li key={bill.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
                   <button
@@ -1452,21 +1926,64 @@ function ShiftCard({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PrimaryButton type="button" onClick={handleSaveFinalClick} disabled={savingFinal}>
+          <PrimaryButton type="button" onClick={handleSaveFinalClick} disabled={savingFinal || uploadingBill}>
             <Save size={15} /> {savingFinal ? tRoot.savingChanges : value.id ? tRoot.saveChanges : tRoot.saveEntry}
           </PrimaryButton>
         </div>
       </motion.div>
+      {/* Blocks the whole page (not just this card's file input) — a bill
+          upload takes long enough on a slow connection that Save/Discard
+          elsewhere on the page being disabled isn't obvious enough on its
+          own; this makes it unmistakable that nothing is clickable yet. */}
+      {uploadingBill ? <FullPageLoader label={tRoot.uploadingBillPrompt} /> : null}
     </div>
   )
+})
+
+// A not-yet-finalized shift used to autosave to the backend on every pause
+// in typing — every keystroke's worth of Fuel_Readings/Payment_Lines rows
+// round-tripping through Postgres, and a genuinely abandoned draft leaving a
+// real row sitting in the database that looked like data needing action.
+// Only a deliberate "Save Entry" click should ever reach the database now
+// (see handleSaveDraft/handleSaveFinal below) — an in-progress shift instead
+// lives here, in the browser, so a refresh still doesn't lose it.
+const DRAFT_STORAGE_PREFIX = 'ga-fuel-pump:draftCards:'
+
+function draftStorageKey(pumpKey, date) {
+  return `${DRAFT_STORAGE_PREFIX}${pumpKey}:${date}`
 }
 
-export default function PumpDayEditor({ pumpKey, label, accent, tint, date, employees, fuelRates, creditCustomers, lubricants, unavailableEmployeeIds }) {
+function loadLocalDraftCards(pumpKey, date) {
+  try {
+    const raw = localStorage.getItem(draftStorageKey(pumpKey, date))
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+const PumpDayEditor = forwardRef(function PumpDayEditor(
+  {
+    pumpKey,
+    label,
+    accent,
+    tint,
+    date,
+    employees,
+    fuelRates,
+    creditCustomers,
+    lubricants,
+    unavailableEmployeeIds,
+    onDirtyChange,
+  },
+  ref,
+) {
   const { language } = useLanguage()
   const tRoot = FUEL_ENTRY_TEXT[language]
   const t = tRoot.pumpEditor
   const theme = TINTS[tint] || { bg: 'bg-white', border: 'border-slate-200' }
   const { fuelEntries, fuelEntriesLoading, addFuelEntry, updateFuelEntry, deleteFuelEntry } = useData()
+  const navigate = useNavigate()
 
   const priorEntries = useMemo(
     () => sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date < date)),
@@ -1496,43 +2013,192 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
 
   const [cards, setCards] = useState(() => {
     const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
-    if (existing.length > 0) return existing.map((e) => ({ ...e }))
-    return [blankShiftEntry(1)]
+    // Local storage only ever holds genuinely unsaved drafts (see the
+    // persistence effect below, which drops a card the instant it's
+    // finalized) — so anything read back here is safe to treat as still
+    // in-progress, never a stale copy of something already saved.
+    const localDrafts = (loadLocalDraftCards(pumpKey, date) || []).filter((c) => c.status !== 'final')
+    if (existing.length > 0) {
+      const existingCards = existing.map((e) => ({ ...e }))
+      // A shift slot the server has nothing for yet (e.g. a 2nd shift the
+      // manager was mid-typing, never saved) still needs its own card —
+      // otherwise it's silently dropped the moment ANY other shift on this
+      // same pump+day already has server data.
+      const coveredShiftNumbers = new Set(existingCards.map((c) => c.shiftNumber))
+      const extraLocalDrafts = localDrafts.filter((c) => !coveredShiftNumbers.has(c.shiftNumber))
+      return [...existingCards, ...extraLocalDrafts].sort((a, b) => a.shiftNumber - b.shiftNumber)
+    }
+    // Nothing saved on the server for this pump+day at all — an in-progress
+    // shift the manager was mid-typing, before this same browser's last
+    // refresh, lives only here now. The reconciliation effect below still
+    // overlays real server data per shift slot once fuelEntries loads,
+    // exactly as if this had been a server-seeded draft.
+    return localDrafts.length > 0 ? localDrafts : [blankShiftEntry(1)]
   })
 
-  // fuelEntries now loads from the API asynchronously (previously it was
-  // synchronous, from localStorage) — a hard refresh landing directly on
-  // this pump/date can mount before that fetch resolves, so `cards`' lazy
-  // initializer above may have seeded a blank card even though a real
-  // draft/final entry for this shift already exists. Once loading finishes,
-  // re-check for that entry and swap it in — but only once, and only if
-  // nothing's been typed yet (never clobber an edit in progress), so this
-  // never fights a manager who's already typing by the time the fetch
-  // lands. A day that's genuinely still blank is left alone: swapping in an
-  // equivalent-but-new blank object would look like a "value changed" to
-  // ShiftCard's autosave effect and fire a phantom save of nothing.
-  const hasUserEditedRef = useRef(false)
+  // Mirrors `cards` into localStorage on every change — this, not a network
+  // call, is now the entirety of "autosave" for a not-yet-finalized shift
+  // (see handleSaveDraft below). Deliberately drops any card the instant
+  // it's finalized (status: 'final') rather than mirroring it too: once
+  // something is safely saved, the database is its source of truth, not the
+  // browser — keeping a local copy around would let it resurface as a stale
+  // "Saved" ghost if that record is later deleted somewhere else (the
+  // History list, say) while this browser was never told. Clears the key
+  // entirely once nothing on this pump+day is left to protect.
+  useEffect(() => {
+    try {
+      const draftsOnly = cards.filter((c) => c.status !== 'final')
+      if (draftsOnly.length > 0) {
+        localStorage.setItem(draftStorageKey(pumpKey, date), JSON.stringify(draftsOnly))
+      } else {
+        localStorage.removeItem(draftStorageKey(pumpKey, date))
+      }
+    } catch {
+      // Storage full or unavailable (e.g. private browsing) — the form still
+      // works for this session, it just won't survive a refresh.
+    }
+  }, [pumpKey, date, cards])
+
+  // fuelEntries now loads from the API asynchronously — a hard refresh (or
+  // just navigating here fast) can mount this before that fetch resolves,
+  // so `cards`' lazy initializer above may have seeded a blank shift even
+  // though a real draft/final entry for it already exists on the server.
+  // Once loading finishes, merge that real data in per SHIFT SLOT — not
+  // all-or-nothing — using the same _editGen marker updateCard sets (see
+  // its comment): a slot the manager has genuinely typed into is left
+  // exactly as-is, but an untouched slot always gets swapped for the real
+  // server row. Getting this merge wrong the OTHER way (skipping it
+  // entirely the moment ANY slot on this pump had been touched) is exactly
+  // what let a stale, still-blank slot autosave a CREATE for a shift that
+  // already exists on the server — surfacing as "A shift entry already
+  // exists for this date, pump, and shift number" despite the manager
+  // never touching Save Entry, because the silent draft autosave hit it.
   const resyncedAfterLoadRef = useRef(false)
   useEffect(() => {
-    if (fuelEntriesLoading || resyncedAfterLoadRef.current || hasUserEditedRef.current) return
+    if (fuelEntriesLoading || resyncedAfterLoadRef.current) return
     resyncedAfterLoadRef.current = true
     const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
     if (existing.length === 0) return
-    setCards(existing.map((e) => ({ ...e })))
-    setActiveShiftIndex(0)
+    let changed = false
+    setCards((prev) => {
+      const byShift = new Map(existing.map((e) => [e.shiftNumber, e]))
+      const merged = prev.map((card) => {
+        const server = byShift.get(card.shiftNumber)
+        if (!server) return card
+        if (!card._editGen) {
+          // Untouched — the real server row is strictly better than
+          // whatever the initial blank/guessed seed had.
+          changed = true
+          return { ...server }
+        }
+        // Genuinely being edited locally from here down — never overwrite
+        // what the manager actually typed with the server's own field
+        // values. But the shift number itself already has a row on the
+        // server, most often because this same manager started typing
+        // before the initial fuelEntries fetch resolved (a hard refresh
+        // landing straight on this page) — two cases:
+        if (server.status === 'final') {
+          // Already finalized elsewhere/earlier: that record is now THE
+          // real entry for this shift, full stop. Letting a local draft
+          // attempt that never knew it existed keep "editing" a phantom
+          // duplicate is exactly the confusion this whole merge exists to
+          // avoid — the finalized row wins outright, same as an untouched
+          // card above.
+          changed = true
+          return { ...server }
+        }
+        if (!card.id) {
+          // Still just a draft server-side too, and this card hasn't
+          // picked up an id of its own yet — adopt the server's id/status
+          // so the NEXT autosave becomes an UPDATE instead of colliding
+          // with that row as a duplicate CREATE (the "already exists" 409
+          // this per-slot merge was built to prevent), without touching a
+          // single field the manager has actually typed.
+          changed = true
+          return { ...card, id: server.id, status: 'draft' }
+        }
+        return card
+      })
+      // A server shift with no local slot at all yet (the initial blank
+      // seed only ever creates Shift 1) needs its own card appended.
+      for (const entry of existing) {
+        if (!merged.some((c) => c.shiftNumber === entry.shiftNumber)) {
+          merged.push({ ...entry })
+          changed = true
+        }
+      }
+      if (!changed) return prev
+      merged.sort((a, b) => a.shiftNumber - b.shiftNumber)
+      return merged
+    })
+    if (changed) setActiveShiftIndex(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fuelEntriesLoading])
 
   const [confirmRemoveIndex, setConfirmRemoveIndex] = useState(null)
+  const [removing, setRemoving] = useState(false)
   // Separate from confirmRemoveIndex above: removing a shift (via the 2nd/
   // 3rd shift toggle) drops the tab entirely; discarding a draft keeps the
   // tab but wipes it back to a blank entry — Shift 1 can't be toggled off,
   // so this is the only way to reset it if a draft was typed by mistake.
   const [confirmDiscardIndex, setConfirmDiscardIndex] = useState(null)
+  const [discarding, setDiscarding] = useState(false)
   // Only one shift's full form (readings, payments, bills...) shows at a
   // time — a "Shift 1 / Shift 2 / Shift 3" tab strip switches between them,
   // instead of stacking every shift's whole form one below the other.
   const [activeShiftIndex, setActiveShiftIndex] = useState(0)
+  // Switching to another shift tab leaves the current one's unsaved edits
+  // sitting untouched (nothing is lost — see the localStorage persistence
+  // above) — "Leave Anyway" just switches, without saving or discarding
+  // anything. "Save" (see handleSaveAndSwitchShift below) actually runs the
+  // real Save Entry flow for whichever shift(s) on this pump are dirty.
+  const [pendingShiftIndex, setPendingShiftIndex] = useState(null)
+  function requestSwitchShift(index) {
+    if (index === activeShiftIndex) return
+    if (cards[activeShiftIndex]?._dirty) {
+      setPendingShiftIndex(index)
+      return
+    }
+    setActiveShiftIndex(index)
+  }
+  function confirmSwitchShift() {
+    setActiveShiftIndex(pendingShiftIndex)
+    setPendingShiftIndex(null)
+  }
+
+  // One ShiftCard instance per shift index — attemptSave (exposed via
+  // useImperativeHandle) runs the exact same validation+save as that card's
+  // own Save Entry button, so this never has to duplicate a single rule.
+  const shiftCardRefs = useRef({})
+
+  // Attempts to save every currently-dirty shift on this pump (almost
+  // always just one). Returns true only once ALL of them genuinely saved —
+  // a validation failure or a failed request on any one of them (already
+  // surfaced to the manager via that shift's own toast/shake/focus-jump)
+  // means the caller should NOT proceed with whatever it was about to do.
+  async function attemptSaveDirtyShifts() {
+    const dirtyIndices = cards.map((c, i) => (c._dirty ? i : -1)).filter((i) => i !== -1)
+    if (dirtyIndices.length === 0) return true
+    const results = await Promise.all(dirtyIndices.map((i) => shiftCardRefs.current[i]?.attemptSave() ?? false))
+    return results.every(Boolean)
+  }
+
+  // Exposed so FuelEntryForm can save this pump's dirty shift(s) from ITS
+  // OWN unsaved-changes prompts (switching pumps, changing date, leaving the
+  // page/screen entirely) — same underlying save as the shift-switch prompt
+  // above, just triggered from one level up.
+  useImperativeHandle(ref, () => ({ attemptSaveDirtyShifts }))
+
+  // "Save" in the shift-switch prompt: save whatever's dirty on this pump,
+  // and only actually switch tabs once that's genuinely succeeded — a
+  // blocked/failed save leaves the manager right where the error is, same
+  // as clicking Save Entry directly would.
+  async function handleSaveAndSwitchShift() {
+    const target = pendingShiftIndex
+    const ok = await attemptSaveDirtyShifts()
+    setPendingShiftIndex(null)
+    if (ok) setActiveShiftIndex(target)
+  }
 
   // Shift 1's opening is directly editable (pre-filled once above from the
   // pump's last saved shift, whichever earlier day that was). Shift 2+'s
@@ -1540,13 +2206,83 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
   // the card right before it, so a handover reading is entered exactly once.
   const effectiveCards = useMemo(() => withCarriedOpenings(cards), [cards])
 
-  function updateCard(index, patch) {
-    hasUserEditedRef.current = true
-    setCards((prev) => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)))
+  // Whether ANY shift on this pump has unsaved changes right now — reported
+  // up to FuelEntryForm (see onDirtyChange) so it can warn before switching
+  // pumps or leaving the page entirely, on top of this component's own
+  // guard on switching shift tabs, below.
+  const pumpDirty = useMemo(() => cards.some((c) => c._dirty), [cards])
+  useEffect(() => {
+    onDirtyChange?.(pumpDirty)
+    // A remount (the date changes — see FuelEntryForm's `key` prop) or this
+    // component going away entirely must not leave a stale "dirty" signal
+    // behind for whatever pump/date the manager lands on next.
+    return () => onDirtyChange?.(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pumpDirty])
+
+  // "Add Lubricant" (pump2 only) used to be a plain <Link> straight to
+  // /lubricants — a real route change, not just a tab switch within this
+  // page, so it skipped every unsaved-changes guard entirely (FuelEntryForm's
+  // own guard only wraps its OWN back-button/date-picker/pump-tab handlers,
+  // never this link buried inside PumpDayEditor). Same "Save / Leave Anyway"
+  // prompt as the shift-switch guard above, just navigating to a different
+  // route on either branch instead of switching this pump's active tab.
+  const [confirmLeaveForLubricant, setConfirmLeaveForLubricant] = useState(false)
+  function requestAddLubricant() {
+    if (pumpDirty) {
+      setConfirmLeaveForLubricant(true)
+      return
+    }
+    navigate('/lubricants')
+  }
+  function confirmGoToLubricantsAnyway() {
+    setConfirmLeaveForLubricant(false)
+    navigate('/lubricants')
+  }
+  async function handleSaveAndGoToLubricants() {
+    const ok = await attemptSaveDirtyShifts()
+    setConfirmLeaveForLubricant(false)
+    if (ok) navigate('/lubricants')
+  }
+
+  // handleSaveDraft below is invoked from a ShiftCard debounce timer (or its
+  // unmount-flush) that can fire well after the render that produced the
+  // specific handleSaveDraft/buildPayload closure it holds — this shift's
+  // OWN previous save resolving and attaching an id, or an unrelated edit
+  // elsewhere recomputing effectiveCards, both happen in between. Reading
+  // straight off `cards`/`effectiveCards` in that closure would use however
+  // stale THAT render was; a plain ref, reassigned every render (not a
+  // state update — this never itself needs to trigger a re-render), always
+  // has this shift's true latest id/status/content by the time it's read,
+  // no matter which render's closure ends up calling it.
+  const latestCardsRef = useRef({ cards, effectiveCards })
+  latestCardsRef.current = { cards, effectiveCards }
+
+  // _editGen is bumped on every genuine edit to this specific card (typing,
+  // discard-reset) — ShiftCard's autosave effect keys off THIS, not object
+  // identity, specifically because withCarriedOpenings (below) hands every
+  // later shift a brand-new object reference the instant an EARLIER shift's
+  // closing changes (its derived Opening tracks that live) — even though
+  // nobody touched the later shift at all. Comparing plain object identity
+  // there was firing a spurious autosave for a shift the user never edited,
+  // sometimes with a discarded shift's draft silently reappearing on the
+  // server as a stray, near-blank row. _editGen survives that
+  // recomputation untouched (withCarriedOpenings spreads the existing
+  // object, it doesn't rebuild it), so only a real edit moves it.
+  // `dirty` defaults to true — the overwhelming majority of calls are a
+  // genuine keystroke (ShiftCard's onChange below). The two call sites that
+  // AREN'T an edit the manager could lose — attaching the id/status a
+  // successful Save Entry just returned, and resetting a card back to blank
+  // after Discard Draft — pass `dirty: false` explicitly, since neither
+  // leaves anything unsaved behind for the unsaved-changes prompt to warn
+  // about (see pumpDirty below).
+  function updateCard(index, patch, dirty = true) {
+    setCards((prev) =>
+      prev.map((c, i) => (i === index ? { ...c, ...patch, _editGen: (c._editGen || 0) + 1, _dirty: dirty } : c)),
+    )
   }
 
   function addShift(shiftNumber) {
-    hasUserEditedRef.current = true
     setCards((prev) => [...prev, emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)])
     setActiveShiftIndex(shiftNumber - 1)
   }
@@ -1555,28 +2291,44 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
     if (cards[index].id) {
       setConfirmRemoveIndex(index)
     } else {
-      hasUserEditedRef.current = true
+      suppressFlushFor(cards[index].localOnlyId)
       setCards((prev) => prev.filter((_, i) => i !== index))
       setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
     }
   }
 
+  // A ref, not just the `removing` state, guards against a double-fire: the
+  // Confirm button's `disabled={busy}` only takes effect once React actually
+  // re-renders, which isn't synchronized with the click itself — a fast
+  // double-click (or the browser queuing a second click event before that
+  // render commits) could otherwise call this twice, sending a second
+  // delete for an id the first call already removed and surfacing a
+  // confusing error toast right on top of the real success one. A ref reads
+  // as up to date the instant it's set, with no render in between.
+  const removingRef = useRef(false)
+
   async function confirmRemove() {
+    if (removingRef.current) return
     const index = confirmRemoveIndex
-    setConfirmRemoveIndex(null)
     if (index == null) return
     const card = cards[index]
-    if (card.id) {
-      try {
+    removingRef.current = true
+    setRemoving(true)
+    try {
+      if (card.id) {
         await deleteFuelEntry(card.id)
         toast.success(tRoot.toastDeleted)
-      } catch (err) {
-        toast.error(err.message || tRoot.toastSaveFailed)
-        return
       }
+      suppressFlushFor(card.localOnlyId)
+      setCards((prev) => prev.filter((_, i) => i !== index))
+      setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
+      setConfirmRemoveIndex(null)
+    } catch (err) {
+      toast.error(err.message || tRoot.toastSaveFailed)
+    } finally {
+      removingRef.current = false
+      setRemoving(false)
     }
-    setCards((prev) => prev.filter((_, i) => i !== index))
-    setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
   }
 
   // Draft-only by design: a shift that's already final can't reach this
@@ -1588,91 +2340,90 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
     setConfirmDiscardIndex(index)
   }
 
+  // Same double-fire guard as removingRef above.
+  const discardingRef = useRef(false)
+
   async function confirmDiscardDraft() {
+    if (discardingRef.current) return
     const index = confirmDiscardIndex
-    setConfirmDiscardIndex(null)
     if (index == null) return
     const card = cards[index]
-    if (card.id) {
-      try {
-        await deleteFuelEntry(card.id)
-      } catch (err) {
-        toast.error(err.message || tRoot.toastSaveFailed)
-        return
-      }
-    }
-    updateCard(index, blankShiftEntry(card.shiftNumber))
-    toast.success(tRoot.toastDraftDiscarded)
-  }
-
-  function buildPayload(index) {
-    const effective = effectiveCards[index]
-    const { id, localOnlyId, ...rest } = effective
-    return rest
-  }
-
-  // Whether an as-yet-unsaved card (no id) has a create already in flight —
-  // guards against a second autosave firing (e.g. the manager resumes
-  // typing, then pauses again) before the first create's response comes
-  // back, which would otherwise POST a second draft row for the same shift.
-  // The dropped attempt isn't lost: its edits already live in `cards` (the
-  // form's own source of truth), so the very next autosave picks them up —
-  // or, if the create was mid-flight when it fired, `pending` here retriggers
-  // one immediately once that create resolves.
-  const draftCreateStateRef = useRef({})
-
-  // Called by ShiftCard's own debounced autosave — NOT awaited there by
-  // design (fire-and-forget), so being `async`/awaiting the network call in
-  // here never blocks typing. Silent on success (no toast), since this can
-  // fire many times a minute while someone is typing — the card's own
-  // "Draft"/"Saving..." badge is the persistent signal that progress is
-  // safe. Only a real failure surfaces a toast.
-  //
-  // Only call updateCard when something in local `cards` state actually
-  // needs to change (a fresh id, or status not yet marked 'draft'). Calling
-  // it unconditionally would replace the card object every time even when
-  // it's already an unchanged draft — that new reference flows back into
-  // ShiftCard's `value` prop, which its own autosave effect sees as "value
-  // changed", scheduling another autosave, which calls back in here again:
-  // an infinite loop that never lets the "Saving..." indicator settle.
-  async function handleSaveDraft(index) {
-    const payload = { ...buildPayload(index), status: 'draft' }
-    const card = cards[index]
-    if (card.id) {
-      if (card.status !== 'draft') updateCard(index, { status: 'draft' })
-      try {
-        await updateFuelEntry(card.id, payload)
-      } catch (err) {
-        toast.error(err.message || tRoot.toastSaveFailed)
-      }
-      return
-    }
-    const state = draftCreateStateRef.current
-    if (state[index] === 'saving') {
-      state[index] = 'pending'
-      return
-    }
-    state[index] = 'saving'
+    discardingRef.current = true
+    setDiscarding(true)
     try {
-      const id = await addFuelEntry(payload)
-      updateCard(index, { id, status: 'draft' })
+      if (card.id) {
+        await deleteFuelEntry(card.id)
+      }
+      suppressFlushFor(card.localOnlyId)
+      updateCard(index, blankShiftEntry(card.shiftNumber), false)
+      toast.success(tRoot.toastDraftDiscarded)
+      setConfirmDiscardIndex(null)
     } catch (err) {
       toast.error(err.message || tRoot.toastSaveFailed)
     } finally {
-      const shouldRetry = state[index] === 'pending'
-      state[index] = 'idle'
-      if (shouldRetry) handleSaveDraft(index)
+      discardingRef.current = false
+      setDiscarding(false)
     }
   }
 
-  // Final save happens once per shift (not per keystroke), so a normal
-  // awaited call — with a "Saving..." state on the button itself, never a
-  // page-blocking spinner — is expected and fine here.
-  const [savingFinalIndex, setSavingFinalIndex] = useState(null)
+  function buildPayload(index) {
+    const effective = latestCardsRef.current.effectiveCards[index]
+    // _editGen is local bookkeeping only (see updateCard above) — never
+    // meant to leave the browser.
+    const { id, localOnlyId, _editGen, ...rest } = effective
+    return rest
+  }
 
+  // localOnlyIds of cards whose ShiftCard instance is about to unmount as
+  // part of a deliberate discard/remove — set synchronously, one line before
+  // the state change that causes that unmount, so it's already in place by
+  // the time that ShiftCard's own unmount-flush check (see the debounce
+  // effect in ShiftCard) runs. Without this, discarding or removing a shift
+  // mid-edit would flush its just-cancelled autosave right back out,
+  // resurrecting the very draft the manager just asked to delete. Entries
+  // are self-cleaning (removed a few seconds later) rather than deleted
+  // immediately after use, since the flush check itself runs on a deferred
+  // microtask.
+  const suppressFlushRef = useRef(new Set())
+  function suppressFlushFor(localOnlyId) {
+    if (!localOnlyId) return
+    suppressFlushRef.current.add(localOnlyId)
+    setTimeout(() => suppressFlushRef.current.delete(localOnlyId), 5000)
+  }
+
+  // Called by ShiftCard's own debounced "autosave" effect — a not-yet-
+  // finalized shift is never written to the backend at all any more. `cards`
+  // (mirrored to localStorage by the effect above) already picks up every
+  // keystroke instantly via updateCard/onChange, well before this debounced
+  // callback even fires — this exists only as that effect's wiring target,
+  // so its "Draft saving…" badge still means something (progress really is
+  // being kept, just in the browser instead of the database) without this
+  // function itself having anything left to do.
+  function handleSaveDraft() {}
+
+  // Final save happens once per shift (not per keystroke, unlike the silent
+  // draft autosave above, which must stay non-blocking or every typing
+  // pause would flash a full-page loader) — a deliberate "Save Entry" click,
+  // same as removing a shift or discarding a draft below, blocks the whole
+  // page with FullPageLoader while it's in flight.
+  const [savingFinalIndex, setSavingFinalIndex] = useState(null)
+  // Ref guard, not just the `savingFinalIndex` state: the Save Entry
+  // button's `disabled={savingFinal}` only takes effect once React
+  // re-renders, which isn't synchronized with the click itself — a fast
+  // double-click could otherwise fire this twice for the same shift before
+  // that render lands, sending two concurrent final-saves for one entry. A
+  // ref reads as up to date the instant it's set, with no render in between.
+  const savingFinalRef = useRef(false)
+
+  // Returns true once the API call genuinely succeeds, false on any
+  // failure (including "already saving, this call is a no-op") — see
+  // ShiftCard's handleSaveFinalClick, which folds this into its own
+  // validation-then-save boolean for attemptSave/the unsaved-changes prompt.
   async function handleSaveFinal(index) {
+    if (savingFinalRef.current) return false
     const payload = { ...buildPayload(index), status: 'final' }
     const card = cards[index]
+    savingFinalRef.current = true
     setSavingFinalIndex(index)
     try {
       if (card.id) {
@@ -1680,16 +2431,27 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         toast.success(tRoot.toastUpdated)
       } else {
         const id = await addFuelEntry(payload)
-        updateCard(index, { id })
+        updateCard(index, { id }, false)
         toast.success(tRoot.toastAdded)
       }
-      updateCard(index, { status: 'final' })
+      updateCard(index, { status: 'final' }, false)
+      return true
     } catch (err) {
       toast.error(err.message || tRoot.toastSaveFailed)
+      return false
     } finally {
+      savingFinalRef.current = false
       setSavingFinalIndex(null)
     }
   }
+
+  // A deliberate write (finalize/remove/discard) in flight on THIS pump —
+  // draft autosave never sets this (see handleSaveDraft's own comment) —
+  // blocks switching/adding/removing shift tabs on this pump too, so a
+  // manager can't e.g. remove Shift 2 while Shift 1's finalize is still
+  // saving. The FullPageLoader rendered below already blocks the rest of
+  // the page visually; this additionally guards this pump's own tab strip.
+  const busy = savingFinalIndex != null || removing || discarding
 
   return (
     <motion.div
@@ -1711,8 +2473,9 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
                   <button
                     key={card.id || card.localOnlyId}
                     type="button"
-                    onClick={() => setActiveShiftIndex(index)}
-                    className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+                    onClick={() => requestSwitchShift(index)}
+                    disabled={busy}
+                    className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       index === activeShiftIndex ? 'bg-brand-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                     }`}
                   >
@@ -1727,11 +2490,21 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
               })}
             </div>
           ) : null}
+          {pumpKey === 'pump2' ? (
+            <button
+              type="button"
+              onClick={requestAddLubricant}
+              title={t.addLubricantLinkHint}
+              className="flex items-center gap-1.5 rounded-full border border-emerald-200 px-3.5 py-1.5 text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-50"
+            >
+              <ExternalLink size={14} /> {t.addLubricantLink}
+            </button>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <ToggleSwitch
             checked={cards.length >= 2}
-            disabled={cards.length >= 3}
+            disabled={busy || cards.length >= 3}
             title={cards.length >= 3 ? t.removeThirdShiftFirst : undefined}
             label={t.secondShiftToggle}
             onChange={(on) => (on ? addShift(2) : requestRemove(1))}
@@ -1739,6 +2512,7 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
           {cards.length >= 2 ? (
             <ToggleSwitch
               checked={cards.length >= 3}
+              disabled={busy}
               title={t.internalShiftHint}
               label={t.thirdShiftToggle}
               onChange={(on) => (on ? addShift(3) : requestRemove(2))}
@@ -1751,6 +2525,10 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         {cards.map((card, index) => (
           <div key={card.id || card.localOnlyId} className={index === activeShiftIndex ? '' : 'hidden'}>
             <ShiftCard
+              ref={(el) => {
+                if (el) shiftCardRefs.current[index] = el
+                else delete shiftCardRefs.current[index]
+              }}
               t={t}
               tRoot={tRoot}
               pumpKey={pumpKey}
@@ -1765,10 +2543,35 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
               onSaveFinal={() => handleSaveFinal(index)}
               savingFinal={savingFinalIndex === index}
               onDiscardDraft={() => requestDiscardDraft(index)}
+              suppressFlushRef={suppressFlushRef}
             />
           </div>
         ))}
       </div>
+
+      <ConfirmDialog
+        isOpen={pendingShiftIndex != null}
+        onClose={() => setPendingShiftIndex(null)}
+        onCancelClick={handleSaveAndSwitchShift}
+        onConfirm={confirmSwitchShift}
+        title={tRoot.unsavedChangesTitle}
+        description={tRoot.unsavedChangesDesc}
+        confirmLabel={tRoot.unsavedChangesLeave}
+        cancelLabel={tRoot.unsavedChangesStay}
+        confirmTone="leave"
+      />
+
+      <ConfirmDialog
+        isOpen={confirmLeaveForLubricant}
+        onClose={() => setConfirmLeaveForLubricant(false)}
+        onCancelClick={handleSaveAndGoToLubricants}
+        onConfirm={confirmGoToLubricantsAnyway}
+        title={tRoot.unsavedChangesTitle}
+        description={tRoot.unsavedChangesDesc}
+        confirmLabel={tRoot.unsavedChangesLeave}
+        cancelLabel={tRoot.unsavedChangesStay}
+        confirmTone="leave"
+      />
 
       <ConfirmDialog
         isOpen={confirmRemoveIndex != null}
@@ -1776,6 +2579,7 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         onConfirm={confirmRemove}
         title={tRoot.deleteTitle}
         description={tRoot.deleteDesc}
+        loading={removing}
       />
 
       <ConfirmDialog
@@ -1785,7 +2589,14 @@ export default function PumpDayEditor({ pumpKey, label, accent, tint, date, empl
         title={tRoot.discardDraftTitle}
         description={tRoot.discardDraftDesc}
         confirmLabel={tRoot.discardDraftButton}
+        loading={discarding}
       />
+
+      {savingFinalIndex != null ? <FullPageLoader label={tRoot.savingChanges} /> : null}
+      {removing ? <FullPageLoader label={tRoot.deleteTitle} /> : null}
+      {discarding ? <FullPageLoader label={tRoot.discardDraftButton} /> : null}
     </motion.div>
   )
-}
+})
+
+export default PumpDayEditor

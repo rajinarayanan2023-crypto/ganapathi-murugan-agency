@@ -8,3 +8,9 @@ dist
 .vite-dev.log
 .vite-dev-err.log
 .claude/
+# Dev-server logs and ad hoc debug screenshots left in the repo root during
+# testing (Playwright audits, compression debugging) — not real assets (those
+# live under public/), never meant to be committed.
+/*.log
+/audit-*.png
+/compression-debug-fail.png

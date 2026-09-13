@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Send, Download, ClipboardCheck, X } from 'lucide-react'
+import { Send, Download, ClipboardCheck, X, Loader2 } from 'lucide-react'
 import Modal from './Modal.jsx'
+import { FullPageLoader } from './Loader.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
@@ -10,19 +11,12 @@ import { caneOilRawAmount, NOZZLE_KEYS } from '../utils/fuelCalc.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
+import { sendAuditEmail } from '../lib/apiClient.js'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
 
 // Suggested audit recipient — pre-filled but always editable, so the report
 // still goes to whoever the manager types in instead.
 const SUGGESTED_AUDIT_EMAIL = 'sreeabinayaassociates@gmail.com'
-
-// mailto: can't attach a file (no browser API allows it for security
-// reasons), so — same limitation the earlier WhatsApp flow had — this opens
-// the manager's email app with the recipient/subject/body pre-filled and the
-// report is downloaded alongside for them to attach by hand.
-function buildMailtoLink(email, subject, body) {
-  return `mailto:${(email || '').trim()}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-}
 
 // Litres are rounded to whole numbers everywhere in this audit report (and
 // only here — the fuel-entry screens elsewhere keep their 2-decimal
@@ -248,16 +242,25 @@ function combinedPaymentRows(entries, creditCustomers) {
 // (an employee's personal draw, tracked against their salary — not a
 // customer sale) and expense lines (cash paid straight back out). Grouped
 // by label and summed, same as the payment breakdown.
+// Grouped by (type, label) together, NOT label alone — an employee's
+// personal draw and an unrelated vendor expense that happen to share the
+// exact same free-typed label (e.g. both called "Diesel") used to silently
+// merge into one combined figure here, which could read as one thing being
+// mistaken for the other in the report. Keeping `type` on each row lets the
+// table below show which is which whenever that happens.
 function remainingExpensesBreakdown(entries) {
   const totals = new Map()
   for (const entry of entries || []) {
     for (const p of entry.payments || []) {
       if (isCashPayment(p) || p.type === 'credit') continue
       const label = (p.label || '').trim() || '—'
-      totals.set(label, (totals.get(label) || 0) + (Number(p.amount) || 0))
+      const key = `${p.type}::${label}`
+      const existing = totals.get(key) || { label, type: p.type, amount: 0 }
+      existing.amount += Number(p.amount) || 0
+      totals.set(key, existing)
     }
   }
-  return [...totals.entries()].map(([label, amount]) => ({ label, amount })).sort((a, b) => b.amount - a.amount)
+  return [...totals.values()].sort((a, b) => b.amount - a.amount)
 }
 
 // Cash lines don't get a litres figure — a cash line commonly covers a mix
@@ -337,21 +340,40 @@ export default function AuditModal({
   const [editedSale, setEditedSale] = useState(String(Math.round(dayTotals.totalSaleAmount)))
   const [editedPayments, setEditedPayments] = useState(String(Math.round(dayTotals.totalPayments)))
   const [editedVariance, setEditedVariance] = useState(String(Math.round(dayTotals.excessShortage)))
-  // This modal never unmounts between opens (its parent just toggles isOpen),
-  // so without this the "Overall Day Total" fields would keep whatever value
-  // they had the very first time the modal ever opened — silently drifting
-  // out of sync with the live "Entire Day Total" banner above it as more
-  // shifts get saved. Re-sync from the current dayTotals every time it opens
-  // (the auditor can still type their own override afterward).
+  // This modal never unmounts between opens (its parent just toggles isOpen)
+  // and, unlike PumpDayEditor, isn't even remounted on a date change (no
+  // `key={date}` — FuelEntryForm just flips `date` in place) — so without
+  // this, every field below would silently keep whatever was typed for a
+  // PREVIOUS date/opening, right through a date change, with nothing on
+  // screen to say so. "Overall Day Total" needs the live dayTotals resync
+  // regardless (it can keep drifting out of sync purely from new shifts
+  // being saved for the SAME date too); everything else here — auditor
+  // name, remarks, the manual stock-reconciliation numbers, the credit-
+  // payment mini-form — is per-report data entry for one specific date, so
+  // it's reset back to blank on every open, the same as a fresh form.
+  // `contactEmail` below is the one deliberate exception: that one really is
+  // meant to persist as a station-level default across audits.
   useEffect(() => {
     if (!isOpen) return
     setEditedSale(String(Math.round(dayTotals.totalSaleAmount)))
     setEditedPayments(String(Math.round(dayTotals.totalPayments)))
     setEditedVariance(String(Math.round(dayTotals.excessShortage)))
+    setAuditorName('')
+    setRemarks('')
+    setOpeningStockPetrol('')
+    setOpeningStockDiesel('')
+    setStockReceivedPetrol('')
+    setStockReceivedDiesel('')
+    setCreditPaymentForm({ customerId: '', amount: '', mode: 'Cash' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen])
+  }, [isOpen, date])
   const [contactEmail, setContactEmail] = useState(station?.auditContactEmail || SUGGESTED_AUDIT_EMAIL)
-  const [sending, setSending] = useState(false)
+  // Tracks WHICH of Download/Send Email is in flight (not just whether one
+  // is) so only the button actually clicked shows its own spinner, while
+  // both still disable — same "one write in flight blocks the other" intent
+  // as elsewhere in this file (see removingCreditPaymentId).
+  const [sendingAction, setSendingAction] = useState(null) // null | 'download' | 'email'
+  const sending = sendingAction != null
   // Opening Stock (what was already in the tank before today's delivery) +
   // Stock Received Today, minus what the meters show as sold today, is
   // what's left right now — the manager types both sides of that balance in.
@@ -395,6 +417,7 @@ export default function AuditModal({
   const pump2OilBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'oil', { exact: true }), [pump2.entries])
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
+  const employeeCreditLabel = FUEL_ENTRY_TEXT[language].pumpEditor.employeeCreditLabel
   const currentStockPetrol = (Number(openingStockPetrol) || 0) + (Number(stockReceivedPetrol) || 0) - roundedPetrolLtr
   const currentStockDiesel = (Number(openingStockDiesel) || 0) + (Number(stockReceivedDiesel) || 0) - roundedDieselLtr
   const paymentRows = useMemo(() => combinedPaymentRows(dayEntries, creditCustomers), [dayEntries, creditCustomers])
@@ -420,37 +443,68 @@ export default function AuditModal({
   }, [creditCustomers, date])
   const todaysCreditPaymentsTotal = useMemo(() => todaysCreditPayments.reduce((sum, r) => sum + r.amount, 0), [todaysCreditPayments])
 
-  function handleAddCreditPayment(e) {
+  // addLedgerEntry is a real network call with no optimistic update (unlike
+  // the fuel-entry autosave elsewhere in this app) — the "today's credit
+  // paid" list right below only actually shows the new row once
+  // creditCustomers itself updates, after the request resolves. Firing the
+  // success toast and clearing the form immediately used to claim it was
+  // recorded before the request had even landed — with no error handling at
+  // all, so a failed request still said "success". addingCreditPayment
+  // disables the form and the button shows a spinner for exactly that
+  // window, so what's on screen never gets ahead of what's actually saved.
+  const [addingCreditPayment, setAddingCreditPayment] = useState(false)
+
+  async function handleAddCreditPayment(e) {
     e.preventDefault()
     const amount = Number(creditPaymentForm.amount)
     if (!creditPaymentForm.customerId) {
       toast.error(t.errorSelectCustomer)
       return
     }
-    if (!amount) {
+    if (!(amount > 0)) {
       toast.error(t.errorCreditAmount)
       return
     }
-    addLedgerEntry(creditPaymentForm.customerId, {
-      date,
-      type: 'payment',
-      fuelType: null,
-      ltr: null,
-      rate: null,
-      amount,
-      mode: creditPaymentForm.mode,
-      note: t.creditPaidNote,
-    })
-    toast.success(t.toastCreditPaymentRecorded)
-    setCreditPaymentForm((prev) => ({ ...prev, amount: '' }))
+    setAddingCreditPayment(true)
+    try {
+      await addLedgerEntry(creditPaymentForm.customerId, {
+        date,
+        type: 'payment',
+        fuelType: null,
+        ltr: null,
+        rate: null,
+        amount,
+        mode: creditPaymentForm.mode,
+        note: t.creditPaidNote,
+      })
+      toast.success(t.toastCreditPaymentRecorded)
+      setCreditPaymentForm((prev) => ({ ...prev, amount: '' }))
+    } catch (err) {
+      toast.error(err.message || t.errorCreditAmount)
+    } finally {
+      setAddingCreditPayment(false)
+    }
   }
+
+  // Same before-it-actually-happened gap as adding one above — the row
+  // stays in the list (and could be removed again, or double-toasted) until
+  // the request that's supposed to remove it has actually finished.
+  const [removingCreditPaymentId, setRemovingCreditPaymentId] = useState(null)
 
   // Undo a mistaken entry — whether it was added here or on the Credit Bills
   // page, as long as it's a payment dated to this audit's day it shows up in
   // the list above, so it should be removable from right here too.
-  function handleRemoveCreditPayment(row) {
-    removeLedgerEntry(row.customerId, row.id)
-    toast.success(t.toastCreditPaymentRemoved)
+  async function handleRemoveCreditPayment(row) {
+    if (removingCreditPaymentId) return
+    setRemovingCreditPaymentId(row.id)
+    try {
+      await removeLedgerEntry(row.customerId, row.id)
+      toast.success(t.toastCreditPaymentRemoved)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setRemovingCreditPaymentId(null)
+    }
   }
 
   async function buildWorkbookBlob() {
@@ -507,7 +561,8 @@ export default function AuditModal({
       const remainingHeader = sheet.addRow([t.colMethod, t.colAmount])
       remainingHeader.font = { bold: true }
       for (const row of remainingExpenseRows) {
-        sheet.addRow([row.label, roundedCurrency(row.amount)])
+        const label = row.type === 'employeeCredit' ? `${row.label} (${employeeCreditLabel})` : row.label
+        sheet.addRow([label, roundedCurrency(row.amount)])
       }
       sheet.addRow([t.totalRemainingExpensesLabel, roundedCurrency(remainingExpensesTotal)]).font = { bold: true }
       sheet.addRow([])
@@ -567,12 +622,14 @@ export default function AuditModal({
   }
 
   async function handleDownload() {
-    setSending(true)
+    setSendingAction('download')
     try {
       downloadBlob(await buildWorkbookBlob())
       toast.success(t.toastDownloaded)
+    } catch (err) {
+      toast.error(err.message || t.toastReportFailed)
     } finally {
-      setSending(false)
+      setSendingAction(null)
     }
   }
 
@@ -581,10 +638,7 @@ export default function AuditModal({
       toast.error(t.contactRequired)
       return
     }
-    // Must be the very first thing in this click handler — opening a mailto:
-    // link is only reliably treated as a direct response to the click (not
-    // blocked as a pop-up) when it's the first thing the handler does;
-    // building the file (below, async) has to happen after this.
+    const trimmedEmail = contactEmail.trim()
     const subject = `${station?.name || ''} — ${reportTitle} — ${formatDate(date)}`
     const body = t.whatsAppMessage(
       station?.name || '',
@@ -593,20 +647,33 @@ export default function AuditModal({
       roundedCurrency(Number(editedPayments) || 0),
       `${t.fieldVariance}: ${variance >= 0 ? '+' : ''}${roundedCurrency(variance)}`,
     )
-    window.location.href = buildMailtoLink(contactEmail, subject, body)
-    onUpdateAuditContact?.(contactEmail.trim())
 
-    setSending(true)
+    setSendingAction('email')
     try {
-      downloadBlob(await buildWorkbookBlob())
+      const workbookBlob = await buildWorkbookBlob()
+      // Sent server-side over real SMTP now (see app/core/email.py) — the
+      // workbook built above is attached exactly as-is, never rebuilt or
+      // re-validated on the backend. Only persist this as the new default
+      // contact once the send has actually succeeded, not just attempted.
+      await sendAuditEmail({
+        toEmail: trimmedEmail,
+        subject,
+        bodyText: body,
+        workbookBlob,
+        filename: `audit-report-${date}.xlsx`,
+      })
+      onUpdateAuditContact?.(trimmedEmail)
       toast.success(t.toastSent)
+    } catch (err) {
+      toast.error(err.message || t.toastReportFailed)
     } finally {
-      setSending(false)
+      setSendingAction(null)
     }
   }
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={modalTitle} maxWidth="max-w-7xl">
+      {sendingAction === 'email' ? <FullPageLoader label={t.sendingEmailLabel} /> : null}
       <div className="space-y-5">
         <div className="flex items-center gap-2 rounded-lg bg-brand-50 px-3 py-2.5 text-sm">
           <ClipboardCheck size={16} className="shrink-0 text-brand-600" />
@@ -846,9 +913,16 @@ export default function AuditModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {remainingExpenseRows.map((row) => (
-                    <tr key={row.label} className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium text-amber-700">{row.label}</td>
+                  {remainingExpenseRows.map((row, i) => (
+                    <tr key={`${row.type}-${row.label}-${i}`} className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium text-amber-700">
+                        {row.label}
+                        {row.type === 'employeeCredit' ? (
+                          <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                            {employeeCreditLabel}
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-2 text-right font-semibold text-slate-800">{roundedCurrency(row.amount)}</td>
                     </tr>
                   ))}
@@ -933,6 +1007,7 @@ export default function AuditModal({
                 <Select
                   value={creditPaymentForm.customerId}
                   onChange={(e) => setCreditPaymentForm({ ...creditPaymentForm, customerId: e.target.value })}
+                  disabled={addingCreditPayment}
                 >
                   <option value="">{t.selectCustomerPlaceholder}</option>
                   {(creditCustomers || []).map((c) => (
@@ -952,19 +1027,25 @@ export default function AuditModal({
                   value={creditPaymentForm.amount}
                   onChange={(e) => setCreditPaymentForm({ ...creditPaymentForm, amount: e.target.value })}
                   placeholder="0"
+                  disabled={addingCreditPayment}
                 />
               </Field>
             </div>
             <div className="w-28 shrink-0">
               <Field label={t.fieldMode}>
-                <Select value={creditPaymentForm.mode} onChange={(e) => setCreditPaymentForm({ ...creditPaymentForm, mode: e.target.value })}>
+                <Select
+                  value={creditPaymentForm.mode}
+                  onChange={(e) => setCreditPaymentForm({ ...creditPaymentForm, mode: e.target.value })}
+                  disabled={addingCreditPayment}
+                >
                   <option value="Cash">{t.modeLabel.Cash}</option>
                   <option value="Card">{t.modeLabel.Card}</option>
                   <option value="Online">{t.modeLabel.Online}</option>
                 </Select>
               </Field>
             </div>
-            <PrimaryButton type="submit" className="shrink-0">
+            <PrimaryButton type="submit" className="shrink-0" disabled={addingCreditPayment}>
+              {addingCreditPayment ? <Loader2 size={15} className="animate-spin" /> : null}
               {t.addCreditPaymentButton}
             </PrimaryButton>
           </form>
@@ -982,11 +1063,12 @@ export default function AuditModal({
                       <button
                         type="button"
                         onClick={() => handleRemoveCreditPayment(row)}
+                        disabled={removingCreditPaymentId != null}
                         aria-label={t.removeCreditPayment}
                         title={t.removeCreditPayment}
-                        className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+                        className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <X size={13} />
+                        {removingCreditPaymentId === row.id ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
                       </button>
                     </span>
                   </div>
@@ -1054,7 +1136,7 @@ export default function AuditModal({
               <Download size={15} /> {t.downloadButton}
             </SecondaryButton>
             <PrimaryButton type="button" onClick={handleSendEmail} disabled={sending}>
-              <Send size={15} /> {t.sendWhatsAppButton}
+              {sendingAction === 'email' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} {t.sendWhatsAppButton}
             </PrimaryButton>
           </div>
         </div>
