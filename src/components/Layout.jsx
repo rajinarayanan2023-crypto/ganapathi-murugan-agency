@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, CalendarCheck, Fuel, Droplet, Wallet, IndianRupee, Megaphone, Receipt, LogOut, Languages, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react'
+import { LayoutDashboard, Users, CalendarCheck, Fuel, Droplet, Wallet, IndianRupee, Megaphone, Receipt, LogOut, Languages, KeyRound, ChevronLeft, ChevronRight, Calculator } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LAYOUT_TEXT } from '../i18n/layout.js'
@@ -12,7 +12,9 @@ import Modal from './Modal.jsx'
 import { Field, PasswordInput, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import { FullPageLoader } from './Loader.jsx'
+import CashCalculatorModal from './CashCalculatorModal.jsx'
 import useIdleLogout from '../hooks/useIdleLogout.js'
+import { CASH_CALCULATOR_TEXT } from '../i18n/cashCalculator.js'
 
 // Matches the backend's own IDLE_TIMEOUT_MINUTES (app/core/config.py /
 // .env's idle_timeout_minutes) — that one force-expires the refresh token
@@ -43,6 +45,8 @@ export default function Layout() {
   const { station, logout, changePassword, currentUser, hasUnsavedChanges, saveUnsavedChangesHandler } = useData()
   const { language, toggleLanguage } = useLanguage()
   const t = LAYOUT_TEXT[language]
+  const cashCalcT = CASH_CALCULATOR_TEXT[language]
+  const [cashCalcOpen, setCashCalcOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
@@ -300,6 +304,20 @@ export default function Layout() {
               <Languages size={14} />
               {language === 'en' ? 'தமிழ்' : 'English'}
             </button>
+            {/* Money-green + a bigger icon on purpose — every other header
+                button (language, admin avatar) shares the same gold/slate
+                tones, so this one is deliberately a different color to
+                stand out at a glance instead of blending in as "just
+                another small circle". */}
+            <AppTooltip title={cashCalcT.cashCalculator}>
+              <button
+                onClick={() => setCashCalcOpen(true)}
+                aria-label={cashCalcT.cashCalculator}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-md shadow-emerald-600/40 transition-transform hover:scale-110 hover:shadow-lg active:scale-95"
+              >
+                <Calculator size={19} strokeWidth={2.3} />
+              </button>
+            </AppTooltip>
             {/* Name is the prominent line (up to ~10 characters comfortably,
                 on one line via whitespace-nowrap — this sits in a flexible
                 trailing group, not a fixed-width box, so it can't clip a
@@ -409,6 +427,8 @@ export default function Layout() {
       />
 
       {savingPassword ? <FullPageLoader label={t.savingPassword} /> : null}
+
+      <CashCalculatorModal isOpen={cashCalcOpen} onClose={() => setCashCalcOpen(false)} />
 
       <Modal
         isOpen={passwordModalOpen}
