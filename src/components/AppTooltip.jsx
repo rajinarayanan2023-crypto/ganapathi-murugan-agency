@@ -20,6 +20,14 @@ export default function AppTooltip({ title, children, ...props }) {
             borderRadius: '6px',
             px: 1.25,
             py: 0.6,
+            // MUI's own default caps every tooltip at 300px wide — fine for a
+            // short label, but CalcBreakdown's rows (e.g. the audit litres
+            // formula's "1,122,413 → 1,123,491 = 1,077 L" lines) are
+            // deliberately single-line (whitespace-nowrap) and easily wider
+            // than that, so they were getting silently clipped instead of
+            // the tooltip growing to fit. Capped at the viewport width, not
+            // removed outright, so it still can't overflow a narrow screen.
+            maxWidth: 'min(480px, 92vw)',
           },
         },
         arrow: {

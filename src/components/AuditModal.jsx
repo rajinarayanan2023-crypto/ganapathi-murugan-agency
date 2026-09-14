@@ -35,72 +35,66 @@ function roundedCurrency(value) {
   return '₹' + Math.round(Number(value) || 0).toLocaleString('en-IN')
 }
 
-// A pump's litres for the round-off-formula tooltip: NOT the sum of every
-// shift's own (closing − opening − testing) delta rounded once at the end
-// (that's what pump.aggregate/dayTotals already give elsewhere) — this is
-// the boundary-meter-reading calculation an auditor actually re-derives by
-// hand off the physical totalizers: this pump's FIRST shift's opening
-// reading and LAST shift's closing reading, each nozzle rounded to a whole
-// litre first (the way it's actually read off the meter), subtracted, minus
-// every shift's testing litres in between. `entries` must already be
-// chronologically sorted (see sortPumpEntries) with carried openings
-// applied (see withCarriedOpenings) — same as pump1.entries/pump2.entries.
-// Also keeps every nozzle's own opening/closing/testing/liters per shift
-// (not just the shift-level sum) so the tooltip can show the full
-// nozzle → shift → pump → fuel chain, not just the two boundary totals.
-// `exact: true` (2T Oil only, per manager request) skips the whole-litre
-// rounding and keeps the real decimal reading instead — petrol/diesel keep
-// rounding here since only 2T Oil was asked to stop rounding.
+// A pump's litres for the Audit report: NOT the sum of every shift's own
+// (closing − opening − testing) delta rounded once at the end (that's what
+// pump.aggregate/dayTotals already give elsewhere, still used for the
+// Amount/revenue figures) — this is the boundary-meter-reading calculation
+// an auditor actually re-derives by hand off the physical totalizers: this
+// pump's FIRST shift's opening reading and LAST shift's closing reading,
+// each nozzle rounded to a whole litre first (the way it's actually read off
+// the meter), then subtracted — per nozzle, then the two nozzles summed.
+// Testing litres are deliberately never subtracted anywhere in this audit
+// figure (per manager request — the meter-to-meter reading is the whole
+// point of an audit check, not the net-of-testing sale figure). `entries`
+// must already be chronologically sorted (see sortPumpEntries) with carried
+// openings applied (see withCarriedOpenings) — same as
+// pump1.entries/pump2.entries. Also keeps every nozzle's own opening/
+// closing/liters per shift (not just the shift-level sum) so the tooltip
+// can show the full nozzle → shift → pump → fuel chain, not just the two
+// boundary totals. `exact: true` (2T Oil only, per manager request) skips
+// the whole-litre rounding and keeps the real decimal reading instead —
+// petrol/diesel keep rounding here since only 2T Oil was asked to stop
+// rounding.
 function pumpFuelBoundaryBreakdown(entries, fuelKey, { exact = false } = {}) {
   const list = (entries || []).filter((e) => e?.[fuelKey])
-  if (!list.length) return { shifts: [], liters: 0 }
+  if (!list.length) return { nozzles: [], liters: 0, firstShiftNumber: null, lastShiftNumber: null }
   const round = (v) => (exact ? Math.round((Number(v) || 0) * 100) / 100 : roundLtr(v))
 
-  const shifts = list.map((e) => {
-    const nozzles = NOZZLE_KEYS.map((k) => {
-      const reading = e[fuelKey]?.[k]
-      const opening = round(reading?.opening)
-      const closing = round(reading?.closing)
-      const testing = round(reading?.testing)
-      const liters = Math.max(0, closing - opening - testing)
-      return { nozzleKey: k, opening, closing, testing, liters }
-    })
-    return {
-      shiftNumber: e.shiftNumber,
-      nozzles,
-      opening: nozzles.reduce((sum, n) => sum + n.opening, 0),
-      closing: nozzles.reduce((sum, n) => sum + n.closing, 0),
-      testing: nozzles.reduce((sum, n) => sum + n.testing, 0),
-      liters: nozzles.reduce((sum, n) => sum + n.liters, 0),
-    }
+  const firstEntry = list[0]
+  const lastEntry = list[list.length - 1]
+  // Per nozzle: THIS pump's first shift's opening vs. its last shift's
+  // closing — a nozzle is only ever compared against itself, never combined
+  // with the other nozzle's readings before subtracting.
+  const nozzles = NOZZLE_KEYS.map((k) => {
+    const opening = round(firstEntry[fuelKey]?.[k]?.opening)
+    const closing = round(lastEntry[fuelKey]?.[k]?.closing)
+    const liters = Math.max(0, closing - opening)
+    return { nozzleKey: k, opening, closing, liters }
   })
-  const openingTotal = shifts[0].opening
-  const closingTotal = shifts[shifts.length - 1].closing
-  const testingTotal = shifts.reduce((sum, s) => sum + s.testing, 0)
-  const liters = Math.max(0, closingTotal - openingTotal - testingTotal)
-  return { shifts, openingTotal, closingTotal, testingTotal, liters }
+  const liters = nozzles.reduce((sum, n) => sum + n.liters, 0)
+  return { nozzles, liters, firstShiftNumber: firstEntry.shiftNumber, lastShiftNumber: lastEntry.shiftNumber }
 }
 
 // Builds the CalcBreakdown content for the Petrol/Diesel/2T-Oil
-// round-off-formula tooltip: every nozzle's own opening→closing(−testing)
-// reading, rolled up into its shift's total, then its pump's total, then
-// (for a two-pump fuel) both pumps' formula — so an auditor can see exactly
-// which meter readings produced each figure at every level, not just the
-// final total. `pumps` is one entry (2T Oil, pump 2 only) or two (Petrol/
-// Diesel, both pumps).
+// round-off-formula tooltip: each nozzle's own first-shift-opening →
+// last-shift-closing reading, rolled up into its pump's total, then (for a
+// two-pump fuel) both pumps' formula — so an auditor can see exactly which
+// two meter readings produced each nozzle's figure, and how the nozzles/
+// pumps add up to the final total. Testing litres never appear here — this
+// audit figure deliberately never subtracts them (see
+// pumpFuelBoundaryBreakdown). `pumps` is one entry (2T Oil, pump 2 only) or
+// two (Petrol/Diesel, both pumps).
 function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false }) {
   const fmt = (v) => (exact ? (Number(v) || 0).toFixed(2) : String(v))
   const rows = []
   for (const { label: pumpLabel, breakdown } of pumps) {
-    for (const shift of breakdown.shifts) {
-      const shiftLbl = shiftLabel(shift.shiftNumber)
-      for (const n of shift.nozzles) {
-        rows.push({
-          label: `${pumpLabel} · ${shiftLbl} · ${nozzleLabel(Number(n.nozzleKey.slice(-1)))}`,
-          value: `${fmt(n.opening)} → ${fmt(n.closing)}${n.testing ? ` (−${fmt(n.testing)})` : ''} = ${fmt(n.liters)} L`,
-        })
-      }
-      rows.push({ label: `${pumpLabel} · ${shiftLbl} Total`, value: `${fmt(shift.liters)} L` })
+    const firstLbl = shiftLabel(breakdown.firstShiftNumber)
+    const lastLbl = shiftLabel(breakdown.lastShiftNumber)
+    for (const n of breakdown.nozzles) {
+      rows.push({
+        label: `${pumpLabel} · ${nozzleLabel(Number(n.nozzleKey.slice(-1)))} (${firstLbl} opening → ${lastLbl} closing)`,
+        value: `${fmt(n.opening)} → ${fmt(n.closing)} = ${fmt(n.liters)} L`,
+      })
     }
     rows.push({ label: `${pumpLabel} Total`, value: `${fmt(breakdown.liters)} L` })
   }
@@ -384,37 +378,29 @@ export default function AuditModal({
 
   const variance = Number(editedVariance) || 0
   const dayEntries = useMemo(() => [...(pump1.entries || []), ...(pump2.entries || [])], [pump1.entries, pump2.entries])
-  // Petrol/Diesel/2T Oil litres for the whole day — rounded to a whole litre
-  // ONLY for display here (see roundLtr's own comment), from the exact same
-  // `dayTotals`/`pump1.aggregate`/`pump2.aggregate` figures (aggregateEntries
-  // in fuelCalc.js) the rest of the app already shows for this date — the
-  // Entire Day Total banner, the Entry History table, the CSV export. Each
-  // pump's own reading used to derive its litres independently (rounding
-  // each shift's opening/closing to a whole number first, then subtracting)
-  // used to produce a different total than that shared figure whenever a
-  // reading wasn't a whole number — this rounds the one true total once,
-  // instead, so the audit report can never disagree with every other screen
-  // that shows "litres sold today" for the same date.
-  const roundedPetrolLtr = roundLtr(dayTotals.petrolLtr)
-  const roundedDieselLtr = roundLtr(dayTotals.dieselLtr)
-  // 2T Oil is deliberately NOT rounded off (per manager request) — shown and
-  // reported at its real decimal litres, unlike Petrol/Diesel above.
-  const exactOilLtr = Number(dayTotals.oilLtr) || 0
-  // Same totals roundedPetrolLtr/roundedDieselLtr add up to, kept separately
-  // for the round-off-formula tooltip on those two rows — each pump's own
-  // exact figure, rounded the same way, so the breakdown reads consistently
-  // with the combined total (a ±1L rounding gap between the two halves and
-  // their already-rounded sum is possible, same as any two numbers rounded
-  // independently — never the larger, unpredictable mismatch the old
-  // per-boundary-reading method could produce).
+  // Petrol/Diesel/2T Oil litres for the whole day — the audit-specific
+  // boundary-meter-reading figure (see pumpFuelBoundaryBreakdown's own
+  // comment), NOT dayTotals.petrolLtr/dieselLtr/oilLtr (which sum each
+  // shift's own closing−opening−testing delta instead — still used for the
+  // Amount/rate figures elsewhere on this screen, a different question from
+  // "what do the physical meters show"). Each pump's own two nozzles are
+  // rounded and subtracted independently, then the two pumps added — so this
+  // CAN differ by a litre or two from the Entire Day Total banner/Entry
+  // History table/CSV export elsewhere in the app, which is expected: this
+  // figure is deliberately the meter-to-meter audit check, not the
+  // net-of-testing sale figure those other screens show.
   const pump1PetrolBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump1.entries, 'petrol'), [pump1.entries])
   const pump2PetrolBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'petrol'), [pump2.entries])
   const pump1DieselBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump1.entries, 'diesel'), [pump1.entries])
   const pump2DieselBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'diesel'), [pump2.entries])
   // Oil is only ever sold through Pump 2's nozzle (see FUEL_KEYS_BY_PUMP in
-  // fuelCalc.js) — one pump's breakdown, kept unrounded (`exact: true`) to
-  // match exactOilLtr above.
+  // fuelCalc.js) — one pump's breakdown, kept unrounded (`exact: true`) —
+  // 2T Oil is deliberately NOT rounded off (per manager request), shown and
+  // reported at its real decimal litres, unlike Petrol/Diesel above.
   const pump2OilBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'oil', { exact: true }), [pump2.entries])
+  const roundedPetrolLtr = pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters
+  const roundedDieselLtr = pump1DieselBreakdown.liters + pump2DieselBreakdown.liters
+  const exactOilLtr = pump2OilBreakdown.liters
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
   const employeeCreditLabel = FUEL_ENTRY_TEXT[language].pumpEditor.employeeCreditLabel
