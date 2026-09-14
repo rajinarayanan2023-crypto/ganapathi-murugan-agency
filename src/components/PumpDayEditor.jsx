@@ -183,6 +183,21 @@ function isReadingClosingTooLow(reading) {
   return hasClosing && (Number(closingRaw) || 0) - (Number(reading.opening) || 0) - (Number(reading.testing) || 0) < 0
 }
 
+// A blank Closing next to a real Opening reading means the meter was never
+// actually read this shift — Opening auto-fills from the previous shift's
+// Closing (see blankShiftEntry/withCarriedOpenings), so saving with Closing
+// still blank would otherwise slip through with no reading recorded for
+// this nozzle at all. Only flagged once Opening has an actual value — a
+// genuinely fresh nozzle with no prior history (both fields still blank)
+// isn't flagged, same as isReadingClosingTooLow above.
+function isReadingClosingMissing(reading) {
+  const closingRaw = reading?.closing
+  const hasClosing = closingRaw !== '' && closingRaw != null
+  const openingRaw = reading?.opening
+  const hasOpening = openingRaw !== '' && openingRaw != null
+  return hasOpening && !hasClosing
+}
+
 // The API stores every reading field as a Decimal capped at 12 total digits,
 // 3 of them after the point (see FuelReadingIn in the backend schema) — i.e.
 // nothing at or past one billion. Every reading input here is a plain
@@ -232,7 +247,7 @@ function findInvalidReading(value, fuelKeys) {
       const reading = value[fuelKey]?.[nozzleKey]
       if (!reading) continue
       if (isReadingValueTooLarge(reading)) return { fuelKey, nozzleKey, reason: 'tooLarge' }
-      if (isReadingClosingTooLow(reading)) return { fuelKey, nozzleKey, reason: 'closingTooLow' }
+      if (isReadingClosingTooLow(reading) || isReadingClosingMissing(reading)) return { fuelKey, nozzleKey, reason: 'closingTooLow' }
       if (isReadingLitersUnrealistic(reading)) return { fuelKey, nozzleKey, reason: 'litersTooLarge' }
     }
   }
@@ -259,6 +274,39 @@ function duplicateRowIds(rows) {
     if (ids.length > 1) ids.forEach((id) => duplicates.add(id))
   }
   return duplicates
+}
+
+// A product picked in Pocket oil/Servo oil without both a Rate and a Sold
+// Count would silently contribute ₹0 to the shift total — the row looks
+// filled in (a product is chosen) but nothing was actually recorded against
+// it. Only flagged once a product is actually selected — an empty,
+// never-touched row isn't "incomplete", it's just unused (same "don't flag
+// what nobody's touched yet" rule as isReadingClosingTooLow above).
+//
+// Checked as "> 0", not just "not blank": a row loaded back from the server
+// (see normalizeFuelOilRow in DataContext.jsx) always carries real numbers,
+// never '' — a legacy row saved before this validation existed (product
+// picked, Rate/Count never actually filled in) round-trips as stockCount: 0,
+// stockRate: 0, which a blank-string check alone would wrongly read as
+// "already filled in". Neither field is ever legitimately 0 for a real oil
+// sale — a rate of ₹0 or a sold count of 0 both mean nothing was recorded —
+// so either one is exactly as incomplete as it being blank.
+function isOilRowIncomplete(row) {
+  if (!row?.productId) return false
+  const hasRate = row.stockRate !== '' && row.stockRate != null && Number(row.stockRate) > 0
+  const hasCount = row.stockCount !== '' && row.stockCount != null && Number(row.stockCount) > 0
+  return !hasRate || !hasCount
+}
+
+// First oil/cane-oil row (in display order) with a product selected but
+// Rate and/or Sold Count still blank, or null if every row is either fully
+// filled in or has no product picked at all. Same "find the exact offender,
+// then block+focus" pattern as findOilRowExceedingStock below.
+function findIncompleteOilRow(oilRows, caneOilRows) {
+  for (const row of [...(oilRows || []), ...(caneOilRows || [])]) {
+    if (isOilRowIncomplete(row)) return row
+  }
+  return null
 }
 
 // Same available-stock derivation OilRow itself uses, so "Save Entry" can
@@ -372,7 +420,7 @@ function PurchaseBatches({ t, product }) {
 // them via two separate calls let the second silently clobber the first
 // (both closed over the same not-yet-updated `value`), so a rate change
 // could get lost the instant it also re-clamped the count.
-function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, committedCount }) {
+function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, isIncomplete, committedCount }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
   const available = selectedProduct ? (rate ? stockAvailableAtRate(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
 
@@ -417,6 +465,11 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
     : ''
   const availableTooltipNote = availableBreakdown && !availableBreakdown.singleRate && !availableBreakdown.rateNotFound ? t.availableApproxNote : undefined
   const isOverStock = isOilCountOverStock(count, effectiveAvailable)
+  // isIncomplete just means "this row needs attention" — only actually
+  // highlight whichever of Rate/Count is the one still blank, not both, when
+  // the manager already filled in one of them.
+  const missingRate = isIncomplete && !(rate !== '' && rate != null && Number(rate) > 0)
+  const missingCount = isIncomplete && !(count !== '' && count != null && Number(count) > 0)
 
   function handleCountChange(v) {
     onRateAndCountChange(rate, v)
@@ -455,8 +508,8 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             value={rate || ''}
             onChange={(e) => handleRateChange(e.target.value)}
             disabled={!selectedProduct}
-            title={t.oilStockRateHint}
-            className={`text-xs ${isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+            title={missingRate ? t.oilRowIncompleteHint : t.oilStockRateHint}
+            className={`text-xs ${isDuplicate || missingRate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           >
             <option value="">{t.selectRate}</option>
             {priceOptions(selectedProduct).map((r) => (
@@ -483,8 +536,16 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             value={count || ''}
             onChange={(e) => handleCountChange(e.target.value)}
             placeholder="0"
-            title={isOverStock ? t.oilCountExceedsStockHint(effectiveAvailable) : available != null ? t.soldCountHint(available) : undefined}
-            className={`text-xs ${isOverStock ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+            title={
+              isOverStock
+                ? t.oilCountExceedsStockHint(effectiveAvailable)
+                : missingCount
+                  ? t.oilRowIncompleteHint
+                  : available != null
+                    ? t.soldCountHint(available)
+                    : undefined
+            }
+            className={`text-xs ${isOverStock || missingCount ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           />
         </div>
         <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
@@ -502,6 +563,8 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
         <p className="mt-1.5 text-xs font-medium text-rose-500">{t.oilCountExceedsStockHint(effectiveAvailable)}</p>
       ) : isDuplicate ? (
         <p className="mt-1.5 text-xs font-medium text-rose-500">{t.duplicateOilRowHint}</p>
+      ) : isIncomplete ? (
+        <p className="mt-1.5 text-xs font-medium text-rose-500">{t.oilRowIncompleteHint}</p>
       ) : null}
     </div>
   )
@@ -947,6 +1010,17 @@ const ShiftCard = forwardRef(function ShiftCard(
   const duplicateOilRowIds = useMemo(() => duplicateRowIds(value.oilRows), [value.oilRows])
   const duplicateCaneOilRowIds = useMemo(() => duplicateRowIds(value.caneOilRows), [value.caneOilRows])
   const hasDuplicateOilRows = duplicateOilRowIds.size > 0 || duplicateCaneOilRowIds.size > 0
+  // A row with a product picked but Rate/Sold Count still blank only turns
+  // red once a save was actually attempted — same as shiftEmployeeMissing —
+  // so a product just picked a moment ago doesn't immediately look like an
+  // error before the manager's even had a chance to fill in the rest.
+  const incompleteOilRowIds = useMemo(() => {
+    const ids = new Set()
+    for (const row of [...(value.oilRows || []), ...(value.caneOilRows || [])]) {
+      if (isOilRowIncomplete(row)) ids.add(row.id)
+    }
+    return ids
+  }, [value.oilRows, value.caneOilRows])
   // Live, not gated by attemptedSubmit — same as the oil-row duplicate check
   // above, a duplicate payment-line key is unambiguously wrong the moment it
   // happens, not just at save time.
@@ -1036,6 +1110,17 @@ const ShiftCard = forwardRef(function ShiftCard(
     }
     if (hasDuplicateOilRows) {
       toast.error(tRoot.errorDuplicateOilRow)
+      return false
+    }
+    // A product picked in Pocket oil/Servo oil without a Rate and Sold Count
+    // would otherwise save silently contributing ₹0 — same
+    // "shows a problem, but only blocking Save actually stops it" pattern as
+    // the meter-reading check above.
+    const incompleteOilRow = findIncompleteOilRow(value.oilRows, value.caneOilRows)
+    if (incompleteOilRow) {
+      setAttemptedSubmit(true)
+      toast.error(tRoot.errorOilRowIncomplete)
+      focusOilRow(incompleteOilRow.id)
       return false
     }
     // A Sold Count can end up over its product's available stock without
@@ -1208,8 +1293,13 @@ const ShiftCard = forwardRef(function ShiftCard(
           leaves the browser free to compute overflow-y as auto as well
           (per the CSS spec), and the Total row's continuous pulse animation
           was enough sub-pixel height jitter each frame to keep flipping an
-          unwanted vertical scrollbar on and off. */}
-      <div className="-mx-1 overflow-x-auto overflow-y-hidden px-1">
+          unwanted vertical scrollbar on and off. scrollbar-hide (index.css)
+          keeps the scroll itself working — still needed when an unusually
+          large reading (an extra mistyped digit) makes a row overflow even
+          above the sm breakpoint — it just hides the scrollbar chrome, which
+          otherwise visibly flashed during this card's mount/tab-switch
+          animation. */}
+      <div className="-mx-1 overflow-x-auto overflow-y-hidden px-1 scrollbar-hide">
         <div className="min-w-[640px] sm:min-w-0">
           <div className="grid grid-cols-[0.6fr_1.7fr_1.7fr_0.7fr_1.5fr_1fr_1.1fr] gap-2 px-1 pb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
             <span className="text-brand-700">{t.fuel}</span>
@@ -1232,7 +1322,13 @@ const ShiftCard = forwardRef(function ShiftCard(
                   const reading = value[fuelKey][nozzleKey]
                   const closingRaw = reading.closing
                   const netLiters = readingLiters(reading)
-                  const isClosingTooLow = isReadingClosingTooLow(reading)
+                  // The "already typed something inconsistent" case is live,
+                  // same as the duplicate-row checks — but the "still blank"
+                  // case only lights up once a save was actually attempted,
+                  // same as shiftEmployeeMissing below, so a fresh auto-filled
+                  // card doesn't show red before the manager has had a chance
+                  // to type anything.
+                  const isClosingTooLow = isReadingClosingTooLow(reading) || (attemptedSubmit && isReadingClosingMissing(reading))
                   const isRowTooLarge = isReadingValueTooLarge(reading)
                   const isLitersUnrealistic = !isRowTooLarge && !isClosingTooLow && isReadingLitersUnrealistic(reading)
                   const tooLargeField = (field) => {
@@ -1404,6 +1500,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                     onRemove={() => removeOilRow(row.id)}
                     showRemove
                     isDuplicate={duplicateOilRowIds.has(row.id)}
+                    isIncomplete={attemptedSubmit && incompleteOilRowIds.has(row.id)}
                     committedCount={committedOilCountFor(row.id)}
                   />
                 </div>
@@ -1477,6 +1574,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                     onRemove={() => removeCaneOilRow(row.id)}
                     showRemove
                     isDuplicate={duplicateCaneOilRowIds.has(row.id)}
+                    isIncomplete={attemptedSubmit && incompleteOilRowIds.has(row.id)}
                     committedCount={committedOilCountFor(row.id)}
                   />
                 </div>
@@ -2155,7 +2253,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   const [pendingShiftIndex, setPendingShiftIndex] = useState(null)
   function requestSwitchShift(index) {
     if (index === activeShiftIndex) return
-    if (cards[activeShiftIndex]?._dirty) {
+    if (hasEditedThisSessionRef.current && cards[activeShiftIndex]?._dirty) {
       setPendingShiftIndex(index)
       return
     }
@@ -2206,11 +2304,31 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   // the card right before it, so a handover reading is entered exactly once.
   const effectiveCards = useMemo(() => withCarriedOpenings(cards), [cards])
 
+  // Gates the "Save this shift before moving on?" prompts (both
+  // requestSwitchShift's own shift-tab guard above and pumpDirty/
+  // onDirtyChange just below) on top of raw `_dirty` — a card can already be
+  // `_dirty: true`
+  // on mount with nothing to do with THIS visit: a genuinely abandoned
+  // draft (2nd/3rd shift, say) from a past session, sitting in localStorage,
+  // resurfaces alongside an unrelated already-saved shift the manager only
+  // opened to look at. Nagging about content the manager never touched or
+  // even saw this time just trains them to click through the prompt without
+  // reading it. Nothing about the draft itself changes — it's exactly as
+  // recoverable/discardable as before (see hasDraftToDiscard, which still
+  // reads the raw `_dirty` on purpose) — this only delays the PROMPT until a
+  // real edit actually happens in this browsing session. Set once true and
+  // never reset for the life of this component; a ref rather than state
+  // since it's read at click/save time, never rendered on its own.
+  const hasEditedThisSessionRef = useRef(false)
+
   // Whether ANY shift on this pump has unsaved changes right now — reported
   // up to FuelEntryForm (see onDirtyChange) so it can warn before switching
   // pumps or leaving the page entirely, on top of this component's own
   // guard on switching shift tabs, below.
-  const pumpDirty = useMemo(() => cards.some((c) => c._dirty), [cards])
+  const pumpDirty = useMemo(
+    () => hasEditedThisSessionRef.current && cards.some((c) => c._dirty),
+    [cards],
+  )
   useEffect(() => {
     onDirtyChange?.(pumpDirty)
     // A remount (the date changes — see FuelEntryForm's `key` prop) or this
@@ -2277,6 +2395,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   // leaves anything unsaved behind for the unsaved-changes prompt to warn
   // about (see pumpDirty below).
   function updateCard(index, patch, dirty = true) {
+    if (dirty) hasEditedThisSessionRef.current = true
     setCards((prev) =>
       prev.map((c, i) => (i === index ? { ...c, ...patch, _editGen: (c._editGen || 0) + 1, _dirty: dirty } : c)),
     )

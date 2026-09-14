@@ -674,6 +674,11 @@ export default function AuditModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={modalTitle} maxWidth="max-w-7xl">
       {sendingAction === 'email' ? <FullPageLoader label={t.sendingEmailLabel} /> : null}
+      {addingCreditPayment ? (
+        <FullPageLoader label={t.recordingCreditPaymentLabel} />
+      ) : removingCreditPaymentId != null ? (
+        <FullPageLoader label={t.removingCreditPaymentLabel} />
+      ) : null}
       <div className="space-y-5">
         <div className="flex items-center gap-2 rounded-lg bg-brand-50 px-3 py-2.5 text-sm">
           <ClipboardCheck size={16} className="shrink-0 text-brand-600" />

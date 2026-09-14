@@ -98,8 +98,11 @@ export default function CreditBills() {
   const [savingPayment, setSavingPayment] = useState(false)
   // Uploading (or clearing) a bill directly against one Transaction History
   // row — id of whichever entry has a request in flight, so only that row's
-  // control shows a busy state.
+  // control shows a busy state. Two separate flags (rather than one shared
+  // id) so the FullPageLoader below can label a removal "Removing file…"
+  // instead of reusing the upload prompt.
   const [uploadingTxBillId, setUploadingTxBillId] = useState(null)
+  const [removingTxBillId, setRemovingTxBillId] = useState(null)
   const [txSort, setTxSort] = useState({ field: 'date', dir: 'desc' })
   const [txSearch, setTxSearch] = useState('')
 
@@ -112,15 +115,18 @@ export default function CreditBills() {
     savingCredit ||
     savingPayment ||
     uploadingTxBillId != null ||
+    removingTxBillId != null ||
     deletingCustomer ||
     deletingTx
   const busyLabel = deletingCustomer
     ? t.removingCustomer
     : deletingTx
       ? t.removingTransaction
-      : uploadingTxBillId != null || uploadingCreditBill
-        ? t.uploadingBillPrompt
-        : t.saving
+      : removingTxBillId != null
+        ? t.removingBillPrompt
+        : uploadingTxBillId != null || uploadingCreditBill
+          ? t.uploadingBillPrompt
+          : t.saving
 
   const rows = useMemo(
     () => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c), billsCount: (c.bills?.length || 0) + (c.ledger || []).filter((e) => e.billUrl).length })),
@@ -331,14 +337,14 @@ export default function CreditBills() {
 
   async function handleRemoveTxBill(tx) {
     if (!ledgerCustomer) return
-    setUploadingTxBillId(tx.id)
+    setRemovingTxBillId(tx.id)
     try {
       await updateLedgerEntryBill(ledgerCustomer.id, tx.id, { billName: null, billUrl: null })
       toast.success(t.toastBillRemoved)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
-      setUploadingTxBillId(null)
+      setRemovingTxBillId(null)
     }
   }
 

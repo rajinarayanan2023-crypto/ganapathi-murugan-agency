@@ -32,6 +32,17 @@ body {
   background: transparent;
 }
 
+/* Keeps an element scrollable (overflow still works, incl. touch/trackpad
+   drag and programmatic scrollIntoView) while hiding the scrollbar chrome
+   itself — for containers where the scroll is a fallback for edge cases
+   (e.g. an unusually wide number) rather than a control meant to be seen. */
+.scrollbar-hide {
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 .skeleton {
   background: linear-gradient(90deg, #eef1f2 25%, #e4e9ea 37%, #eef1f2 63%);
   background-size: 1000px 100%;

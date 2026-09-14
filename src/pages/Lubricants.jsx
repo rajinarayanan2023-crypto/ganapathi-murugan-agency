@@ -107,6 +107,10 @@ export default function Lubricants() {
   const [deletingId, setDeletingId] = useState(null)
 
   const [search, setSearch] = useState('')
+  // 'all' | 'packet' | 'cane' — narrows the catalog grid down to just one
+  // packaging type, same distinction as the fieldPackaging select in the
+  // Add/Edit modal below.
+  const [packagingFilter, setPackagingFilter] = useState('all')
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState(emptyForm)
@@ -145,9 +149,12 @@ export default function Lubricants() {
 
   const filteredLubricants = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return lubricants
-    return lubricants.filter((l) => l.name.toLowerCase().includes(q))
-  }, [lubricants, search])
+    return lubricants.filter((l) => {
+      if (packagingFilter !== 'all' && (l.packaging || 'packet') !== packagingFilter) return false
+      if (q && !l.name.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [lubricants, search, packagingFilter])
 
   const totalStock = useMemo(() => round3(lubricants.reduce((sum, l) => sum + (Number(l.stock) || 0), 0)), [lubricants])
 
@@ -431,6 +438,25 @@ export default function Lubricants() {
             className="py-2 pl-9 text-sm"
           />
         </div>
+        <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+          {[
+            { value: 'all', label: t.filterAll, icon: null },
+            { value: 'packet', label: t.packagingLabel.packet, icon: Package },
+            { value: 'cane', label: t.packagingLabel.cane, icon: Cylinder },
+          ].map(({ value, label, icon: Icon }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setPackagingFilter(value)}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                packagingFilter === value ? 'bg-brand-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {Icon ? <Icon size={12} /> : null}
+              {label}
+            </button>
+          ))}
+        </div>
         <InlineStat icon={Droplet} label={t.statProducts} value={lubricants.length} accent="brand" />
         <InlineStat icon={Boxes} label={t.statTotalStock} value={totalStock} accent="amber" />
         <InlineStat
@@ -458,7 +484,11 @@ export default function Lubricants() {
           }
         />
       ) : filteredLubricants.length === 0 ? (
-        <EmptyState icon={PackageSearch} title={t.noMatchTitle} description={t.noMatchDesc(search)} />
+        <EmptyState
+          icon={PackageSearch}
+          title={t.noMatchTitle}
+          description={search.trim() ? t.noMatchDesc(search) : t.noMatchDescFilter}
+        />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {filteredLubricants.map((product, i) => {
