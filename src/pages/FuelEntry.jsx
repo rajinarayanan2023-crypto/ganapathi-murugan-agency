@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Paperclip, Tag, CalendarDays } from 'lucide-react'
+import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Paperclip, Tag, CalendarDays, Loader2 } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
@@ -182,18 +182,19 @@ export default function FuelEntry() {
   const navigate = useNavigate()
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
-  const [deleting, setDeleting] = useState(false)
-  // Only the row whose export is in flight shows a disabled state — fetching
-  // bill images to embed can take a moment, but it shouldn't block any other
-  // row's own Export button.
+  // Only the row actually being deleted/exported shows a disabled+spinner
+  // state — a delete/export request taking a moment shouldn't freeze every
+  // OTHER row's Download/Edit/Delete buttons too (that used to disable the
+  // whole Actions column via a single page-wide flag, which looked like the
+  // entire table had gone unresponsive over one row's delete).
+  const [deletingId, setDeletingId] = useState(null)
   const [exportingId, setExportingId] = useState(null)
-  // One combined flag covering every kind of in-flight write this page can
-  // make (delete, export) — while any of them is running, every OTHER
-  // action on this screen is blocked too.
-  const busy = deleting || exportingId != null
+  // Still page-wide on purpose: unlike a row's own action icons, "New Entry"
+  // and clicking a row to open it aren't tied to any specific row's request.
+  const busy = deletingId != null || exportingId != null
 
   async function handleDelete(id) {
-    setDeleting(true)
+    setDeletingId(id)
     try {
       await deleteFuelEntry(id)
       toast.success(t.toastDeleted)
@@ -201,7 +202,7 @@ export default function FuelEntry() {
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
-      setDeleting(false)
+      setDeletingId(null)
     }
   }
 
@@ -538,26 +539,31 @@ export default function FuelEntry() {
       align: 'right',
       exportable: false,
       style: { width: '10%' },
-      body: (row) => (
+      body: (row) => {
+        // Scoped to THIS row only — deleting/exporting one entry shouldn't
+        // freeze every other row's icons too (see deletingId/exportingId
+        // above).
+        const rowBusy = deletingId === row.id || exportingId === row.id
+        return (
         <div className="flex justify-end gap-1">
           <IconButton
             onClick={(e) => {
               e.stopPropagation()
               handleExportEntry(row._entry)
             }}
-            disabled={busy}
+            disabled={rowBusy}
             aria-label="Export"
             title="Export"
             tone="download"
           >
-            <Download size={15} />
+            {exportingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
           </IconButton>
           <IconButton
             onClick={(e) => {
               e.stopPropagation()
               navigate(`/fuel-entry/${row.id}/edit`)
             }}
-            disabled={busy}
+            disabled={rowBusy}
             aria-label="Edit"
             title="Edit"
             tone="edit"
@@ -569,15 +575,16 @@ export default function FuelEntry() {
               e.stopPropagation()
               setConfirmDeleteId(row.id)
             }}
-            disabled={busy}
+            disabled={rowBusy}
             aria-label="Delete"
             title="Delete"
             tone="delete"
           >
-            <Trash2 size={15} />
+            {deletingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
           </IconButton>
         </div>
-      ),
+        )
+      },
     },
   ]
 
@@ -585,14 +592,20 @@ export default function FuelEntry() {
     return <SkeletonTable rows={6} cols={6} />
   }
 
-  const busyLabel = deleting ? t.deleting : exportingId != null ? t.exporting : ''
-
   return (
     // Same fillHeight pattern as Employees/Attendance/Credit Bills — flex
     // h-full lets the card below stretch to exactly fill whatever height
     // `main` actually has, instead of a hand-guessed `calc(100vh - Npx)`.
     <div className="flex h-full min-h-0 flex-col gap-6">
-      {busy ? <FullPageLoader label={busyLabel} /> : null}
+      {/* Same entire-page loader used elsewhere in this app (e.g. AuditModal's
+          email send) for both writes this screen can trigger — clearly
+          communicates "in progress" instead of just leaving a row's icons
+          quietly disabled. */}
+      {deletingId != null ? (
+        <FullPageLoader label={t.deleting} />
+      ) : exportingId != null ? (
+        <FullPageLoader label={t.exporting} />
+      ) : null}
       {/* TodayRateCard removed for now — <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} /> */}
 
       <motion.div
@@ -645,7 +658,7 @@ export default function FuelEntry() {
         onConfirm={() => handleDelete(confirmDeleteId)}
         title={t.deleteTitle}
         description={t.deleteDesc}
-        loading={deleting}
+        loading={deletingId != null}
       />
     </div>
   )

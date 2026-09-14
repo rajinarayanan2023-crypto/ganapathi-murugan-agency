@@ -12,6 +12,14 @@ import Modal from './Modal.jsx'
 import { Field, PasswordInput, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import { FullPageLoader } from './Loader.jsx'
+import useIdleLogout from '../hooks/useIdleLogout.js'
+
+// Matches the backend's own IDLE_TIMEOUT_MINUTES (app/core/config.py /
+// .env's idle_timeout_minutes) — that one force-expires the refresh token
+// server-side at the same mark. Keeping both at 4 hours means this
+// client-side timer is what a user actually sees fire; if the two ever
+// drift apart, whichever is SHORTER wins in practice.
+const IDLE_LOGOUT_MS = 4 * 60 * 60 * 1000
 
 const NAV_ITEMS = [
   { to: '/dashboard', key: 'dashboard', icon: LayoutDashboard },
@@ -109,6 +117,18 @@ export default function Layout() {
     toast.success(t.toastLoggedOut)
     navigate('/')
   }
+
+  // Auto sign-out after IDLE_LOGOUT_MS of no mouse/keyboard/touch/scroll
+  // activity anywhere on the page — independent of (and much shorter than,
+  // for now — see the constant above) the backend's own idle_timeout_minutes
+  // enforced on /auth/refresh. This one runs client-side, doesn't require a
+  // network round-trip to notice, and fires even if the access token hasn't
+  // actually expired yet.
+  useIdleLogout(IDLE_LOGOUT_MS, () => {
+    logout()
+    toast.error(t.toastLoggedOutIdle)
+    navigate('/')
+  })
 
   function openPasswordModal() {
     setCurrentPassword('')
