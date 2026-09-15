@@ -7,7 +7,6 @@ import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
 import { formatCurrency, todayISO } from '../utils/format.js'
 import { aggregateEntries, withCarriedOpenings, sortPumpEntries } from '../utils/fuelCalc.js'
-import { isPresentRecord } from '../utils/attendance.js'
 import EmptyState from '../components/EmptyState.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
@@ -40,6 +39,11 @@ export default function FuelEntryForm() {
   } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
+  // Employee dropdown lists every active employee regardless of that date's
+  // attendance — deliberately NOT restricted to who's marked present, since
+  // attendance is often marked after the shift is entered, not before, and a
+  // hard restriction was blocking the manager from assigning someone whose
+  // attendance just hadn't been marked yet.
   const activeEmployees = useMemo(() => employees.filter((e) => e.active !== false), [employees])
 
   // Each PumpDayEditor reports its own dirty state up here (see its
@@ -126,23 +130,6 @@ export default function FuelEntryForm() {
     loadAttendanceMonth(year, month - 1)
   }, [date, loadAttendanceMonth])
 
-  // Only an employee actually marked present for this date (oneShift/
-  // doubleShift/companyOff — see isPresentRecord) is assignable to work a
-  // shift on it. Previously this only blocked explicit absent/leave/dutyOff,
-  // which meant anyone with NO attendance marked at all for the date (the
-  // common case before attendance is even taken) still showed up as
-  // assignable — this is an allowlist instead, so "not marked present" (for
-  // any reason, including simply not marked yet) is unavailable by default.
-  // ShiftCard (PumpDayEditor) still shows whoever is ALREADY assigned even if
-  // they're in this set, so correcting someone's attendance after the fact
-  // never leaves an existing shift assignment looking blank.
-  const unavailableEmployeeIds = useMemo(() => {
-    const ids = new Set()
-    for (const emp of activeEmployees) {
-      if (!isPresentRecord(attendance[emp.id]?.[date])) ids.add(emp.id)
-    }
-    return ids
-  }, [activeEmployees, attendance, date])
   const [activeTab, setActiveTab] = useState(() => linkedEntry?.pumpKey || 'pump1')
   const [auditOpen, setAuditOpen] = useState(false)
   // Its own state, entirely separate from the main audit above — Shift 3's
@@ -375,7 +362,6 @@ export default function FuelEntryForm() {
             tint="violet"
             date={date}
             employees={activeEmployees}
-            unavailableEmployeeIds={unavailableEmployeeIds}
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
             onDirtyChange={setPump1Dirty}
@@ -391,7 +377,6 @@ export default function FuelEntryForm() {
             tint="blue"
             date={date}
             employees={activeEmployees}
-            unavailableEmployeeIds={unavailableEmployeeIds}
             fuelRates={fuelRates}
             creditCustomers={creditCustomers}
             lubricants={lubricants}
