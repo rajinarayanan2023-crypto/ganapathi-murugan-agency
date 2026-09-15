@@ -75,16 +75,23 @@ function pumpFuelBoundaryBreakdown(entries, fuelKey, { exact = false } = {}) {
   return { nozzles, liters, firstShiftNumber: firstEntry.shiftNumber, lastShiftNumber: lastEntry.shiftNumber }
 }
 
+// A flat, always-assumed testing deduction (per manager request) —
+// deliberately NOT derived from any reading's own testing field (those
+// varied shift to shift, e.g. 21L one day), unlike everything else in this
+// report. Applied independently to EACH of Petrol and Diesel's own boundary
+// total (see roundedPetrolLtr/roundedDieselLtr) — 20L off Petrol, a
+// separate 20L off Diesel, not one 20L split between them.
+const STATIC_TESTING_LTR = 20
+
 // Builds the CalcBreakdown content for the Petrol/Diesel/2T-Oil
 // round-off-formula tooltip: each nozzle's own first-shift-opening →
-// last-shift-closing reading, rolled up into its pump's total, then (for a
-// two-pump fuel) both pumps' formula — so an auditor can see exactly which
-// two meter readings produced each nozzle's figure, and how the nozzles/
-// pumps add up to the final total. Testing litres never appear here — this
-// audit figure deliberately never subtracts them (see
-// pumpFuelBoundaryBreakdown). `pumps` is one entry (2T Oil, pump 2 only) or
-// two (Petrol/Diesel, both pumps).
-function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false }) {
+// last-shift-closing reading, rolled up into its pump's total, then both
+// pumps' total, then (Petrol/Diesel only) the flat testing deduction, down
+// to the final displayed figure — so an auditor can see exactly which two
+// meter readings, and which deduction, produced the number on screen.
+// `pumps` is one entry (2T Oil, pump 2 only) or two (Petrol/Diesel, both
+// pumps). `testingLtr` is omitted for 2T Oil, which never has it subtracted.
+function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false, testingLtr, testingLabel }) {
   const fmt = (v) => (exact ? (Number(v) || 0).toFixed(2) : String(v))
   const rows = []
   for (const { label: pumpLabel, breakdown } of pumps) {
@@ -98,10 +105,14 @@ function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, noz
     }
     rows.push({ label: `${pumpLabel} Total`, value: `${fmt(breakdown.liters)} L` })
   }
-  const formula =
+  if (testingLtr) rows.push({ label: testingLabel, value: `− ${fmt(testingLtr)} L` })
+  const pumpsFormula =
     pumps.length === 2
-      ? `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) + ${pumps[1].label} (${fmt(pumps[1].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
-      : `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
+      ? `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) + ${pumps[1].label} (${fmt(pumps[1].breakdown.liters)} L)`
+      : `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L)`
+  const formula = testingLtr
+    ? `${pumpsFormula} − ${testingLabel} (${fmt(testingLtr)} L) = ${fuelLabel} (${totalLabel})`
+    : `${pumpsFormula} = ${fuelLabel} (${totalLabel})`
   return { rows, formula, note }
 }
 
@@ -398,8 +409,14 @@ export default function AuditModal({
   // 2T Oil is deliberately NOT rounded off (per manager request), shown and
   // reported at its real decimal litres, unlike Petrol/Diesel above.
   const pump2OilBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'oil', { exact: true }), [pump2.entries])
-  const roundedPetrolLtr = pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters
-  const roundedDieselLtr = pump1DieselBreakdown.liters + pump2DieselBreakdown.liters
+  // A flat, always-assumed testing deduction (per manager request) —
+  // subtracted from EACH fuel's own boundary total independently (Petrol
+  // loses 20L, Diesel separately also loses 20L) — NOT derived from any
+  // reading's own testing field, unlike everything else in this report. The
+  // small "− Testing: 20 L" line under each fuel (and the tooltip formula)
+  // makes this deduction visible rather than silently baked into the total.
+  const roundedPetrolLtr = Math.max(0, pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters - STATIC_TESTING_LTR)
+  const roundedDieselLtr = Math.max(0, pump1DieselBreakdown.liters + pump2DieselBreakdown.liters - STATIC_TESTING_LTR)
   const exactOilLtr = pump2OilBreakdown.liters
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
@@ -509,7 +526,13 @@ export default function AuditModal({
     const header = sheet.addRow([t.colFuel, t.colLitres, t.colAmount])
     header.font = { bold: true }
     sheet.addRow([t.colPetrol, roundedPetrolLtr, roundedCurrency(dayTotals.petrolAmount)])
+    // Same "− Testing: 20 L" line the modal shows under Petrol/Diesel — the
+    // deduction is already baked into roundedPetrolLtr/roundedDieselLtr
+    // above, so this row exists purely so the auditor can see it was
+    // applied, never silently.
+    sheet.addRow([`− ${t.testingRowLabel}`, `-${STATIC_TESTING_LTR}`]).font = { italic: true, color: { argb: 'FF94A3B8' } }
     sheet.addRow([t.colDiesel, roundedDieselLtr, roundedCurrency(dayTotals.dieselAmount)])
+    sheet.addRow([`− ${t.testingRowLabel}`, `-${STATIC_TESTING_LTR}`]).font = { italic: true, color: { argb: 'FF94A3B8' } }
     if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, roundedCurrency(dayTotals.oilAmount)])
     sheet.addRow([t.colPocketCane, '—', roundedCurrency(pocketAndServoOilAmount)])
     sheet.addRow([t.fieldSale, '', roundedCurrency(dayTotals.totalSaleAmount)]).font = { bold: true }
@@ -715,12 +738,15 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
+                            testingLtr: STATIC_TESTING_LTR,
+                            testingLabel: t.testingRowLabel,
                           })}
                         />
                       }
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedPetrolLtr} L</span>
                     </AppTooltip>
+                    <p className="mt-0.5 text-[0.65rem] font-normal text-slate-400">− {t.testingRowLabel}: {STATIC_TESTING_LTR} L</p>
                   </td>
                   <td className="px-3 py-2 text-right text-slate-600">
                     <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.petrolLtr, dayTotals.petrolAmount, t)} />}>
@@ -746,12 +772,15 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
+                            testingLtr: STATIC_TESTING_LTR,
+                            testingLabel: t.testingRowLabel,
                           })}
                         />
                       }
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedDieselLtr} L</span>
                     </AppTooltip>
+                    <p className="mt-0.5 text-[0.65rem] font-normal text-slate-400">− {t.testingRowLabel}: {STATIC_TESTING_LTR} L</p>
                   </td>
                   <td className="px-3 py-2 text-right text-slate-600">
                     <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.dieselLtr, dayTotals.dieselAmount, t)} />}>

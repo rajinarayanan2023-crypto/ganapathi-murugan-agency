@@ -110,8 +110,9 @@ export const FUEL_ENTRY_TEXT = {
       pump1Label: 'Pump 1',
       pump2Label: 'Pump 2',
       litersRoundOffNote:
-        "Each nozzle's litres = its first shift's opening meter reading and its last shift's closing reading, each rounded to a whole litre first (the way they'd actually be read off the meter), then subtracted — testing litres are never subtracted here, unlike the exact sale figures shown elsewhere in the app.",
+        "Each nozzle's litres = its first shift's opening meter reading and its last shift's closing reading, each rounded to a whole litre first (the way they'd actually be read off the meter), then subtracted. A flat 20L testing deduction is then applied once per fuel — not each shift's own actual testing field, which is never used here.",
       oilExactLitersNote: '2T Oil is shown at its exact meter reading — not rounded off, unlike Petrol and Diesel above. Testing litres are never subtracted here either.',
+      testingRowLabel: 'Testing',
       exactLitersLabel: 'Exact Litres',
       rateLabel: 'Rate',
       pricingNote:
@@ -397,8 +398,9 @@ export const FUEL_ENTRY_TEXT = {
       pump1Label: 'பம்ப் 1',
       pump2Label: 'பம்ப் 2',
       litersRoundOffNote:
-        'ஒவ்வொரு நாசலின் லிட்டர் = அதன் முதல் ஷிப்டின் ஆரம்ப மீட்டர் அளவீடும் அதன் கடைசி ஷிப்டின் இறுதி அளவீடும், முதலில் ஒவ்வொன்றும் முழு லிட்டராக ரவுண்ட் ஆஃப் செய்யப்பட்டு (மீட்டரில் நேரடியாக படிக்கும் விதம் போல), பின்னர் கழிக்கப்படுகிறது — டெஸ்டிங் லிட்டர் இங்கு ஒருபோதும் கழிக்கப்படாது, ஆப்பில் வேறு இடங்களில் காட்டப்படும் சரியான விற்பனை எண்களைப் போலல்ல.',
+        'ஒவ்வொரு நாசலின் லிட்டர் = அதன் முதல் ஷிப்டின் ஆரம்ப மீட்டர் அளவீடும் அதன் கடைசி ஷிப்டின் இறுதி அளவீடும், முதலில் ஒவ்வொன்றும் முழு லிட்டராக ரவுண்ட் ஆஃப் செய்யப்பட்டு (மீட்டரில் நேரடியாக படிக்கும் விதம் போல), பின்னர் கழிக்கப்படுகிறது. ஒவ்வொரு எரிபொருளுக்கும் ஒரே முறை 20L நிலையான டெஸ்டிங் கழிவு பயன்படுத்தப்படுகிறது — ஒவ்வொரு ஷிப்டின் சொந்த டெஸ்டிங் புலம் இங்கு பயன்படுத்தப்படாது.',
       oilExactLitersNote: '2T ஆயில் அதன் சரியான மீட்டர் அளவீட்டிலேயே காட்டப்படுகிறது — மேலே உள்ள பெட்ரோல், டீசல் போல ரவுண்ட் ஆஃப் செய்யப்படவில்லை. டெஸ்டிங் லிட்டரும் இங்கு கழிக்கப்படாது.',
+      testingRowLabel: 'டெஸ்டிங்',
       exactLitersLabel: 'சரியான லிட்டர்',
       rateLabel: 'விகிதம்',
       pricingNote:
