@@ -1,6 +1,10 @@
 import { motion } from 'framer-motion'
 import { MapPin, Phone, Mail, Clock } from 'lucide-react'
 
+// The station's real Google Maps place link — where a click on the embed
+// below actually takes you, since the embed itself is just a preview.
+const STATION_MAPS_LINK = 'https://maps.app.goo.gl/fNSyW274ipkjYfEx9'
+
 export default function VisitUs({ station }) {
   const fullAddress = [...station.addressLines].join(', ')
   const mapSrc = `https://www.google.com/maps?q=${encodeURIComponent(fullAddress)}&output=embed`
@@ -58,14 +62,25 @@ export default function VisitUs({ station }) {
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, amount: 0.3 }}
             transition={{ duration: 0.5, delay: 0.1 }}
-            className="min-h-[260px] w-full bg-slate-100 lg:min-h-full"
+            className="relative min-h-[260px] w-full bg-slate-100 lg:min-h-full"
           >
             <iframe
               title="Station location map"
               src={mapSrc}
-              className="h-full min-h-[260px] w-full border-0"
+              className="pointer-events-none h-full min-h-[260px] w-full border-0"
               loading="lazy"
               referrerPolicy="no-referrer-when-downgrade"
+            />
+            {/* The iframe above is just a preview (and would otherwise swallow
+                clicks into its own pan/zoom controls) — this transparent
+                overlay makes the whole map area a single click-through to the
+                station's real Google Maps place page in a new tab. */}
+            <a
+              href={STATION_MAPS_LINK}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open our location in Google Maps"
+              className="absolute inset-0"
             />
           </motion.div>
         </div>

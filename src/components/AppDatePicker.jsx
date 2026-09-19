@@ -5,7 +5,16 @@ import { DatePicker } from '@mui/x-date-pickers/DatePicker'
 // (YYYY-MM-DD) value/onChange API the rest of the app already uses for
 // dates, while rendering with the Indian DD/MM/YYYY format and a look that
 // matches our Tailwind inputs.
-export default function AppDatePicker({ value, onChange, maxDate, minDate, className = '', disabled, variant = 'default' }) {
+export default function AppDatePicker({
+  value,
+  onChange,
+  maxDate,
+  minDate,
+  className = '',
+  disabled,
+  variant = 'default',
+  shouldDisableDate,
+}) {
   const isInline = variant === 'inline'
   const isCompact = variant === 'compact'
 
@@ -21,10 +30,25 @@ export default function AppDatePicker({ value, onChange, maxDate, minDate, class
       minDate={minDate ? dayjs(minDate) : undefined}
       format="DD/MM/YYYY"
       disabled={disabled}
+      // Kept as a plain ISO-string predicate at the call site (same
+      // "no dayjs outside this file" contract as value/onChange above) —
+      // only translated to the dayjs object MUI's own prop expects here.
+      shouldDisableDate={shouldDisableDate ? (day) => shouldDisableDate(day.format('YYYY-MM-DD')) : undefined}
       slotProps={{
         textField: {
           size: 'small',
           className,
+          // MUI's own supported way to make a TextField fill its container
+          // — a plain `w-full` className was landing here too, but MUI's
+          // own emotion-generated styles are injected after Tailwind's
+          // stylesheet and can still win the width tie, which is exactly
+          // why this field kept rendering wider/narrower than a sibling
+          // plain <input> under the same equal-width grid. `fullWidth`
+          // sets width via MUI's own class, so it can't lose that fight.
+          // The compact variant wants its own small fixed width instead
+          // (see the `!important` width below) — fullWidth would otherwise
+          // still fight that, so it's skipped just for this variant.
+          fullWidth: !isCompact,
           sx: isInline
             ? {
                 '& .MuiOutlinedInput-root': {
@@ -49,6 +73,17 @@ export default function AppDatePicker({ value, onChange, maxDate, minDate, class
             : isCompact
               ? {
                   '& .MuiOutlinedInput-root': {
+                    // Set here, not via the `className` prop above — this is
+                    // the ONE place `fullWidth` (see the comment on that
+                    // prop) actually bit: a plain `w-[Npx]` className on this
+                    // component lost the specificity fight against MUI's own
+                    // fullWidth class, so the field silently rendered at
+                    // 100% of its flex parent instead of the intended fixed
+                    // width, wide enough to spill past the card's edge.
+                    // `sx` compiles through MUI's own styling pipeline, so it
+                    // wins reliably where a className couldn't.
+                    width: '112px !important',
+                    height: '24px !important',
                     borderRadius: '7px',
                     fontSize: '0.75rem',
                     fontFamily: 'inherit',
@@ -58,7 +93,7 @@ export default function AppDatePicker({ value, onChange, maxDate, minDate, class
                     '&.Mui-focused fieldset': { borderColor: '#c46f36', borderWidth: '1.5px' },
                   },
                   '& .MuiInputBase-input': {
-                    padding: '3px 6px',
+                    padding: '0 6px',
                     backgroundColor: 'transparent',
                   },
                   '& .MuiInputAdornment-root': { marginLeft: '0' },

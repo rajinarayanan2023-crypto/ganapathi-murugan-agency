@@ -172,6 +172,28 @@ export function DataProvider({ children }) {
     setIsAuthenticated(false)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
     localStorage.removeItem(CACHED_USER_KEY)
+    // Every fetched data slice (fuelEntries, employees, attendance,
+    // lubricants, credit customers, expenses, offers...) already resets to
+    // [] on its own the instant isAuthenticated flips false — each has its
+    // own `if (!isAuthenticated) { setX([]); return }` guard in its load
+    // effect below. station/commissionRates/fuelRateHistory are
+    // deliberately left alone: they're shared business config for this one
+    // station (name, address, rates), not anything specific to whoever's
+    // currently logged in, so there's nothing to hide from the next login.
+    //
+    // What's genuinely left behind otherwise: PumpDayEditor's per-shift
+    // drafts (see its DRAFT_STORAGE_PREFIX — 'ga-fuel-pump:draftCards:'),
+    // one localStorage key per pump+date ever typed into but not yet saved.
+    // Unlike everything above, these are real in-progress, unreviewed work
+    // — if this device gets logged into by someone else next (a shared
+    // till/tablet between shifts), they should never see a previous
+    // person's half-typed shift resurface as if it were already there.
+    // Scanning for the prefix, not a fixed key list, since there's one per
+    // pump/date combination ever drafted, not a known-in-advance set.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i)
+      if (key?.startsWith('ga-fuel-pump:draftCards:')) localStorage.removeItem(key)
+    }
   }, [])
   // A request whose token refresh also fails (e.g. the refresh token itself
   // expired) forces a real logout instead of leaving the UI stuck signed-in
@@ -710,6 +732,11 @@ export function DataProvider({ children }) {
       payments: (e.payments || []).map(normalizeFuelPaymentLine),
       bills: (e.bills || []).map((b) => ({ id: b.id, name: b.file_name, url: b.file_url, date: b.uploaded_date })),
       notes: e.notes || '',
+      // Audit trail only — never used for any figure/total (those still
+      // come solely from utils/fuelCalc.js, per the note above), just to
+      // show "created by X on Y" on the shift card itself.
+      createdAt: e.created_at,
+      createdByName: e.created_by_name || null,
     }),
     [],
   )
@@ -1251,6 +1278,7 @@ export function DataProvider({ children }) {
       statusCounts: s.status_counts || {},
       recipients: (s.recipients || []).map((r) => ({
         customerName: r.customer_name,
+        customerPhone: r.customer_phone || null,
         status: r.status,
         providerResponse: r.provider_response || null,
         sentAt: r.sent_at || null,
@@ -1281,12 +1309,11 @@ export function DataProvider({ children }) {
   }, [isAuthenticated, loadOfferHistory])
 
   const sendOffer = useCallback(
-    async ({ customerIds, message, channel, templateUsed }) => {
+    async ({ customerIds, templateUsed, offerVariable }) => {
       const created = await apiSendOffer({
         customer_ids: customerIds,
-        message,
-        channel,
-        template_used: templateUsed || null,
+        template_used: templateUsed,
+        offer_variable: offerVariable,
       })
       const send = normalizeOfferSend(created)
       setOfferHistory((prev) => [send, ...prev])

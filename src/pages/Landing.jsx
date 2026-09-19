@@ -1,5 +1,4 @@
 import { motion } from 'framer-motion'
-import { Link } from 'react-router-dom'
 import { ShieldCheck, ArrowRight, Wind, Droplet, ShowerHead, ChevronDown } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import LandingNav from '../components/landing/LandingNav.jsx'
@@ -80,18 +79,12 @@ export default function Landing() {
             transition={{ duration: 0.6, delay: 0.3 }}
             className="mt-7 flex flex-col items-center gap-3 sm:flex-row"
           >
-            <Link
-              to="/login"
-              className="group inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand-500 to-brand-700 px-7 py-3.5 text-base font-semibold text-white shadow-lg shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98]"
-            >
-              Go to Login
-              <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
-            </Link>
             <button
               onClick={() => scrollTo('#facilities')}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-7 py-3.5 text-base font-semibold text-slate-700 transition-colors hover:bg-slate-50 active:scale-[0.98]"
+              className="group inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand-500 to-brand-700 px-7 py-3.5 text-base font-semibold text-white shadow-lg shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98]"
             >
               Explore Facilities
+              <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
             </button>
           </motion.div>
 

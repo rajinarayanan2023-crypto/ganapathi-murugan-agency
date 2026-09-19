@@ -6,7 +6,8 @@ import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Pape
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
-import { formatCurrency, formatDate, formatLiters, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatDateTime, formatLiters, todayISO } from '../utils/format.js'
+import AppTooltip from '../components/AppTooltip.jsx'
 import { getDownloadUrl } from '../lib/apiClient.js'
 import {
   entryFuelLiters,
@@ -446,6 +447,8 @@ export default function FuelEntry() {
           fuelSummaryExport,
           employeeName: employee,
           status: entry.status,
+          createdByName: entry.createdByName,
+          createdAt: entry.createdAt,
           fuelBreakdown,
           totalSaleAmount: round2(shiftSaleAmount(effective)),
           excessShortage: round2(shiftVariance(effective)),
@@ -462,7 +465,16 @@ export default function FuelEntry() {
       header: t.colDate,
       sortable: true,
       style: { width: '12%' },
-      body: (row) => <span className="font-medium text-slate-700">{formatDate(row.date)}</span>,
+      body: (row) =>
+        row.createdByName ? (
+          <AppTooltip title={t.pumpEditor.createdByLabel(row.createdByName, formatDateTime(row.createdAt))}>
+            <span className="cursor-help font-medium text-slate-700 underline decoration-dotted decoration-slate-300 underline-offset-4">
+              {formatDate(row.date)}
+            </span>
+          </AppTooltip>
+        ) : (
+          <span className="font-medium text-slate-700">{formatDate(row.date)}</span>
+        ),
     },
     {
       field: 'pumpKey',

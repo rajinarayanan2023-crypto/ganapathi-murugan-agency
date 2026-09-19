@@ -17,12 +17,22 @@ export const OFFERS_TEXT = {
     removeCustomerDesc: (name) => `This will permanently delete ${name} from the database. This can't be undone.`,
     toastCustomerRemoved: (name) => `${name} deleted`,
     offerContent: 'Offer Content',
-    fieldMessage: 'Message (Tamil or English, editable)',
-    placeholderMessage: 'Pick a suggested template above, or write your own offer message here...',
-    fieldChannel: 'Send via',
+    // Free-typed messages are gone — WhatsApp can't deliver a cold outbound
+    // send unless it's a Meta-approved template, and a template that's
+    // mostly one big variable gets rejected, so "write anything" was never
+    // going to work here. Pick one of the 4 fixed, already-approved
+    // templates instead, and just fill in the one detail that varies.
+    fieldOfferTemplate: 'Choose an offer',
+    fieldOfferVariable: 'Offer detail',
+    placeholderOfferVariable: 'e.g. 5% discount + FREE oil, or 500 litres, or 2% cashback',
+    errorTemplateRequired: 'Pick one of the offer templates above',
+    errorOfferVariableRequired: 'Fill in the offer detail (discount, litre threshold, cashback, etc.)',
+    // channelSms/channelWhatsApp are still used to label historical sends in
+    // "Recently Sent" below (old rows can be either) — WhatsApp is the only
+    // channel a NEW send can use, so there's no selector for these anymore.
     channelSms: 'SMS',
     channelWhatsApp: 'WhatsApp',
-    sendDisabledHint: 'Select at least one customer and a channel first',
+    sendDisabledHint: 'Select at least one customer, pick an offer, and fill in its detail',
     sending: 'Sending…',
     sendOfferTo: (count) => `Send Offer to ${count} Customer${count === 1 ? '' : 's'}`,
     recentlySent: 'Recently Sent',
@@ -39,7 +49,6 @@ export const OFFERS_TEXT = {
     errorPhoneRequired: 'Phone is required',
     errorPhoneInvalid: 'Enter a valid 10-digit number',
     toastCustomerAdded: 'Customer added',
-    errorNoMessage: 'Write or pick an offer message first',
     errorSendFailed: 'Could not send the offer. Try again.',
     toastSentToMany: (count) => `Offer sent to ${count} customers`,
     toastSentWithCounts: (summary) => `Offer sent — ${summary}`,
@@ -61,12 +70,14 @@ export const OFFERS_TEXT = {
     removeCustomerDesc: (name) => `இது ${name}-ஐ தரவுத்தளத்திலிருந்து நிரந்தரமாக நீக்கிவிடும். இதை மீட்க முடியாது.`,
     toastCustomerRemoved: (name) => `${name} நீக்கப்பட்டார்`,
     offerContent: 'சலுகை உள்ளடக்கம்',
-    fieldMessage: 'செய்தி (தமிழ் அல்லது ஆங்கிலம், திருத்தக்கூடியது)',
-    placeholderMessage: 'மேலே உள்ள பரிந்துரைக்கப்பட்ட வார்ப்புருவைத் தேர்ந்தெடுக்கவும், அல்லது உங்கள் சொந்த சலுகை செய்தியை இங்கே எழுதவும்...',
-    fieldChannel: 'எதன் மூலம் அனுப்புவது',
+    fieldOfferTemplate: 'சலுகையைத் தேர்ந்தெடுக்கவும்',
+    fieldOfferVariable: 'சலுகை விவரம்',
+    placeholderOfferVariable: 'உதா. 5% தள்ளுபடி + FREE ஆயில், அல்லது 500 லிட்டர், அல்லது 2% கேஷ்பாக்',
+    errorTemplateRequired: 'மேலே உள்ள சலுகை வார்ப்புருக்களில் ஒன்றைத் தேர்ந்தெடுக்கவும்',
+    errorOfferVariableRequired: 'சலுகை விவரத்தை நிரப்பவும் (தள்ளுபடி, லிட்டர் அளவு, கேஷ்பாக் போன்றவை)',
     channelSms: 'SMS',
     channelWhatsApp: 'WhatsApp',
-    sendDisabledHint: 'முதலில் குறைந்தது ஒரு வாடிக்கையாளரையும் ஒரு சேனலையும் தேர்ந்தெடுக்கவும்',
+    sendDisabledHint: 'குறைந்தது ஒரு வாடிக்கையாளரைத் தேர்ந்தெடுத்து, ஒரு சலுகையைத் தேர்ந்தெடுத்து, அதன் விவரத்தை நிரப்பவும்',
     sending: 'அனுப்புகிறது…',
     sendOfferTo: (count) => `${count} வாடிக்கையாளர்${count === 1 ? '' : 'களுக்கு'} சலுகையை அனுப்பு`,
     recentlySent: 'சமீபத்தில் அனுப்பியவை',
@@ -83,7 +94,6 @@ export const OFFERS_TEXT = {
     errorPhoneRequired: 'தொலைபேசி எண் தேவை',
     errorPhoneInvalid: 'சரியான 10-இலக்க எண்ணை உள்ளிடவும்',
     toastCustomerAdded: 'வாடிக்கையாளர் சேர்க்கப்பட்டார்',
-    errorNoMessage: 'முதலில் ஒரு சலுகை செய்தியை எழுதவும் அல்லது தேர்ந்தெடுக்கவும்',
     errorSendFailed: 'சலுகையை அனுப்ப முடியவில்லை. மீண்டும் முயற்சிக்கவும்.',
     toastSentToMany: (count) => `${count} வாடிக்கையாளர்களுக்கு சலுகை அனுப்பப்பட்டது`,
     toastSentWithCounts: (summary) => `சலுகை அனுப்பப்பட்டது — ${summary}`,

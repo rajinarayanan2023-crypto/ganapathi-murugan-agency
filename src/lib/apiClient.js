@@ -87,7 +87,23 @@ async function request(path, opts = {}) {
       setAuthTokens(tokens)
       onTokensRefreshed?.(tokens)
       ;({ res, data } = await rawRequest(path, opts))
+      // Replayed with a freshly-issued access token and it's STILL 401 —
+      // that's a real problem, not just an expired-token race, so this
+      // falls through to the session-expired handling below same as before.
+    } else if (refreshed.res.status !== 401) {
+      // The refresh call itself failed for a reason that says nothing about
+      // whether the refresh token is valid — rate-limited (429), a 5xx, a
+      // network hiccup. The refresh token is presumably still good, so this
+      // must NOT be treated as "you're logged out" (that used to happen
+      // here: any refresh failure at all forced a full logout, so a mere
+      // transient 429 — e.g. several tabs/requests refreshing in a burst —
+      // could silently kick out a user with a perfectly valid session).
+      // Let just this one request fail normally; the next authenticated
+      // call will simply try refreshing again with the same token.
+      throw new ApiError(data?.detail || 'Something went wrong. Please try again.', res.status)
     }
+    // else: the refresh call itself came back 401 — the refresh token is
+    // genuinely invalid/revoked, so falling through below is correct.
   }
 
   if (!res.ok) {
@@ -263,6 +279,13 @@ export function deleteLedgerEntry(customerId, entryId) {
 // the physical bill is in.
 export function updateLedgerEntryBill(customerId, entryId, data) {
   return apiPatch(`/credit-customers/${customerId}/ledger/${entryId}/bill`, data)
+}
+
+// Sends a real WhatsApp message server-side (balance + most recent bill,
+// if any) via MetaWhatsAppProvider — see credit_customer_service.py. Fully
+// server-driven: no client-side wa.me link, no manual download step.
+export function sendCreditReminder(customerId) {
+  return apiAuthPost(`/credit-customers/${customerId}/send-reminder`, {})
 }
 
 // ---------- Offer Customers ----------

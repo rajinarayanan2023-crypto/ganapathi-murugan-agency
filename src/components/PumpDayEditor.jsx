@@ -40,7 +40,7 @@ import {
   aggregateEntries,
   PAYMENT_METHOD_OPTIONS,
 } from '../utils/fuelCalc.js'
-import { formatCurrency, formatDate, formatEmployeeName, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatDateTime, formatEmployeeName, todayISO } from '../utils/format.js'
 import { currentRate, purchaseBatchesByCost, sortedPriceHistory, stockAvailableAtRate, availableAtRateBreakdown, round3 } from '../utils/lubricants.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
 import { prepareBillFile } from '../utils/fileValidation.js'
@@ -597,6 +597,7 @@ const ShiftCard = forwardRef(function ShiftCard(
   },
   ref,
 ) {
+  const navigate = useNavigate()
   const fuelKeys = FUEL_KEYS_BY_PUMP[pumpKey]
   // Employees marked absent/leave/duty-off for this shift's date shouldn't
   // be assignable to work it — but never hide whoever is ALREADY assigned
@@ -621,6 +622,10 @@ const ShiftCard = forwardRef(function ShiftCard(
   const [shakeKey, setShakeKey] = useState(0)
   const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // 'idle' | 'pending' | 'saved'
   const [uploadingBill, setUploadingBill] = useState(false)
+  // Id of an uploaded bill the manager clicked the X on — removal (below)
+  // deletes the real S3 object right away, not just this local list entry,
+  // so it's gated behind a confirmation instead of firing immediately.
+  const [confirmRemoveBillId, setConfirmRemoveBillId] = useState(null)
   // Id of a just-added payment line still waiting to be scrolled to and
   // focused — set by the add* functions below, consumed by the effect right
   // after this one.
@@ -1190,7 +1195,22 @@ const ShiftCard = forwardRef(function ShiftCard(
     return (await onSaveFinal(value)) !== false
   }
 
+  // Exposed via ref as-is (no navigation) — this is what the shift/pump/date
+  // switch prompts' "Save" button calls (see PumpDayEditor's
+  // attemptSaveDirtyShifts), and those want to save-then-continue-switching,
+  // never save-then-leave-the-page-entirely.
   useImperativeHandle(ref, () => ({ attemptSave: handleSaveFinalClick }))
+
+  // Only for a direct "Save Entry"/"Save Changes" click (or its Enter-key
+  // equivalent below) — a genuine save succeeding here means the manager is
+  // done with this shift, so it's back to the history table, new entry or
+  // edit alike. A failed save (validation or the request itself) returns
+  // false and never navigates, leaving them right where the error still is.
+  async function handleSaveFinalAndReturn() {
+    const ok = await handleSaveFinalClick()
+    if (ok) navigate('/fuel-entry')
+    return ok
+  }
 
   // This card isn't a <form> (it holds several tab sections plus its own
   // internal "add row"/tab-switch buttons, which would need their own
@@ -1202,7 +1222,7 @@ const ShiftCard = forwardRef(function ShiftCard(
   function handleCardKeyDown(e) {
     if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return
     e.preventDefault()
-    handleSaveFinalClick()
+    handleSaveFinalAndReturn()
   }
 
   return (
@@ -1219,6 +1239,15 @@ const ShiftCard = forwardRef(function ShiftCard(
         ) : (
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">{t.unsavedLabel}</span>
         )}
+        {/* value.id + createdByName — a genuinely saved shift whose creator
+            actually resolved to a real Users row (see attach_actor_names on
+            the backend; null if that account's since been deleted). Purely
+            informational, same as the Saved/Draft badge next to it — never
+            read by any total/calculation, which still come solely from
+            utils/fuelCalc.js. */}
+        {value.id && value.createdByName ? (
+          <span className="text-xs text-slate-400">{t.createdByLabel(value.createdByName, formatDateTime(value.createdAt))}</span>
+        ) : null}
         {value.status !== 'final' && autoSaveStatus === 'pending' ? (
           <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
             <CloudUpload size={13} className="animate-pulse" /> {tRoot.autoSaving}
@@ -1924,7 +1953,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                     <span className="truncate">{bill.name}</span>
                   </button>
                   <span className="shrink-0 text-slate-400">&middot; {formatDate(bill.date)}</span>
-                  <IconButton onClick={() => removeBill(bill.id)} aria-label={tRoot.removeBill} title={tRoot.removeBill} tone="delete">
+                  <IconButton onClick={() => setConfirmRemoveBillId(bill.id)} aria-label={tRoot.removeBill} title={tRoot.removeBill} tone="delete">
                     <X size={13} />
                   </IconButton>
                 </li>
@@ -2024,7 +2053,7 @@ const ShiftCard = forwardRef(function ShiftCard(
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PrimaryButton type="button" onClick={handleSaveFinalClick} disabled={savingFinal || uploadingBill}>
+          <PrimaryButton type="button" onClick={handleSaveFinalAndReturn} disabled={savingFinal || uploadingBill}>
             <Save size={15} /> {savingFinal ? tRoot.savingChanges : value.id ? tRoot.saveChanges : tRoot.saveEntry}
           </PrimaryButton>
         </div>
@@ -2034,6 +2063,15 @@ const ShiftCard = forwardRef(function ShiftCard(
           elsewhere on the page being disabled isn't obvious enough on its
           own; this makes it unmistakable that nothing is clickable yet. */}
       {uploadingBill ? <FullPageLoader label={tRoot.uploadingBillPrompt} /> : null}
+
+      <ConfirmDialog
+        isOpen={confirmRemoveBillId != null}
+        onClose={() => setConfirmRemoveBillId(null)}
+        onConfirm={() => removeBill(confirmRemoveBillId)}
+        title={tRoot.removeBillTitle}
+        description={tRoot.removeBillDesc}
+        confirmLabel={tRoot.removeBill}
+      />
     </div>
   )
 })
@@ -2304,6 +2342,17 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   // the card right before it, so a handover reading is entered exactly once.
   const effectiveCards = useMemo(() => withCarriedOpenings(cards), [cards])
 
+  // Whether THIS pump/day actually has a Shift 2 / Shift 3 card, checked by
+  // its real shiftNumber — never by cards.length, which silently assumes
+  // shift 1 is always at index 0, shift 2 at index 1, etc. Deleting a shift
+  // straight from the History table (rather than via the toggles below,
+  // which only ever remove from the end) can leave a gap — e.g. Shift 1
+  // deleted while Shift 2 remains — where that assumption breaks and the
+  // toggles/tab labels/add-shift logic would otherwise mismatch or silently
+  // hide/override a real shift.
+  const hasShift2 = cards.some((c) => c.shiftNumber === 2)
+  const hasShift3 = cards.some((c) => c.shiftNumber === 3)
+
   // Gates the "Save this shift before moving on?" prompts (both
   // requestSwitchShift's own shift-tab guard above and pumpDirty/
   // onDirtyChange just below) on top of raw `_dirty` — a card can already be
@@ -2402,8 +2451,25 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   }
 
   function addShift(shiftNumber) {
+    // The new card always lands at the END of the array (plain append) —
+    // `cards.length` (captured before the append) IS that position. Using
+    // `shiftNumber - 1` instead used to assume shift 1 is always at index 0,
+    // shift 2 at index 1, etc., which a shift deleted directly from the
+    // History table (rather than via these toggles, which always remove
+    // from the end) can break — e.g. only Shift 2's card remaining at index
+    // 0 after Shift 1 was deleted elsewhere, where `shiftNumber - 1` (1)
+    // would activate a tab that doesn't exist.
+    setActiveShiftIndex(cards.length)
     setCards((prev) => [...prev, emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)])
-    setActiveShiftIndex(shiftNumber - 1)
+  }
+
+  // Resolves to the actual array position of the card with this shift
+  // number — never assumed to equal shiftNumber - 1 (see addShift above for
+  // why that assumption doesn't hold once a shift's been removed out of
+  // order). A no-op if that shift doesn't exist on this pump/day at all.
+  function requestRemoveByShiftNumber(shiftNumber) {
+    const index = cards.findIndex((c) => c.shiftNumber === shiftNumber)
+    if (index !== -1) requestRemove(index)
   }
 
   function requestRemove(index) {
@@ -2434,7 +2500,8 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     removingRef.current = true
     setRemoving(true)
     try {
-      if (card.id) {
+      const wasSavedShift = Boolean(card.id)
+      if (wasSavedShift) {
         await deleteFuelEntry(card.id)
         toast.success(tRoot.toastDeleted)
       }
@@ -2442,6 +2509,16 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
       setCards((prev) => prev.filter((_, i) => i !== index))
       setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
       setConfirmRemoveIndex(null)
+      // Same "a genuine save takes you back to History" behavior as Save
+      // Entry — a confirmed delete of an actually-saved shift is just as
+      // final an action, and there's nothing left on this page for that
+      // shift to keep editing. State is still cleaned up above FIRST (not
+      // skipped) in case this component doesn't unmount perfectly in sync
+      // with the route change — never leave it showing the just-deleted
+      // card even for a frame. Toggling off a never-saved local-only draft
+      // (wasSavedShift false) is normal mid-edit tidying, not a reason to
+      // leave the page, so that path never navigates.
+      if (wasSavedShift) navigate('/fuel-entry')
     } catch (err) {
       toast.error(err.message || tRoot.toastSaveFailed)
     } finally {
@@ -2598,7 +2675,14 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
                       index === activeShiftIndex ? 'bg-brand-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                     }`}
                   >
-                    {t.shiftLabel(index + 1)}
+                    {/* card.shiftNumber, not index+1 — a shift deleted directly
+                        from the History table (rather than via the "2nd/3rd
+                        shift" toggles below, which always remove from the
+                        end) can leave a gap, e.g. only Shift 2's card
+                        remaining at array position 0. Labeling by position
+                        would then show that real Shift 2 data under a
+                        "Shift 1" tab. */}
+                    {t.shiftLabel(card.shiftNumber)}
                     {!card.id ? (
                       <span className={`h-1.5 w-1.5 rounded-full ${index === activeShiftIndex ? 'bg-white/70' : 'bg-slate-400'}`} />
                     ) : cardStatus === 'draft' ? (
@@ -2622,19 +2706,24 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <ToggleSwitch
-            checked={cards.length >= 2}
-            disabled={busy || cards.length >= 3}
-            title={cards.length >= 3 ? t.removeThirdShiftFirst : undefined}
+            checked={hasShift2}
+            disabled={busy || hasShift3}
+            title={hasShift3 ? t.removeThirdShiftFirst : undefined}
             label={t.secondShiftToggle}
-            onChange={(on) => (on ? addShift(2) : requestRemove(1))}
+            onChange={(on) => (on ? addShift(2) : requestRemoveByShiftNumber(2))}
           />
-          {cards.length >= 2 ? (
+          {/* hasShift2 || hasShift3 (not cards.length >= 2) — if Shift 2 was
+              deleted directly from the History table while Shift 3 was left
+              behind, this toggle still needs to show so that now-orphaned
+              Shift 3 stays visible and removable, instead of silently
+              becoming unreachable through this UI. */}
+          {hasShift2 || hasShift3 ? (
             <ToggleSwitch
-              checked={cards.length >= 3}
+              checked={hasShift3}
               disabled={busy}
               title={t.internalShiftHint}
               label={t.thirdShiftToggle}
-              onChange={(on) => (on ? addShift(3) : requestRemove(2))}
+              onChange={(on) => (on ? addShift(3) : requestRemoveByShiftNumber(3))}
             />
           ) : null}
         </div>
@@ -2712,7 +2801,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
       />
 
       {savingFinalIndex != null ? <FullPageLoader label={tRoot.savingChanges} /> : null}
-      {removing ? <FullPageLoader label={tRoot.deleteTitle} /> : null}
+      {removing ? <FullPageLoader label={tRoot.deleting} /> : null}
       {discarding ? <FullPageLoader label={tRoot.discardDraftButton} /> : null}
     </motion.div>
   )

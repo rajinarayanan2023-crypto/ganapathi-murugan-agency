@@ -198,6 +198,24 @@ export default function FuelEntryForm() {
   // this date lands, rather than opening to a report that's all zeros.
   const hasSavedEntryForDate = useMemo(() => fuelEntries.some((e) => e.date === date), [fuelEntries, date])
 
+  // New-entry only (see the AppDatePicker below) — every date that already
+  // has at least one fuel entry (any pump, any shift, draft or final)
+  // becomes unselectable in the calendar, so a manager can't accidentally
+  // pick a day that's already been started here instead of opening it via
+  // Entry History's Edit action. Doesn't scope by pump/shift the way the
+  // backend's own uq_fuel_entries_date_pump_shift constraint does — this is
+  // a coarser "this day already has activity, go edit it instead" guard, on
+  // purpose, matching how "New Daily Fuel Entry" itself represents a whole
+  // day, not a single pump+shift slot. Today is deliberately EXCLUDED from
+  // this set (see shouldDisableDate below) — adding another shift/pump for
+  // the current day, later the same day, is completely normal and the most
+  // common reason to reopen "New Entry" at all; only an already-used PAST
+  // (or future) date is the actual mistake this guards against.
+  const datesWithEntries = useMemo(
+    () => new Set(fuelEntries.filter((e) => e.date !== todayISO()).map((e) => e.date)),
+    [fuelEntries],
+  )
+
   const dayBreakdown = useMemo(() => {
     const dayEntries = fuelEntries.filter((e) => e.date === date)
     const perPump = { pump1: [], pump2: [] }
@@ -253,32 +271,35 @@ export default function FuelEntryForm() {
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-card">
-        <div className="flex flex-col gap-1.5 border-b border-slate-100 pb-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-3 border-b border-slate-100 pb-1.5">
+          {/* min-w-0 + truncate on the title is what actually keeps this to
+              one row: a flex child won't shrink below its content's natural
+              width by default (min-width: auto), so without this, a long
+              title alone was enough to push Audit past the right edge —
+              genuinely too wide to fit both groups side by side, not just a
+              spacing tweak. Truncating the title (never Audit/Date, which
+              must always stay fully visible) is what buys the room back. */}
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <button
               type="button"
               onClick={() => guardedRun(anyDirty, () => navigate('/fuel-entry'))}
-              className="flex items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-slate-700"
+              className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-slate-700"
             >
               <ArrowLeft size={15} /> {t.entryHistory}
             </button>
-            <span className="hidden h-4 w-px bg-slate-200 sm:block" />
-            <h2 className="text-base font-bold text-slate-800">{entryId ? t.editEntry : t.newEntry}</h2>
+            <span className="hidden h-4 w-px shrink-0 bg-slate-200 sm:block" />
+            <h2 className="truncate text-base font-bold text-slate-800">{entryId ? t.editEntry : t.newEntry}</h2>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="shrink-0 text-xs font-semibold text-slate-600">{t.fieldDate}</span>
-            <AppDatePicker
-              value={date}
-              onChange={(next) => guardedRun(anyDirty, () => setDate(next))}
-              variant="compact"
-              className="w-[148px] shrink-0"
-            />
+          {/* shrink-0 + never wraps — Audit/Shift-3-Audit/Date must always
+              show in full; the title above gives up space instead. Audit
+              comes before Date (left of it) on purpose. */}
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={() => setAuditOpen(true)}
               disabled={!hasSavedEntryForDate}
               title={hasSavedEntryForDate ? undefined : t.auditDisabledHint}
-              className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-700 shadow-sm ring-1 ring-brand-200 transition-colors hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+              className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-brand-700 shadow-sm ring-1 ring-brand-200 transition-colors hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
             >
               <ClipboardCheck size={13} /> {t.auditButton}
             </button>
@@ -286,11 +307,33 @@ export default function FuelEntryForm() {
               <button
                 type="button"
                 onClick={() => setShift3AuditOpen(true)}
-                className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-violet-700 shadow-sm ring-1 ring-violet-200 transition-colors hover:bg-violet-50"
+                className="flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-violet-700 shadow-sm ring-1 ring-violet-200 transition-colors hover:bg-violet-50"
               >
                 <ClipboardCheck size={13} /> {t.shift3AuditButton}
               </button>
             ) : null}
+            <span className="shrink-0 text-xs font-semibold text-slate-600">{t.fieldDate}</span>
+            {/* Locked once editing an existing entry — changing the date on
+                an already-saved shift is exactly the kind of edit that leaves
+                things in a confusing/broken state (a saved entry now sitting
+                under a date it doesn't match everywhere else it's
+                referenced), so it's only ever settable while still creating
+                a brand new entry. Wrapped in a span (not the DatePicker
+                itself) so the hover hint still works — MUI's own disabled
+                state on the field can otherwise block pointer events from
+                ever reaching the tooltip trigger. */}
+            <AppTooltip title={entryId ? t.dateDisabledEditHint : undefined}>
+              <span>
+                <AppDatePicker
+                  value={date}
+                  onChange={(next) => guardedRun(anyDirty, () => setDate(next))}
+                  variant="compact"
+                  className="shrink-0"
+                  disabled={Boolean(entryId)}
+                  shouldDisableDate={entryId ? undefined : (iso) => datesWithEntries.has(iso)}
+                />
+              </span>
+            </AppTooltip>
           </div>
         </div>
 

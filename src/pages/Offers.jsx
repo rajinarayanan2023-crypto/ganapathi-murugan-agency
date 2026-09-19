@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, MessageSquareText, Trash2 } from 'lucide-react'
+import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, Trash2 } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { OFFERS_TEXT } from '../i18n/offers.js'
@@ -11,39 +11,26 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import { Field, Input, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
 const customerEmptyForm = { name: '', phone: '' }
 
-function buildTemplates(station) {
-  const shortLocation = station.location.split(',')[0]
-  const mobiles = station.mobiles.join(' / ')
-  return [
-    {
-      id: 'tamil-bulk-1',
-      label: 'Tamil · Bulk Offer (Short)',
-      text: `⛽ *${station.name} – ${shortLocation}*\n\nBulk பெட்ரோல் & டீசல் வாங்கினால்\n🎁 *FREE ஆயில்* + சிறப்பு விலை!\n\n📞 ${mobiles} - தொடர்புக்கு அழைக்கவும்.`,
-    },
-    {
-      id: 'tamil-bulk-2',
-      label: 'Tamil · Bulk Offer (Detailed)',
-      text: `⛽ *${station.name} – ${shortLocation}*\n\n🎉 Bulk பெட்ரோல் & டீசல் ஆர்டர்களுக்கு சிறப்பு சலுகை!\n🎁 குறிப்பிட்ட அளவு வாங்கினால் *FREE ஆயில்*.\n💰 சிறந்த விலை • 🚚 விரைவான சேவை\n\n📞 மேலும் தகவலுக்கு தொடர்பு கொள்ளுங்கள்: ${mobiles}`,
-    },
-    {
-      id: 'english-bulk',
-      label: 'English · Bulk Offer',
-      text: `⛽ ${station.name}, ${shortLocation}\n\nSpecial offer on bulk Petrol & Diesel orders!\n🎁 Get FREE engine oil on qualifying purchases.\n💰 Best rates • 🚚 Fast service\n\n📞 Call us: ${mobiles}`,
-    },
-    {
-      id: 'loyalty-credit',
-      label: 'English · Loyalty / Credit Reminder',
-      text: `⛽ ${station.name}\n\nThank you for being a valued customer! 🙏\nClear your outstanding balance this week and get 2% cashback on your next fill-up.\n\n📞 ${mobiles}`,
-    },
-  ]
-}
+// Mirrors OFFER_TEMPLATES in offer_service.py exactly (same ids) — these
+// are real, Meta-approved WhatsApp templates now, not client-side text
+// snippets. Only the one offer-specific slot each template's body has a
+// {{2}} for is still free-typed; everything else is the template's own
+// fixed, already-approved wording (station name is filled in server-side
+// as {{1}}). placeholderHint just shows an example of what that one field
+// expects for each specific template.
+const OFFER_TEMPLATES = [
+  { id: 'tamil-bulk-1', label: 'Tamil · Bulk Offer (Short)', placeholderHint: 'e.g. 5% தள்ளுபடி + FREE ஆயில்' },
+  { id: 'tamil-bulk-2', label: 'Tamil · Bulk Offer (Detailed)', placeholderHint: 'e.g. 500 (litres for the FREE oil threshold)' },
+  { id: 'english-bulk', label: 'English · Bulk Offer', placeholderHint: 'e.g. 500 (litres for the FREE oil threshold)' },
+  { id: 'loyalty-credit', label: 'English · Loyalty / Credit Reminder', placeholderHint: 'e.g. 2% cashback' },
+]
 
 const STATUS_STYLES = {
   sent: 'bg-emerald-50 text-emerald-600',
@@ -61,7 +48,6 @@ export default function Offers() {
     offerHistory,
     offerHistoryLoading,
     sendOffer,
-    station,
   } = useData()
   const { language } = useLanguage()
   const t = OFFERS_TEXT[language]
@@ -79,9 +65,8 @@ export default function Offers() {
   )
 
   const [selectedCustomers, setSelectedCustomers] = useState([])
-  const [message, setMessage] = useState('')
   const [templateUsed, setTemplateUsed] = useState(null)
-  const [channel, setChannel] = useState(null)
+  const [offerVariable, setOfferVariable] = useState('')
   const [sending, setSending] = useState(false)
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -96,8 +81,6 @@ export default function Offers() {
   // make (add customer, remove customer, send offer) — while any of them is
   // running, every OTHER action on this screen is blocked too.
   const busy = sending || savingCustomer || deletingId != null
-
-  const templates = useMemo(() => buildTemplates(station), [station])
 
   function openAdd() {
     setForm(customerEmptyForm)
@@ -155,19 +138,22 @@ export default function Offers() {
   }
 
   async function handleSendOffer() {
-    if (!message.trim()) {
-      toast.error(t.errorNoMessage)
+    if (!templateUsed) {
+      toast.error(t.errorTemplateRequired)
       return
     }
-    if (selectedCustomers.length === 0 || !channel) return
+    if (!offerVariable.trim()) {
+      toast.error(t.errorOfferVariableRequired)
+      return
+    }
+    if (selectedCustomers.length === 0) return
 
     setSending(true)
     try {
       const send = await sendOffer({
         customerIds: selectedCustomers.map((c) => c.id),
-        message,
-        channel,
         templateUsed,
+        offerVariable: offerVariable.trim(),
       })
       const counts = send.statusCounts
       const parts = Object.entries(counts)
@@ -175,6 +161,8 @@ export default function Offers() {
         .map(([status, n]) => t.statusCount(n, status))
       toast.success(parts.length ? t.toastSentWithCounts(parts.join(', ')) : t.toastSentToMany(selectedCustomers.length))
       setSelectedCustomers([])
+      setTemplateUsed(null)
+      setOfferVariable('')
     } catch (err) {
       toast.error(err.message || t.errorSendFailed)
     } finally {
@@ -217,7 +205,7 @@ export default function Offers() {
     return <SkeletonTable rows={6} cols={3} />
   }
 
-  const sendDisabled = busy || selectedCustomers.length === 0 || !channel
+  const sendDisabled = busy || selectedCustomers.length === 0 || !templateUsed || !offerVariable.trim()
   const busyLabel = sending ? t.sending : savingCustomer ? t.addingCustomer : deletingId != null ? t.removingCustomer : ''
 
   return (
@@ -298,64 +286,44 @@ export default function Offers() {
             <Megaphone size={15} className="text-slate-400" /> {t.offerContent}
           </h3>
 
-          <div className="mb-3 flex flex-wrap gap-2">
-            {templates.map((tpl) => (
+          <p className="mb-2 text-xs font-semibold text-slate-600">{t.fieldOfferTemplate}</p>
+          <div className="mb-4 flex flex-wrap gap-2">
+            {OFFER_TEMPLATES.map((tpl) => (
               <button
                 key={tpl.id}
-                onClick={() => {
-                  setMessage(tpl.text)
-                  setTemplateUsed(tpl.id)
-                }}
+                type="button"
+                onClick={() => setTemplateUsed(tpl.id)}
                 disabled={busy}
-                className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 transition-colors hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50"
+                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  templateUsed === tpl.id
+                    ? 'border-brand-400 bg-brand-100 text-brand-800'
+                    : 'border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                }`}
               >
                 {tpl.label}
               </button>
             ))}
           </div>
 
-          <Field label={t.fieldMessage}>
-            <Textarea
-              rows={9}
-              value={message}
-              onChange={(e) => {
-                setMessage(e.target.value)
-                setTemplateUsed(null)
-              }}
-              placeholder={t.placeholderMessage}
-              className="font-sans"
+          <Field label={t.fieldOfferVariable}>
+            <Input
+              value={offerVariable}
+              onChange={(e) => setOfferVariable(e.target.value)}
+              placeholder={OFFER_TEMPLATES.find((tpl) => tpl.id === templateUsed)?.placeholderHint || t.placeholderOfferVariable}
               disabled={busy}
             />
           </Field>
 
-          <div className="mt-4">
-            <p className="mb-2 text-xs font-semibold text-slate-600">{t.fieldChannel}</p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setChannel('sms')}
-                disabled={busy}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                  channel === 'sms' ? 'border-brand-400 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                <MessageSquareText size={16} /> {t.channelSms}
-              </button>
-              <button
-                type="button"
-                onClick={() => setChannel('whatsapp')}
-                disabled={busy}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                  channel === 'whatsapp' ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                <WhatsAppIcon size={16} /> {t.channelWhatsApp}
-              </button>
-            </div>
-          </div>
+          {/* Channel selector removed — WhatsApp is the only send channel
+              now (see OfferService.send), so there's nothing left to pick.
+              This small badge replaces it just so it's still visible which
+              channel a send actually goes out on. */}
+          <p className="mt-4 flex items-center justify-center gap-1.5 text-xs font-semibold text-emerald-700">
+            <WhatsAppIcon size={14} /> {t.channelWhatsApp}
+          </p>
 
           <AppTooltip title={sendDisabled && !sending ? t.sendDisabledHint : undefined}>
-            <PrimaryButton onClick={handleSendOffer} disabled={sendDisabled} className="mt-4 w-full">
+            <PrimaryButton onClick={handleSendOffer} disabled={sendDisabled} className="mt-2 w-full">
               <Send size={16} /> {sending ? t.sending : t.sendOfferTo(selectedCustomers.length || 0)}
             </PrimaryButton>
           </AppTooltip>
@@ -376,8 +344,8 @@ export default function Offers() {
         ) : offerHistory.length === 0 ? (
           <p className="text-xs text-slate-400">{t.noHistory}</p>
         ) : (
-          <ul className="space-y-2">
-            {offerHistory.slice(0, 8).map((send) => (
+          <ul className="max-h-96 space-y-2 overflow-y-auto pr-1">
+            {offerHistory.map((send) => (
               <li key={send.id} className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-medium text-slate-700">
@@ -395,6 +363,23 @@ export default function Offers() {
                   </div>
                 </div>
                 <p className="mt-1 truncate text-slate-500">{send.message.split('\n')[0]}</p>
+                {send.recipients.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
+                    {send.recipients.map((r, i) => (
+                      <span
+                        key={`${send.id}-${i}`}
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_STYLES[r.status] || STATUS_STYLES.pending}`}
+                      >
+                        {r.customerName}
+                        {r.customerPhone ? (
+                          <span className="inline-flex items-center gap-0.5 opacity-75">
+                            <Phone size={9} /> {r.customerPhone}
+                          </span>
+                        ) : null}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

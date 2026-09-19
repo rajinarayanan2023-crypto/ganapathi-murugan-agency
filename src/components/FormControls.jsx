@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Children } from 'react'
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, Children } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search, Eye, EyeOff } from 'lucide-react'
 import AppTooltip from './AppTooltip.jsx'
@@ -239,27 +239,35 @@ export function Textarea({ error, className = '', ...props }) {
   )
 }
 
-export function PrimaryButton({ className = '', children, ...props }) {
+// forwardRef here (and on SecondaryButton below) isn't optional decoration —
+// AppTooltip (MUI's Tooltip underneath) clones its child and attaches a ref
+// to it to track hover/position; a plain function component can't accept
+// that ref, which silently breaks the tooltip and throws a console warning
+// ("Function components cannot be given refs") wherever one of these is
+// wrapped in a tooltip, as Offers.jsx's disabled-send-button hint was.
+export const PrimaryButton = forwardRef(function PrimaryButton({ className = '', children, ...props }, ref) {
   return (
     <button
+      ref={ref}
       className={`inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
     </button>
   )
-}
+})
 
-export function SecondaryButton({ className = '', children, ...props }) {
+export const SecondaryButton = forwardRef(function SecondaryButton({ className = '', children, ...props }, ref) {
   return (
     <button
+      ref={ref}
       className={`inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
     </button>
   )
-}
+})
 
 // Every tone keeps its tint visible at rest (not just on hover) so the
 // action an icon performs — edit, delete, download, etc. — reads at a glance.

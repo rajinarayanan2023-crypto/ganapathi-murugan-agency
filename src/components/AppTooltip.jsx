@@ -10,6 +10,12 @@ export default function AppTooltip({ title, children, ...props }) {
     <Tooltip
       title={title}
       arrow
+      // MUI's own default requires a 700ms press-and-hold on a touchscreen
+      // before a tooltip opens at all — a normal tap does nothing, which is
+      // exactly what "tooltip doesn't respond" looks like on a tablet/phone
+      // (this app is used on-site, not just at a desktop). A normal tap now
+      // opens it immediately, same as a mouse hover already does.
+      enterTouchDelay={0}
       slotProps={{
         tooltip: {
           sx: {

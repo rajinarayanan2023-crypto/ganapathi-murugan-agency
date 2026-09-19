@@ -428,45 +428,52 @@ export default function Lubricants() {
     // and forcing an outer scrollbar.
     <div className="flex h-full min-h-0 flex-col gap-6">
       {busy ? <FullPageLoader label={busyLabel} /> : null}
-      <div className="flex flex-nowrap items-center gap-3 overflow-x-auto pb-1">
-        <div className="relative w-40 shrink-0 sm:w-56">
-          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t.searchPlaceholder}
-            className="py-2 pl-9 text-sm"
+      <div className="flex items-center gap-3">
+        {/* This row scrolls horizontally on its own (min-w-0 lets it actually
+            shrink instead of forcing the whole flex row wider) — Add Product
+            stays a sibling outside it, so it can never end up scrolled out of
+            view the way it did when it lived inside this same overflow-x-auto
+            row with just an ml-auto push. */}
+        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-3 overflow-x-auto pb-1">
+          <div className="relative w-40 shrink-0 sm:w-56">
+            <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t.searchPlaceholder}
+              className="py-2 pl-9 text-sm"
+            />
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
+            {[
+              { value: 'all', label: t.filterAll, icon: null },
+              { value: 'packet', label: t.packagingLabel.packet, icon: Package },
+              { value: 'cane', label: t.packagingLabel.cane, icon: Cylinder },
+            ].map(({ value, label, icon: Icon }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setPackagingFilter(value)}
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                  packagingFilter === value ? 'bg-brand-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                {Icon ? <Icon size={12} /> : null}
+                {label}
+              </button>
+            ))}
+          </div>
+          <InlineStat icon={Droplet} label={t.statProducts} value={lubricants.length} accent="brand" />
+          <InlineStat icon={Boxes} label={t.statTotalStock} value={totalStock} accent="amber" />
+          <InlineStat
+            icon={AlertTriangle}
+            label={t.statLowStock}
+            value={lowStockProducts.length}
+            accent="rose"
+            onClick={() => setLowStockOpen(true)}
           />
         </div>
-        <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5">
-          {[
-            { value: 'all', label: t.filterAll, icon: null },
-            { value: 'packet', label: t.packagingLabel.packet, icon: Package },
-            { value: 'cane', label: t.packagingLabel.cane, icon: Cylinder },
-          ].map(({ value, label, icon: Icon }) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setPackagingFilter(value)}
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors ${
-                packagingFilter === value ? 'bg-brand-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'
-              }`}
-            >
-              {Icon ? <Icon size={12} /> : null}
-              {label}
-            </button>
-          ))}
-        </div>
-        <InlineStat icon={Droplet} label={t.statProducts} value={lubricants.length} accent="brand" />
-        <InlineStat icon={Boxes} label={t.statTotalStock} value={totalStock} accent="amber" />
-        <InlineStat
-          icon={AlertTriangle}
-          label={t.statLowStock}
-          value={lowStockProducts.length}
-          accent="rose"
-          onClick={() => setLowStockOpen(true)}
-        />
-        <PrimaryButton onClick={openAdd} disabled={busy} className="ml-auto shrink-0">
+        <PrimaryButton onClick={openAdd} disabled={busy} className="shrink-0">
           <Plus size={16} /> {t.addProduct}
         </PrimaryButton>
       </div>
@@ -967,7 +974,12 @@ export default function Lubricants() {
                   <div key={entry.fuel_entry_id + entry.row_type} className="flex items-center justify-between gap-2 text-xs text-slate-500">
                     <span className="flex items-center gap-1.5">
                       <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                      {t.soldHistoryEntry(entry.qty, soldHistoryTarget.unit, entry.rate, formatDate(entry.date))}
+                      {/* entry.qty comes back from the API as a DECIMAL column, serialized
+                          as a fixed-scale string like "54.000" — Number() drops the padded
+                          zeros so a whole-count sale reads as "54", not "54.000", while a
+                          genuinely fractional (cane/bulk) qty like "12.500" still shows its
+                          real decimals ("12.5") instead of being truncated. */}
+                      {t.soldHistoryEntry(Number(entry.qty), soldHistoryTarget.unit, entry.rate, formatDate(entry.date))}
                     </span>
                     <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
                       {t.soldHistoryPumpShift(entry.pump_key === 'pump1' ? 1 : 2, entry.shift_number)}

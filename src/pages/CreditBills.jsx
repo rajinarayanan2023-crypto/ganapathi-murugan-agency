@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote, ChevronUp, ChevronDown, Search } from 'lucide-react'
+import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Paperclip, X, StickyNote, ChevronUp, ChevronDown, Search, Loader2 } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
 import { closingBalance, closingBalanceBreakdown } from '../data/mockData.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
-import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
+import { uploadBillFile, getDownloadUrl, deleteUpload, sendCreditReminder } from '../lib/apiClient.js'
 import { prepareBillFile } from '../utils/fileValidation.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -103,8 +103,16 @@ export default function CreditBills() {
   // instead of reusing the upload prompt.
   const [uploadingTxBillId, setUploadingTxBillId] = useState(null)
   const [removingTxBillId, setRemovingTxBillId] = useState(null)
+  // Removal is a real, permanent S3 delete (not just clearing the field), so
+  // it's gated behind a confirmation — same reasoning for the staged
+  // (not-yet-submitted) credit bill just below.
+  const [confirmRemoveTxBill, setConfirmRemoveTxBill] = useState(null)
+  const [confirmRemoveStagedCreditBill, setConfirmRemoveStagedCreditBill] = useState(false)
   const [txSort, setTxSort] = useState({ field: 'date', dir: 'desc' })
   const [txSearch, setTxSearch] = useState('')
+  // id of whichever customer has a reminder send in flight — same
+  // single-id-at-a-time pattern as uploadingTxBillId/removingTxBillId above.
+  const [sendingReminderId, setSendingReminderId] = useState(null)
 
   // One combined flag covering every kind of in-flight write this page can
   // make — while any of them is running, every OTHER action on this screen
@@ -117,7 +125,8 @@ export default function CreditBills() {
     uploadingTxBillId != null ||
     removingTxBillId != null ||
     deletingCustomer ||
-    deletingTx
+    deletingTx ||
+    sendingReminderId != null
   const busyLabel = deletingCustomer
     ? t.removingCustomer
     : deletingTx
@@ -126,7 +135,9 @@ export default function CreditBills() {
         ? t.removingBillPrompt
         : uploadingTxBillId != null || uploadingCreditBill
           ? t.uploadingBillPrompt
-          : t.saving
+          : sendingReminderId != null
+            ? t.sendingReminder
+            : t.saving
 
   const rows = useMemo(
     () => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c), billsCount: (c.bills?.length || 0) + (c.ledger || []).filter((e) => e.billUrl).length })),
@@ -288,6 +299,22 @@ export default function CreditBills() {
       window.open(url, '_blank', 'noopener')
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
+    }
+  }
+
+  // Customer-level reminder — outstanding balance + their most recent bill
+  // (from either source: general Bills & Documents or a ledger-entry
+  // attachment), sent for real server-side via MetaWhatsAppProvider. Fully
+  // automatic: no wa.me link, no manual download, single request in/out.
+  async function handleSendReminder(c) {
+    setSendingReminderId(c.id)
+    try {
+      await sendCreditReminder(c.id)
+      toast.success(t.toastReminderSent(c.name))
+    } catch (err) {
+      toast.error(err.message || t.errorReminderFailed)
+    } finally {
+      setSendingReminderId(null)
     }
   }
 
@@ -530,6 +557,15 @@ export default function CreditBills() {
       style: { width: '17%' },
       body: (c) => (
         <div className="flex items-center justify-end gap-1">
+          <IconButton
+            onClick={() => handleSendReminder(c)}
+            disabled={busy || !c.phone}
+            aria-label={t.tooltipSendReminder}
+            title={c.phone ? t.tooltipSendReminder : t.tooltipPhone}
+            tone="success"
+          >
+            {sendingReminderId === c.id ? <Loader2 size={15} className="animate-spin" /> : <WhatsAppIcon size={15} />}
+          </IconButton>
           <IconButton onClick={() => openLedger(c.id)} disabled={busy} aria-label="View ledger" title="View ledger" tone="info">
             <ReceiptText size={15} />
           </IconButton>
@@ -724,7 +760,7 @@ export default function CreditBills() {
                         <AppTooltip title={t.removeAttachment}>
                           <button
                             type="button"
-                            onClick={removeStagedCreditBill}
+                            onClick={() => setConfirmRemoveStagedCreditBill(true)}
                             disabled={savingCredit || uploadingCreditBill}
                             className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label={t.removeAttachment}
@@ -880,7 +916,7 @@ export default function CreditBills() {
                                 <AppTooltip title={t.removeBill}>
                                   <button
                                     type="button"
-                                    onClick={() => handleRemoveTxBill(tx)}
+                                    onClick={() => setConfirmRemoveTxBill(tx)}
                                     disabled={busy}
                                     className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                     aria-label={t.removeBill}
@@ -965,6 +1001,24 @@ export default function CreditBills() {
         title={t.removeTransactionTitle}
         description={t.removeTransactionDesc}
         loading={deletingTx}
+      />
+
+      <ConfirmDialog
+        isOpen={!!confirmRemoveTxBill}
+        onClose={() => setConfirmRemoveTxBill(null)}
+        onConfirm={() => handleRemoveTxBill(confirmRemoveTxBill)}
+        title={t.removeBillTitle}
+        description={t.removeBillDesc}
+        confirmLabel={t.removeBill}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmRemoveStagedCreditBill}
+        onClose={() => setConfirmRemoveStagedCreditBill(false)}
+        onConfirm={removeStagedCreditBill}
+        title={t.removeAttachmentTitle}
+        description={t.removeAttachmentDesc}
+        confirmLabel={t.removeAttachment}
       />
     </div>
   )

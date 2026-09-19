@@ -62,6 +62,16 @@ export function formatDate(date) {
   return `${dd}/${mm}/${yyyy}`
 }
 
+// Same DD/MM/YYYY as formatDate, plus a 12-hour clock time — for audit-style
+// "created/updated at" timestamps (a real datetime, e.g. created_at), never
+// for the plain calendar `date` field a fuel entry itself is filed under.
+export function formatDateTime(date) {
+  const d = typeof date === 'string' ? new Date(date) : date
+  if (Number.isNaN(d?.getTime?.())) return '-'
+  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
+  return `${formatDate(d)}, ${time}`
+}
+
 export function formatDateShort(date) {
   const d = typeof date === 'string' ? new Date(date) : date
   if (Number.isNaN(d?.getTime?.())) return '-'

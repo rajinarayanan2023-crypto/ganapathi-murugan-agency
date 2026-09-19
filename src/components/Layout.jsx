@@ -12,9 +12,9 @@ import Modal from './Modal.jsx'
 import { Field, PasswordInput, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import { FullPageLoader } from './Loader.jsx'
-import CashCalculatorModal from './CashCalculatorModal.jsx'
+import CalculatorModal from './CalculatorModal.jsx'
 import useIdleLogout from '../hooks/useIdleLogout.js'
-import { CASH_CALCULATOR_TEXT } from '../i18n/cashCalculator.js'
+import { CALCULATOR_TEXT } from '../i18n/calculator.js'
 
 // Matches the backend's own IDLE_TIMEOUT_MINUTES (app/core/config.py /
 // .env's idle_timeout_minutes) — that one force-expires the refresh token
@@ -45,8 +45,8 @@ export default function Layout() {
   const { station, logout, changePassword, currentUser, hasUnsavedChanges, saveUnsavedChangesHandler } = useData()
   const { language, toggleLanguage } = useLanguage()
   const t = LAYOUT_TEXT[language]
-  const cashCalcT = CASH_CALCULATOR_TEXT[language]
-  const [cashCalcOpen, setCashCalcOpen] = useState(false)
+  const calculatorT = CALCULATOR_TEXT[language]
+  const [calculatorOpen, setCalculatorOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
@@ -309,10 +309,10 @@ export default function Layout() {
                 tones, so this one is deliberately a different color to
                 stand out at a glance instead of blending in as "just
                 another small circle". */}
-            <AppTooltip title={cashCalcT.cashCalculator}>
+            <AppTooltip title={calculatorT.calculator}>
               <button
-                onClick={() => setCashCalcOpen(true)}
-                aria-label={cashCalcT.cashCalculator}
+                onClick={() => setCalculatorOpen(true)}
+                aria-label={calculatorT.calculator}
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-md shadow-emerald-600/40 transition-transform hover:scale-110 hover:shadow-lg active:scale-95"
               >
                 <Calculator size={19} strokeWidth={2.3} />
@@ -348,7 +348,7 @@ export default function Layout() {
           </div>
         </header>
 
-        <main className="relative flex-1 px-4 pb-24 pt-5 sm:px-6 lg:min-h-0 lg:overflow-y-auto lg:px-8 lg:pb-8">
+        <main className="relative flex-1 overflow-x-hidden px-4 pb-24 pt-5 sm:px-6 lg:min-h-0 lg:overflow-y-auto lg:px-8 lg:pb-8">
           <AnimatePresence mode="wait">
             {/* lg:h-full (not unprefixed h-full) — below the lg breakpoint
                 `main` has no definite height of its own (mobile/tablet pages
@@ -428,7 +428,7 @@ export default function Layout() {
 
       {savingPassword ? <FullPageLoader label={t.savingPassword} /> : null}
 
-      <CashCalculatorModal isOpen={cashCalcOpen} onClose={() => setCashCalcOpen(false)} />
+      <CalculatorModal isOpen={calculatorOpen} onClose={() => setCalculatorOpen(false)} />
 
       <Modal
         isOpen={passwordModalOpen}
