@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ReceiptText, Fuel, TrendingUp, AlertTriangle, ClipboardCheck } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
-import { formatCurrency, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import { aggregateEntries, withCarriedOpenings, sortPumpEntries } from '../utils/fuelCalc.js'
 import EmptyState from '../components/EmptyState.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
@@ -120,9 +120,39 @@ export default function FuelEntryForm() {
   }
 
   // Arriving via a History row (entryId set) jumps straight to that shift's
-  // day + pump; arriving via "New Day Entry" starts on today, Pump 1.
+  // day + pump; arriving via "New Day Entry" starts on today, Pump 1 — or,
+  // if a ?date= is already in the address bar (see the sync effect below),
+  // whatever date that names.
   const linkedEntry = entryId ? fuelEntries.find((e) => e.id === entryId) : null
-  const [date, setDate] = useState(() => linkedEntry?.date || todayISO())
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [date, setDate] = useState(() => {
+    if (linkedEntry) return linkedEntry.date
+    const fromUrl = searchParams.get('date')
+    return /^\d{4}-\d{2}-\d{2}$/.test(fromUrl || '') ? fromUrl : todayISO()
+  })
+
+  // New Entry only — keeps the address bar in sync with whichever date is
+  // currently picked here. Nothing else remembers it: this page (unlike
+  // PumpDayEditor, which was deliberately stripped of all draft/localStorage
+  // persistence) never kept its own selected-date state anywhere either, so
+  // a plain refresh had no way to know a different date had been chosen and
+  // always silently reopened on today — surprising after deliberately
+  // switching away from it. The URL is not "local storage": it's the one
+  // place a refresh (or a shared/bookmarked link) is SUPPOSED to read state
+  // back from. Never touches the URL while editing an existing entry — that
+  // route already carries its own entryId, and the date there is fixed to
+  // whatever that entry's date is, never independently chosen.
+  useEffect(() => {
+    if (entryId) return
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.set('date', date)
+        return next
+      },
+      { replace: true },
+    )
+  }, [entryId, date, setSearchParams])
 
   // Attendance only auto-loads the real-world current month by default (see
   // DataContext) — Fuel Entry can view any date, so make sure whichever
@@ -479,17 +509,43 @@ export default function FuelEntryForm() {
           no-op onClose, and the X hidden entirely) — this needs an explicit
           choice, not an easy way to click past it and forget it was ever
           shown. */}
-      <Modal isOpen={todayEntryExistsPrompt != null} onClose={() => {}} hideCloseButton title={t.todayEntryExistsTitle} maxWidth="max-w-sm">
+      <Modal isOpen={todayEntryExistsPrompt != null} onClose={() => {}} hideCloseButton title={t.todayEntryExistsTitle} maxWidth="max-w-lg">
         <p className="text-sm text-slate-600">{t.todayEntryExistsDesc}</p>
-        <div className="mt-5 flex justify-end gap-2">
+        {/* Row 1: choose a different date. Row 2: the two "leave this page
+            entirely" actions — kept visually separate (its own row, not
+            just more buttons tacked onto the date row) since it's a
+            different kind of choice. Both rows stack on narrow screens
+            (label above the field; buttons full-width, one per line)
+            instead of squeezing everything onto one cramped line — the
+            longer button/label text this modal uses needs the room. */}
+        <div className="mt-4 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+          <span className="text-xs font-semibold text-slate-600">{t.todayEntryExistsChooseAnotherDateForNewEntry}</span>
+          {/* Same rules as the main Date field above (see AppDatePicker
+              there): no future dates, and no date that already has an
+              entry — today is excluded from that second rule, but today is
+              exactly the date this whole modal exists because of, so
+              picking it again here would just be a no-op back to where the
+              manager already is. */}
+          <AppDatePicker
+            value={date}
+            onChange={(next) => {
+              setDate(next)
+              setTodayEntryExistsPrompt(null)
+            }}
+            variant="compact"
+            maxDate={todayISO()}
+            shouldDisableDate={(iso) => iso === todayISO() || datesWithEntries.has(iso)}
+          />
+        </div>
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
           <SecondaryButton
             onClick={() => {
               setTodayEntryExistsPrompt(null)
               navigate('/fuel-entry')
             }}
-            className="px-4 py-2 text-sm"
+            className="w-full px-4 py-2 text-sm sm:w-auto"
           >
-            {t.todayEntryExistsBackToHistory}
+            {t.todayEntryExistsBackToHistoryTable}
           </SecondaryButton>
           <PrimaryButton
             onClick={() => {
@@ -503,9 +559,9 @@ export default function FuelEntryForm() {
               setTodayEntryExistsPrompt(null)
               navigate(`/fuel-entry/${targetId}/edit`)
             }}
-            className="px-4 py-2 text-sm"
+            className="w-full px-4 py-2 text-sm sm:w-auto"
           >
-            {t.todayEntryExistsEdit}
+            {t.todayEntryExistsEdit(formatDate(todayISO()))}
           </PrimaryButton>
         </div>
       </Modal>

@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, Trash2 } from 'lucide-react'
+import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, Trash2, Eye, AlertTriangle } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { OFFERS_TEXT } from '../i18n/offers.js'
-import { formatDate } from '../utils/format.js'
+import { formatDateTime } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -39,6 +39,12 @@ const STATUS_STYLES = {
   pending: 'bg-amber-50 text-amber-600',
 }
 
+const PREVIEW_STATUS_STYLES = {
+  APPROVED: 'bg-emerald-50 text-emerald-700',
+  PENDING: 'bg-amber-50 text-amber-700',
+  REJECTED: 'bg-rose-50 text-rose-700',
+}
+
 export default function Offers() {
   const {
     offerCustomers,
@@ -48,6 +54,7 @@ export default function Offers() {
     offerHistory,
     offerHistoryLoading,
     sendOffer,
+    previewOfferTemplate,
   } = useData()
   const { language } = useLanguage()
   const t = OFFERS_TEXT[language]
@@ -68,6 +75,44 @@ export default function Offers() {
   const [templateUsed, setTemplateUsed] = useState(null)
   const [offerVariable, setOfferVariable] = useState('')
   const [sending, setSending] = useState(false)
+
+  // Preview fetches the REAL approved template body straight from Meta
+  // (see OfferService.preview_template) with {{1}}/{{2}} filled in, so what
+  // shows here is exactly what the customer will receive — not a guess.
+  // Debounced so it doesn't refetch on every keystroke in the offer detail
+  // field; keyed by templateUsed+offerVariable so a stale response from a
+  // superseded request can never overwrite a newer one.
+  const [preview, setPreview] = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState(false)
+
+  useEffect(() => {
+    if (!templateUsed) {
+      setPreview(null)
+      setPreviewError(false)
+      return
+    }
+    let cancelled = false
+    setPreviewLoading(true)
+    setPreviewError(false)
+    const timer = setTimeout(async () => {
+      try {
+        const result = await previewOfferTemplate(templateUsed, offerVariable.trim())
+        if (!cancelled) setPreview(result)
+      } catch {
+        if (!cancelled) {
+          setPreview(null)
+          setPreviewError(true)
+        }
+      } finally {
+        if (!cancelled) setPreviewLoading(false)
+      }
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [templateUsed, offerVariable, previewOfferTemplate])
 
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(customerEmptyForm)
@@ -314,6 +359,40 @@ export default function Offers() {
             />
           </Field>
 
+          <p className="mb-2 mt-4 flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+            <Eye size={13} className="text-slate-400" /> {t.previewTitle}
+          </p>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            {!templateUsed ? (
+              <p className="text-xs text-slate-400">{t.previewHint}</p>
+            ) : previewLoading && !preview ? (
+              <p className="text-xs text-slate-400">{t.previewLoading}</p>
+            ) : previewError ? (
+              <p className="flex items-center gap-1.5 text-xs text-amber-600">
+                <AlertTriangle size={13} /> {t.previewUnavailable}
+              </p>
+            ) : preview ? (
+              <div className={previewLoading ? 'opacity-60 transition-opacity' : 'transition-opacity'}>
+                <div className="rounded-lg rounded-tl-none bg-emerald-50 px-3 py-2 text-xs leading-relaxed text-slate-700" style={{ whiteSpace: 'pre-wrap' }}>
+                  {preview.preview_text}
+                </div>
+                {preview.status !== 'APPROVED' ? (
+                  <p
+                    className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                      PREVIEW_STATUS_STYLES[preview.status] || 'bg-slate-100 text-slate-500'
+                    }`}
+                  >
+                    {preview.status === 'PENDING'
+                      ? t.previewStatusPending
+                      : preview.status === 'REJECTED'
+                        ? t.previewStatusRejected
+                        : t.previewStatusUnknown(preview.status)}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
           {/* Channel selector removed — WhatsApp is the only send channel
               now (see OfferService.send), so there's nothing left to pick.
               This small badge replaces it just so it's still visible which
@@ -349,7 +428,7 @@ export default function Offers() {
               <li key={send.id} className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-medium text-slate-700">
-                    {formatDate(send.sentAt)} &middot;{' '}
+                    {formatDateTime(send.sentAt)} &middot;{' '}
                     <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${send.channel === 'sms' ? 'bg-brand-50 text-brand-700' : 'bg-emerald-50 text-emerald-700'}`}>
                       {send.channel === 'sms' ? t.channelSms : t.channelWhatsApp}
                     </span>

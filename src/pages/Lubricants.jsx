@@ -60,6 +60,16 @@ const INLINE_STAT_THEMES = {
 // before it hits zero and a sale can't be recorded at all.
 const LOW_STOCK_THRESHOLD = 10
 
+// Editing a purchase's qty after the fact can silently conflict with Fuel
+// Entry's Pump 2 oil rows — a sale already recorded against this batch's
+// stock has no idea the purchase behind it just changed size (the backend's
+// negative-stock guard in update_purchase only catches a qty REDUCTION big
+// enough to go negative, not a same-day quantity mismatch a manager can't
+// see from here). Hidden from the UI until that's resolved; the edit flow
+// itself (openEditPurchase, the inline form below, handleEditPurchaseSubmit)
+// is left fully in place to re-enable by flipping this back to true.
+const SHOW_EDIT_PURCHASE = false
+
 // en-IN grouping (e.g. 12,45,268) so a large count still reads at a glance
 // instead of running digits together; capped at 3 decimals to match the
 // stock figures' own precision (see round3 in utils/lubricants.js) without
@@ -74,16 +84,18 @@ function formatCount(value) {
 // like Products/Total Stock.
 function InlineStat({ icon: Icon, label, value, accent, onClick }) {
   const theme = INLINE_STAT_THEMES[accent]
-  const Tag = onClick ? 'button' : 'div'
+  const Tag = onClick ? motion.button : motion.div
   return (
     <Tag
       type={onClick ? 'button' : undefined}
       onClick={onClick}
-      className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-slate-200 px-3 py-2 shadow-card ring-1 ${theme.card} ${
-        onClick ? 'cursor-pointer transition-shadow hover:shadow-card-hover' : ''
+      whileHover={{ y: -2, scale: 1.03, transition: { type: 'spring', stiffness: 350, damping: 20 } }}
+      whileTap={onClick ? { scale: 0.97 } : undefined}
+      className={`group flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-slate-200 px-3 py-2 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.card} ${
+        onClick ? 'cursor-pointer' : ''
       }`}
     >
-      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${theme.icon}`}>
+      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110 ${theme.icon}`}>
         <Icon size={14} strokeWidth={2} />
       </div>
       <span className="text-xs font-medium text-slate-500">{label}</span>
@@ -525,8 +537,9 @@ export default function Lubricants() {
                 initial={{ opacity: 0, y: 14 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: Math.min(i * 0.04, 0.4) }}
-                whileHover={{ y: -2 }}
-                className={`flex cursor-pointer flex-col rounded-xl border bg-white p-4 shadow-card ring-1 ${theme.border} ${theme.ring} transition-shadow hover:shadow-card-hover`}
+                whileHover={{ y: -6, scale: 1.02, transition: { type: 'spring', stiffness: 300, damping: 18 } }}
+                whileTap={{ scale: 0.985 }}
+                className={`group flex cursor-pointer flex-col rounded-xl border bg-white p-4 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.border} ${theme.ring}`}
               >
                 {/* Name and action icons are two separate rows now, not one
                     flex row split with justify-between — a long product name
@@ -537,7 +550,7 @@ export default function Lubricants() {
                     tooltip), so the icon row below it always keeps its own
                     full width. */}
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${theme.icon}`}>
+                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6 ${theme.icon}`}>
                     <Droplet size={15} />
                   </div>
                   <AppTooltip title={product.name}>
@@ -847,17 +860,19 @@ export default function Lubricants() {
                       <div key={entry.id} className="flex items-center gap-1.5 text-xs text-slate-500">
                         <CalendarDays size={11} className="shrink-0 text-slate-400" />
                         <span className="flex-1">{t.historyEntry(entry.qty, livePurchaseTarget.unit, entry.cost, formatDate(entry.date))}</span>
-                        <IconButton
-                          type="button"
-                          onClick={() => openEditPurchase(entry)}
-                          disabled={busy}
-                          aria-label={t.editPurchaseTooltip}
-                          title={t.editPurchaseTooltip}
-                          tone="edit"
-                          className="shrink-0"
-                        >
-                          <Pencil size={11} />
-                        </IconButton>
+                        {SHOW_EDIT_PURCHASE ? (
+                          <IconButton
+                            type="button"
+                            onClick={() => openEditPurchase(entry)}
+                            disabled={busy}
+                            aria-label={t.editPurchaseTooltip}
+                            title={t.editPurchaseTooltip}
+                            tone="edit"
+                            className="shrink-0"
+                          >
+                            <Pencil size={11} />
+                          </IconButton>
+                        ) : null}
                         <IconButton
                           type="button"
                           onClick={() => setConfirmDeletePurchaseId(entry.id)}

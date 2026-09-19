@@ -342,6 +342,13 @@ export function deleteOfferCustomer(id) {
 }
 
 // ---------- Offers ----------
+// Fetches the real approved template body (live from Meta, see
+// OfferService.preview_template) with {{1}}/{{2}} already filled in, so the
+// UI can show exactly what the customer will receive before sending.
+export function previewOfferTemplate(templateId, offerVariable) {
+  return apiGet(`/offers/templates/${templateId}/preview?offer_variable=${encodeURIComponent(offerVariable || '')}`)
+}
+
 export function sendOffer(data) {
   return apiAuthPost('/offers/send', data)
 }

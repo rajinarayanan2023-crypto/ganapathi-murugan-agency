@@ -74,8 +74,9 @@ export const FUEL_ENTRY_TEXT = {
     unsavedChangesLeave: 'Leave Anyway',
     todayEntryExistsTitle: "Today's Entry Already Exists",
     todayEntryExistsDesc: "A fuel entry has already been saved for today's date. Edit that record to continue adding or updating today's entry.",
-    todayEntryExistsEdit: 'Edit Record',
-    todayEntryExistsBackToHistory: 'Back to History',
+    todayEntryExistsEdit: (dateStr) => `Edit Today's Record (${dateStr})`,
+    todayEntryExistsBackToHistoryTable: 'Back to History Table',
+    todayEntryExistsChooseAnotherDateForNewEntry: 'Choose Another Date for New Fuel Entry',
     todayRate: {
       sectionTitle: "Today's Fuel Rate",
       hint: 'The retail petrol/diesel pump price — this changes almost daily, so confirm it here each day before entering shifts.',
@@ -358,8 +359,9 @@ export const FUEL_ENTRY_TEXT = {
     unsavedChangesLeave: 'வெளியேறு',
     todayEntryExistsTitle: 'இன்றைய பதிவு ஏற்கனவே உள்ளது',
     todayEntryExistsDesc: 'இன்றைய தேதிக்கான எரிபொருள் பதிவு ஏற்கனவே சேமிக்கப்பட்டுள்ளது. இன்றைய பதிவை தொடர்ந்து சேர்க்க/திருத்த அந்த பதிவைத் திருத்தவும்.',
-    todayEntryExistsEdit: 'பதிவைத் திருத்து',
-    todayEntryExistsBackToHistory: 'வரலாற்றுக்குத் திரும்பு',
+    todayEntryExistsEdit: (dateStr) => `இன்றைய பதிவைத் திருத்து (${dateStr})`,
+    todayEntryExistsBackToHistoryTable: 'பதிவு வரலாற்று அட்டவணைக்குத் திரும்பு',
+    todayEntryExistsChooseAnotherDateForNewEntry: 'புதிய எரிபொருள் பதிவிற்கு வேறு தேதியைத் தேர்ந்தெடு',
     todayRate: {
       sectionTitle: 'இன்றைய எரிபொருள் விகிதம்',
       hint: 'சில்லறை பெட்ரோல்/டீசல் விகிதம் — இது கிட்டத்தட்ட தினமும் மாறும், எனவே ஷிப்ட்களை உள்ளிடும் முன் ஒவ்வொரு நாளும் இங்கே உறுதிப்படுத்தவும்.',

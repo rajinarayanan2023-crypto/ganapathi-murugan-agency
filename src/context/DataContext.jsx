@@ -40,6 +40,7 @@ import {
   updateOfferCustomer as apiUpdateOfferCustomer,
   deleteOfferCustomer as apiDeleteOfferCustomer,
   sendOffer as apiSendOffer,
+  previewOfferTemplate as apiPreviewOfferTemplate,
   getOfferHistory,
   getAttendanceMonth,
   markAttendance as apiMarkAttendance,
@@ -1321,6 +1322,11 @@ export function DataProvider({ children }) {
     [normalizeOfferSend],
   )
 
+  // Stateless — no context state to update, just forwards to the backend
+  // (which fetches the real approved template body live from Meta) so
+  // Offers.jsx can show exactly what a customer will receive before sending.
+  const previewOfferTemplate = useCallback((templateId, offerVariable) => apiPreviewOfferTemplate(templateId, offerVariable), [])
+
   // ---------- Expenses ----------
   // One record per day, holding however many line items ({id, label, amount})
   // the manager logged that day — API shape already matches the UI's exactly
@@ -1443,6 +1449,7 @@ export function DataProvider({ children }) {
       offerHistoryLoading,
       offerHistoryError,
       sendOffer,
+      previewOfferTemplate,
       expenseDays,
       expensesLoading,
       expensesError,
@@ -1522,6 +1529,7 @@ export function DataProvider({ children }) {
       offerHistoryLoading,
       offerHistoryError,
       sendOffer,
+      previewOfferTemplate,
       expenseDays,
       expensesLoading,
       expensesError,
