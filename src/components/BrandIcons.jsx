@@ -18,13 +18,3 @@ export function WhatsAppIcon({ size = 18, className = '' }) {
     </svg>
   )
 }
-
-export function buildWhatsAppLink(phone, message) {
-  const digits = (phone || '').replace(/\D/g, '')
-  const withCountryCode = digits.length === 10 ? `91${digits}` : digits
-  return `https://wa.me/${withCountryCode}?text=${encodeURIComponent(message)}`
-}
-
-export function openWhatsAppChat(phone, message) {
-  window.open(buildWhatsAppLink(phone, message), '_blank', 'noopener,noreferrer')
-}

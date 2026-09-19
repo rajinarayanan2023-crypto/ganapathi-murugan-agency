@@ -14,10 +14,8 @@ import {
   Paperclip,
   StickyNote,
   Save,
-  CloudUpload,
   AlertTriangle,
   TrendingUp,
-  Trash2,
   ExternalLink,
 } from 'lucide-react'
 import {
@@ -41,10 +39,10 @@ import {
   PAYMENT_METHOD_OPTIONS,
 } from '../utils/fuelCalc.js'
 import { formatCurrency, formatDate, formatDateTime, formatEmployeeName, todayISO } from '../utils/format.js'
-import { currentRate, purchaseBatchesByCost, sortedPriceHistory, stockAvailableAtRate, availableAtRateBreakdown, round3 } from '../utils/lubricants.js'
+import { purchaseBatchesByCost, lastPurchaseOf, stockAvailableAtCost, availableAtCostBreakdown, round3 } from '../utils/lubricants.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
 import { prepareBillFile } from '../utils/fileValidation.js'
-import { Input, Select, Textarea, IconButton, PrimaryButton, SecondaryButton } from './FormControls.jsx'
+import { Input, Select, Textarea, IconButton, PrimaryButton } from './FormControls.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import { FullPageLoader } from './Loader.jsx'
 import AppTooltip from './AppTooltip.jsx'
@@ -203,11 +201,11 @@ function isReadingClosingMissing(reading) {
 // nothing at or past one billion. Every reading input here is a plain
 // type="number" with no matching client-side cap, so a value that crosses
 // that line sails through every on-screen check same as excess decimal
-// precision did (see toApiNum in DataContext.jsx) and only 422s once
-// Save Entry actually sends it (a draft never reaches the backend at all —
-// see PumpDayEditor's localStorage persistence) — a bare "Validation error." toast
-// with no field highlighted, and the edit that triggered it never actually
-// saved. Checked as its own thing rather than folded into toApiNum's
+// precision did (see toApiNum in DataContext.jsx) and only 422s once Save
+// Entry actually sends it — nothing reaches the backend before that
+// deliberate click — a bare "Validation error." toast with no field
+// highlighted, and the edit that triggered it never actually saved.
+// Checked as its own thing rather than folded into toApiNum's
 // rounding, since a value this size isn't noise to clean up quietly — it's
 // almost always a mistyped extra digit, so it has to stop the manager here
 // instead.
@@ -314,7 +312,7 @@ function findIncompleteOilRow(oilRows, caneOilRows) {
 function oilRowAvailable(row, lubricants, committedCount) {
   const product = (lubricants || []).find((p) => p.id === row.productId)
   if (!product) return null
-  const available = row.stockRate ? stockAvailableAtRate(product, row.stockRate) : round3(Number(product.stock) || 0)
+  const available = row.stockRate ? stockAvailableAtCost(product, row.stockRate) : round3(Number(product.stock) || 0)
   return available + (Number(committedCount) || 0)
 }
 
@@ -378,18 +376,18 @@ function duplicatePaymentLineIds(payments) {
   return duplicates
 }
 
-// Every rate the product has ever sold at (its price history), most recent
-// first and de-duplicated — the manager picks which one applies to this
-// sale instead of typing a number freely.
-function priceOptions(product) {
-  const seen = new Set()
-  const opts = []
-  for (const entry of [...sortedPriceHistory(product)].reverse()) {
-    if (seen.has(entry.rate)) continue
-    seen.add(entry.rate)
-    opts.push(entry.rate)
-  }
-  return opts
+// A field whose real value is exactly 0 used to render the literal digit
+// "0" inside the input, with the same visual weight as any other typed
+// value — so replacing it meant deleting that "0" first before typing the
+// real reading/amount, every single time, since most readings/payment
+// lines genuinely start at 0. Showing 0 as a placeholder instead (the field
+// looks empty, "0" greyed out, same as the already-blank case) means typing
+// straight over it just works. Purely a display choice for the `value` prop
+// handed to the input — onChange still receives whatever's actually typed,
+// and blank is saved as 0 exactly as before, so nothing about what gets
+// saved changes.
+function zeroAsPlaceholder(value) {
+  return value === '' || value == null || Number(value) === 0 ? '' : value
 }
 
 // Small chip row showing how many units of the selected product were bought
@@ -422,7 +420,7 @@ function PurchaseBatches({ t, product }) {
 // could get lost the instant it also re-clamped the count.
 function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, isIncomplete, committedCount }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
-  const available = selectedProduct ? (rate ? stockAvailableAtRate(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
+  const available = selectedProduct ? (rate ? stockAvailableAtCost(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
 
   // A FINAL shift already had this exact row's count subtracted from the
   // product's stock the moment it was finalized (see _apply_oil_stock on the
@@ -440,30 +438,30 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
   // first place — this component doesn't need to know draft vs final at all.
   const effectiveAvailable = available == null ? null : available + (Number(committedCount) || 0)
 
-  // Same breakdown stockAvailableAtRate() itself used to reach `available` —
+  // Same breakdown stockAvailableAtCost() itself used to reach `available` —
   // read fresh from the live product/rate every render, so the tooltip can
   // never show a number that disagrees with the clamp actually applied above.
   const availableBreakdown = selectedProduct
     ? rate
-      ? availableAtRateBreakdown(selectedProduct, rate)
-      : { available, totalStock: Number(selectedProduct.stock) || 0, singleRate: true }
+      ? availableAtCostBreakdown(selectedProduct, rate)
+      : { available, totalStock: Number(selectedProduct.stock) || 0, singleBatch: true }
     : null
   const availableTooltipRows = availableBreakdown
-    ? availableBreakdown.singleRate || availableBreakdown.rateNotFound
+    ? availableBreakdown.singleBatch || availableBreakdown.costNotFound
       ? [{ label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` }]
       : [
-          { label: t.purchasedInPeriodLabel, value: `${availableBreakdown.purchasedInPeriod} ${selectedProduct.unit}` },
+          { label: t.purchasedInPeriodLabel, value: `${availableBreakdown.purchasedAtCost} ${selectedProduct.unit}` },
           { label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` },
         ]
     : []
   const availableTooltipFormula = availableBreakdown
-    ? availableBreakdown.singleRate
+    ? availableBreakdown.singleBatch
       ? `${t.currentStockLabel} (${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
-      : availableBreakdown.rateNotFound
+      : availableBreakdown.costNotFound
         ? t.rateNotInHistoryNote
-        : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedInPeriod}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
+        : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedAtCost}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
     : ''
-  const availableTooltipNote = availableBreakdown && !availableBreakdown.singleRate && !availableBreakdown.rateNotFound ? t.availableApproxNote : undefined
+  const availableTooltipNote = availableBreakdown && !availableBreakdown.singleBatch && !availableBreakdown.costNotFound ? t.availableApproxNote : undefined
   const isOverStock = isOilCountOverStock(count, effectiveAvailable)
   // isIncomplete just means "this row needs attention" — only actually
   // highlight whichever of Rate/Count is the one still blank, not both, when
@@ -512,9 +510,9 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             className={`text-xs ${isDuplicate || missingRate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           >
             <option value="">{t.selectRate}</option>
-            {priceOptions(selectedProduct).map((r) => (
-              <option key={r} value={r}>
-                {formatCurrency(r)}
+            {purchaseBatchesByCost(selectedProduct).map((b) => (
+              <option key={b.cost} value={b.cost}>
+                {formatCurrency(b.cost)}
               </option>
             ))}
           </Select>
@@ -571,12 +569,11 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
 }
 
 // One employee's shift — a fully independent, separately-saved record.
-// There's no "Save as Draft" button: any edit here quietly persists itself
-// (debounced) into this browser's localStorage (see PumpDayEditor's `cards`
-// persistence effect below), so switching pages or refreshing never loses
-// progress — but never into the database. "Save Entry" stays a deliberate
-// action — it's the only thing that ever reaches the backend, the only
-// thing that finalizes a shift (applies attendance/credit/stock effects).
+// There's no draft/autosave of any kind any more: nothing is persisted
+// anywhere (not the database, not this browser) until a deliberate "Save
+// Entry" click. That's the only thing that ever reaches the backend, the
+// only thing that finalizes a shift (applies attendance/credit/stock
+// effects) — and, now, the only way anything typed here survives at all.
 const ShiftCard = forwardRef(function ShiftCard(
   {
     t,
@@ -589,11 +586,8 @@ const ShiftCard = forwardRef(function ShiftCard(
     unavailableEmployeeIds,
     creditCustomers,
     lubricants,
-    onSaveDraft,
     onSaveFinal,
     savingFinal,
-    onDiscardDraft,
-    suppressFlushRef,
   },
   ref,
 ) {
@@ -620,7 +614,6 @@ const ShiftCard = forwardRef(function ShiftCard(
   const [openDenomId, setOpenDenomId] = useState(null)
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [shakeKey, setShakeKey] = useState(0)
-  const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // 'idle' | 'pending' | 'saved'
   const [uploadingBill, setUploadingBill] = useState(false)
   // Id of an uploaded bill the manager clicked the X on — removal (below)
   // deletes the real S3 object right away, not just this local list entry,
@@ -644,10 +637,10 @@ const ShiftCard = forwardRef(function ShiftCard(
   // edit's count is ever compared against the ORIGINAL committed amount.
   const committedOilRowsRef = useRef(value.oilRows)
   const committedCaneOilRowsRef = useRef(value.caneOilRows)
-  // A draft never reserved anything against real stock in the first place
-  // (see PumpDayEditor's handleSaveDraft/handleSaveFinal split — only a
-  // final save applies oil-stock side effects), so this stays 0 for one and
-  // only ever adds back a final shift's own already-committed share.
+  // A not-yet-final shift never reserved anything against real stock in the
+  // first place (only a final save applies oil-stock side effects), so this
+  // stays 0 for one and only ever adds back a final shift's own
+  // already-committed share.
   function committedOilCountFor(rowId) {
     if (value.status !== 'final') return 0
     return (
@@ -686,115 +679,6 @@ const ShiftCard = forwardRef(function ShiftCard(
     row?.querySelector('input, button, select')?.focus()
     setPendingFocusId(null)
   }, [pendingFocusId])
-
-  // Snapshot of value._editGen (see updateCard's comment in the parent) as
-  // of the last time this effect actually scheduled a save, or initially —
-  // NOT plain object identity: withCarriedOpenings hands a shift a brand
-  // new object reference the instant an EARLIER shift's closing changes
-  // (its derived Opening tracks that live), even though nobody touched
-  // THIS shift. Comparing raw `value` there fired a spurious autosave for
-  // an untouched shift — including resurrecting one just discarded, the
-  // moment an earlier shift was edited again. _editGen only moves on a
-  // genuine edit to this specific card, so that's what's compared instead.
-  // Starting from value._editGen (rather than a one-shot boolean flag)
-  // still survives React StrictMode's dev-only double invocation of
-  // effects, which would otherwise consume a "skip the first run" flag on
-  // its extra invocation and fire a phantom save on mount.
-  const lastSeenGen = useRef(value._editGen)
-
-  // Lets a manual save (handleSaveFinalClick below) cancel a pending
-  // autosave outright, instead of leaving its setTimeout free to fire a
-  // draft PUT for the same fuel entry moments after (or during) the manual
-  // save's own PUT — two concurrent writes to the same entry each try to
-  // replace its Fuel_Readings rows, and the second one's INSERT can land
-  // before the first's DELETE is visible to it, hitting
-  // uq_fuel_readings_entry_type_nozzle.
-  const autoSaveTimerRef = useRef(null)
-
-  // The edit this card would still save once its 900ms pause elapses — kept
-  // outside the timer itself so a true unmount (see below) can tell "there's
-  // an edit still waiting to go out" from "nothing pending right now",
-  // without needing to inspect the timer handle.
-  const pendingValueRef = useRef(null)
-
-  // Set true exactly once, the instant this ShiftCard instance is actually
-  // torn down — never on a plain re-render. An empty deps array means this
-  // effect's cleanup only ever runs on unmount, which is what makes it a
-  // reliable signal (the debounce effect below re-runs on every edit, so its
-  // OWN cleanup can't by itself tell "superseded by the next edit" apart
-  // from "the page navigated away mid-edit").
-  const isUnmountingRef = useRef(false)
-  useEffect(() => () => { isUnmountingRef.current = true }, [])
-
-  // Debounced autosave — waits for a pause in typing before persisting, and
-  // never fires on mount (that would just re-save data that's already
-  // exactly as loaded) or once the shift has been finalized.
-  useEffect(() => {
-    if (value.status === 'final') return
-    if (value._editGen === lastSeenGen.current) return
-    lastSeenGen.current = value._editGen
-    // A reading past the API's Decimal cap (see isReadingValueTooLarge) can
-    // never actually be saved — sending it 422s. Unlike an inconsistent-but-
-    // plausible closing/opening pair, drafts have no business trying this
-    // one anyway: skip scheduling until it's fixed, same as a finalized
-    // shift skips autosaving at all, rather than firing a save that's
-    // guaranteed to fail and surfaces nothing the manager can see why.
-    if (findInvalidReading(value, fuelKeys)?.reason === 'tooLarge') {
-      pendingValueRef.current = null
-      return
-    }
-    setAutoSaveStatus('pending')
-    pendingValueRef.current = value
-    const timer = setTimeout(() => {
-      autoSaveTimerRef.current = null
-      pendingValueRef.current = null
-      onSaveDraft(value)
-      setAutoSaveStatus('saved')
-    }, 900)
-    autoSaveTimerRef.current = timer
-    return () => {
-      clearTimeout(timer)
-      // A manager who types a closing reading and then immediately navigates
-      // away (switches pump/date, or leaves the page entirely) before the
-      // 900ms pause elapses used to lose that edit outright: this cleanup
-      // only ever cancelled the timer, so the draft PUT/POST that would have
-      // carried it never went out, and the field silently reverted to
-      // whatever was last actually saved. Deferring the check to a
-      // microtask — rather than reading isUnmountingRef synchronously here —
-      // sidesteps having to know whether THIS cleanup or the isUnmountingRef
-      // effect's own cleanup runs first in React's unmount pass: by the time
-      // a microtask runs, every cleanup for this commit has already
-      // completed, so the flag is settled either way.
-      queueMicrotask(() => {
-        if (!isUnmountingRef.current) return // just superseded by a newer edit
-        if (pendingValueRef.current !== value) return // a final save already claimed/cleared this edit
-        // Discarding or removing this exact shift deliberately throws its
-        // edit away — flushing here would silently resurrect the very draft
-        // the manager just asked to delete, right after its DELETE request.
-        if (suppressFlushRef?.current?.has(value.localOnlyId)) return
-        pendingValueRef.current = null
-        onSaveDraft(value)
-      })
-    }
-    // Deliberately NOT `[value]`: the parent's own reconciliation effect
-    // (merging in real server data once fuelEntries loads) can attach a new
-    // id/status via a plain bookkeeping patch that — same as
-    // withCarriedOpenings elsewhere — hands this card a brand new object
-    // reference without touching _editGen. If a LATER edit's own 900ms timer
-    // was still pending at that
-    // exact moment, depending on `value` itself made that bookkeeping-only
-    // reference change look like "the effect's inputs changed": React would
-    // tear down and rebuild it, and since _editGen hadn't actually moved the
-    // rebuilt run always took the early-return branch, cancelling the
-    // pending save with nothing left to replace it — silently dropping
-    // whatever the manager typed next, with no further edit forthcoming to
-    // ever reschedule it. Depending on just the two primitives that this
-    // effect's own logic actually branches on means a bookkeeping patch
-    // that changes neither one no longer touches this effect at all, and
-    // the pending timer (and its captured `value` closure, already holding
-    // everything genuinely typed so far) survives to fire on schedule.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value._editGen, value.status])
 
   const packetProducts = (lubricants || []).filter((p) => p.packaging !== 'cane')
   const caneProducts = (lubricants || []).filter((p) => p.packaging === 'cane')
@@ -951,7 +835,7 @@ const ShiftCard = forwardRef(function ShiftCard(
     const product = (lubricants || []).find((p) => p.id === productId)
     onChange({
       ...value,
-      oilRows: value.oilRows.map((row) => (row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '', stockCount: '' } : row)),
+      oilRows: value.oilRows.map((row) => (row.id === id ? { ...row, productId, stockRate: product ? lastPurchaseOf(product)?.cost ?? '' : '', stockCount: '' } : row)),
     })
   }
 
@@ -968,7 +852,7 @@ const ShiftCard = forwardRef(function ShiftCard(
     onChange({
       ...value,
       caneOilRows: value.caneOilRows.map((row) =>
-        row.id === id ? { ...row, productId, stockRate: product ? currentRate(product) : '', stockCount: '' } : row,
+        row.id === id ? { ...row, productId, stockRate: product ? lastPurchaseOf(product)?.cost ?? '' : '', stockCount: '' } : row,
       ),
     })
   }
@@ -998,18 +882,6 @@ const ShiftCard = forwardRef(function ShiftCard(
   // create()/update() in fuel_entry_service.py) to bring it back.
   const shiftBillsMissing = false // attemptedSubmit && (!value.bills || value.bills.length === 0)
   const shiftEmployeeMissing = attemptedSubmit && !value.employeeId
-  const isDraft = value.status === 'draft'
-  // A blank/just-discarded shift is internally `status: 'draft'` too (that's
-  // what makes it autosave-eligible) — but drafts are now local-only (see
-  // PumpDayEditor's localStorage persistence) and never acquire a server id
-  // until Save Entry succeeds, so gating this on `value.id` alone left
-  // Discard Draft permanently disabled for exactly the shifts that most
-  // need it: a locally-typed, never-saved draft. `_dirty` is what actually
-  // means "there's real unsaved content sitting here" — `value.id` is kept
-  // as a second, OR'd condition purely for a legacy draft row that was
-  // autosaved to the server before that change and hasn't been touched
-  // since (so `_dirty` alone wouldn't catch it).
-  const hasDraftToDiscard = isDraft && (Boolean(value.id) || Boolean(value._dirty))
   // Same product at the same rate should only ever be one row — checked
   // separately per section (a pocket-oil duplicate never flags a cane-oil row).
   const duplicateOilRowIds = useMemo(() => duplicateRowIds(value.oilRows), [value.oilRows])
@@ -1182,16 +1054,6 @@ const ShiftCard = forwardRef(function ShiftCard(
       return false
     }
     setAttemptedSubmit(true)
-    // A pending autosave firing during/after this save's own PUT is exactly
-    // the concurrent-write race described above — cancel it and mark this
-    // value's generation as already "seen" so the autosave effect doesn't
-    // reschedule one right after, either.
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current)
-      autoSaveTimerRef.current = null
-    }
-    pendingValueRef.current = null
-    lastSeenGen.current = value._editGen
     return (await onSaveFinal(value)) !== false
   }
 
@@ -1229,29 +1091,18 @@ const ShiftCard = forwardRef(function ShiftCard(
     <div className="rounded-lg border border-slate-200 bg-white/80 p-4" onKeyDown={handleCardKeyDown}>
       <div className="mb-3.5 flex flex-wrap items-center gap-2">
         {value.id ? (
-          isDraft ? (
-            <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-600" title={tRoot.editingDraft}>
-              {tRoot.draftBadge}
-            </span>
-          ) : (
-            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-600">{t.savedLabel}</span>
-          )
+          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-600">{t.savedLabel}</span>
         ) : (
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">{t.unsavedLabel}</span>
+          <span className="shrink-0 text-xs font-semibold text-slate-600">{t.employeeNameLabel}</span>
         )}
         {/* value.id + createdByName — a genuinely saved shift whose creator
             actually resolved to a real Users row (see attach_actor_names on
             the backend; null if that account's since been deleted). Purely
-            informational, same as the Saved/Draft badge next to it — never
-            read by any total/calculation, which still come solely from
+            informational, same as the Saved badge next to it — never read
+            by any total/calculation, which still come solely from
             utils/fuelCalc.js. */}
         {value.id && value.createdByName ? (
           <span className="text-xs text-slate-400">{t.createdByLabel(value.createdByName, formatDateTime(value.createdAt))}</span>
-        ) : null}
-        {value.status !== 'final' && autoSaveStatus === 'pending' ? (
-          <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
-            <CloudUpload size={13} className="animate-pulse" /> {tRoot.autoSaving}
-          </span>
         ) : null}
         <motion.div
           ref={employeeFieldRef}
@@ -1275,19 +1126,6 @@ const ShiftCard = forwardRef(function ShiftCard(
           </Select>
           {shiftEmployeeMissing ? <span className="mt-1 block text-xs font-medium text-rose-500">{tRoot.errorEmployeeRequired}</span> : null}
         </motion.div>
-        <SecondaryButton
-          type="button"
-          onClick={onDiscardDraft}
-          disabled={!hasDraftToDiscard || uploadingBill}
-          title={hasDraftToDiscard ? undefined : tRoot.discardDraftDisabledHint}
-          className={
-            hasDraftToDiscard
-              ? '!border-rose-300 !bg-rose-50 !text-rose-600 hover:!border-rose-400 hover:!bg-rose-100'
-              : '!border-slate-200 !bg-slate-50 !text-slate-400'
-          }
-        >
-          <Trash2 size={14} /> {tRoot.discardDraftButton}
-        </SecondaryButton>
       </div>
 
       <div className="mb-3.5 border-b border-slate-200 pb-3.5">
@@ -1380,7 +1218,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                         <Input
                           type="number"
                           step="any"
-                          value={reading.opening}
+                          value={zeroAsPlaceholder(reading.opening)}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'opening', e.target.value)}
                           placeholder="0"
                           className={`px-2.5 py-2 ${tooLargeField('opening') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
@@ -1389,7 +1227,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                         <Input
                           type="number"
                           step="any"
-                          value={closingRaw}
+                          value={zeroAsPlaceholder(closingRaw)}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'closing', e.target.value)}
                           placeholder="0"
                           className={`px-2.5 py-2 ${
@@ -1410,7 +1248,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                         <Input
                           type="number"
                           step="any"
-                          value={reading.testing}
+                          value={zeroAsPlaceholder(reading.testing)}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'testing', e.target.value)}
                           placeholder="0"
                           className={`px-2.5 py-2 ${tooLargeField('testing') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
@@ -1419,7 +1257,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                         <Input
                           type="number"
                           step="any"
-                          value={reading.rate}
+                          value={zeroAsPlaceholder(reading.rate)}
                           onChange={(e) => updateReading(fuelKey, nozzleKey, 'rate', e.target.value)}
                           placeholder="0.00"
                           className={`px-2.5 py-2 ${tooLargeField('rate') ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
@@ -1774,7 +1612,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                     <Input
                       type="number"
                       step="any"
-                      value={p.amount}
+                      value={zeroAsPlaceholder(p.amount)}
                       onChange={(e) => updatePaymentLine(p.id, 'amount', e.target.value)}
                       placeholder="0"
                       title={isBigCash ? t.bigCashHint : t.creditAmountHint}
@@ -2059,7 +1897,7 @@ const ShiftCard = forwardRef(function ShiftCard(
         </div>
       </motion.div>
       {/* Blocks the whole page (not just this card's file input) — a bill
-          upload takes long enough on a slow connection that Save/Discard
+          upload takes long enough on a slow connection that Save Entry
           elsewhere on the page being disabled isn't obvious enough on its
           own; this makes it unmistakable that nothing is clickable yet. */}
       {uploadingBill ? <FullPageLoader label={tRoot.uploadingBillPrompt} /> : null}
@@ -2075,28 +1913,6 @@ const ShiftCard = forwardRef(function ShiftCard(
     </div>
   )
 })
-
-// A not-yet-finalized shift used to autosave to the backend on every pause
-// in typing — every keystroke's worth of Fuel_Readings/Payment_Lines rows
-// round-tripping through Postgres, and a genuinely abandoned draft leaving a
-// real row sitting in the database that looked like data needing action.
-// Only a deliberate "Save Entry" click should ever reach the database now
-// (see handleSaveDraft/handleSaveFinal below) — an in-progress shift instead
-// lives here, in the browser, so a refresh still doesn't lose it.
-const DRAFT_STORAGE_PREFIX = 'ga-fuel-pump:draftCards:'
-
-function draftStorageKey(pumpKey, date) {
-  return `${DRAFT_STORAGE_PREFIX}${pumpKey}:${date}`
-}
-
-function loadLocalDraftCards(pumpKey, date) {
-  try {
-    const raw = localStorage.getItem(draftStorageKey(pumpKey, date))
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
 
 const PumpDayEditor = forwardRef(function PumpDayEditor(
   {
@@ -2121,94 +1937,72 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   const { fuelEntries, fuelEntriesLoading, addFuelEntry, updateFuelEntry, deleteFuelEntry } = useData()
   const navigate = useNavigate()
 
+  // status: 'final' only — an incomplete/still-being-typed reading (or a
+  // legacy status:'draft' row from before drafts were removed from this
+  // page) must never be what tomorrow's Shift 1 opens from. Only a reading
+  // the manager actually finished and saved counts as "where the meter
+  // really left off."
   const priorEntries = useMemo(
-    () => sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date < date)),
+    () => sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date < date && e.status === 'final')),
     [fuelEntries, pumpKey, date],
   )
 
   // A brand new Shift 1 pre-fills its opening reading from the pump's last
-  // saved shift (whichever earlier day that was) — Shift 2+ never needs this
-  // since withCarriedOpenings always derives their opening live from the
-  // card right before them in the same array. Shared by the initial state
-  // below and by "Discard Draft" rebuilding a card from scratch.
+  // FINAL saved shift (whichever earlier day that was), or '0' if there's no
+  // final record at all yet — never blank, and never anything short of the
+  // real DB value. Shift 2+ never needs this since withCarriedOpenings
+  // always derives their opening live from the card right before them in
+  // the same array. Shared by the initial state below.
+  function shift1CarriedOpenings() {
+    const last = priorEntries[priorEntries.length - 1]
+    const openings = {}
+    for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
+      openings[fuelKey] = {
+        nozzle1: last?.[fuelKey]?.nozzle1?.closing ?? '0',
+        nozzle2: last?.[fuelKey]?.nozzle2?.closing ?? '0',
+      }
+    }
+    return openings
+  }
+
   function blankShiftEntry(shiftNumber) {
     const blank = emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)
     if (shiftNumber === 1) {
-      const last = priorEntries[priorEntries.length - 1]
-      if (last) {
-        for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
-          blank[fuelKey] = {
-            nozzle1: { ...blank[fuelKey].nozzle1, opening: last[fuelKey]?.nozzle1?.closing ?? '' },
-            nozzle2: { ...blank[fuelKey].nozzle2, opening: last[fuelKey]?.nozzle2?.closing ?? '' },
-          }
+      const openings = shift1CarriedOpenings()
+      for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
+        blank[fuelKey] = {
+          nozzle1: { ...blank[fuelKey].nozzle1, opening: openings[fuelKey].nozzle1 },
+          nozzle2: { ...blank[fuelKey].nozzle2, opening: openings[fuelKey].nozzle2 },
         }
       }
     }
     return blank
   }
 
+  // Nothing is persisted anywhere (backend or browser) until a deliberate
+  // "Save Entry" click — so the only starting point for this pump+day is
+  // whatever the server already has. Nothing saved yet at all starts from a
+  // single blank Shift 1; refreshing or navigating away before Save Entry
+  // simply loses whatever was mid-typing, same as any plain form.
   const [cards, setCards] = useState(() => {
     const existing = sortPumpEntries(fuelEntries.filter((e) => e.pumpKey === pumpKey && e.date === date))
-    // Local storage only ever holds genuinely unsaved drafts (see the
-    // persistence effect below, which drops a card the instant it's
-    // finalized) — so anything read back here is safe to treat as still
-    // in-progress, never a stale copy of something already saved.
-    const localDrafts = (loadLocalDraftCards(pumpKey, date) || []).filter((c) => c.status !== 'final')
-    if (existing.length > 0) {
-      const existingCards = existing.map((e) => ({ ...e }))
-      // A shift slot the server has nothing for yet (e.g. a 2nd shift the
-      // manager was mid-typing, never saved) still needs its own card —
-      // otherwise it's silently dropped the moment ANY other shift on this
-      // same pump+day already has server data.
-      const coveredShiftNumbers = new Set(existingCards.map((c) => c.shiftNumber))
-      const extraLocalDrafts = localDrafts.filter((c) => !coveredShiftNumbers.has(c.shiftNumber))
-      return [...existingCards, ...extraLocalDrafts].sort((a, b) => a.shiftNumber - b.shiftNumber)
-    }
-    // Nothing saved on the server for this pump+day at all — an in-progress
-    // shift the manager was mid-typing, before this same browser's last
-    // refresh, lives only here now. The reconciliation effect below still
-    // overlays real server data per shift slot once fuelEntries loads,
-    // exactly as if this had been a server-seeded draft.
-    return localDrafts.length > 0 ? localDrafts : [blankShiftEntry(1)]
+    return existing.length > 0 ? existing.map((e) => ({ ...e })) : [blankShiftEntry(1)]
   })
-
-  // Mirrors `cards` into localStorage on every change — this, not a network
-  // call, is now the entirety of "autosave" for a not-yet-finalized shift
-  // (see handleSaveDraft below). Deliberately drops any card the instant
-  // it's finalized (status: 'final') rather than mirroring it too: once
-  // something is safely saved, the database is its source of truth, not the
-  // browser — keeping a local copy around would let it resurface as a stale
-  // "Saved" ghost if that record is later deleted somewhere else (the
-  // History list, say) while this browser was never told. Clears the key
-  // entirely once nothing on this pump+day is left to protect.
-  useEffect(() => {
-    try {
-      const draftsOnly = cards.filter((c) => c.status !== 'final')
-      if (draftsOnly.length > 0) {
-        localStorage.setItem(draftStorageKey(pumpKey, date), JSON.stringify(draftsOnly))
-      } else {
-        localStorage.removeItem(draftStorageKey(pumpKey, date))
-      }
-    } catch {
-      // Storage full or unavailable (e.g. private browsing) — the form still
-      // works for this session, it just won't survive a refresh.
-    }
-  }, [pumpKey, date, cards])
 
   // fuelEntries now loads from the API asynchronously — a hard refresh (or
   // just navigating here fast) can mount this before that fetch resolves,
   // so `cards`' lazy initializer above may have seeded a blank shift even
-  // though a real draft/final entry for it already exists on the server.
-  // Once loading finishes, merge that real data in per SHIFT SLOT — not
-  // all-or-nothing — using the same _editGen marker updateCard sets (see
+  // though a real entry for it already exists on the server (including a
+  // legacy status:'draft' row saved before drafts were removed from this
+  // page). Once loading finishes, merge that real data in per SHIFT SLOT —
+  // not all-or-nothing — using the same _editGen marker updateCard sets (see
   // its comment): a slot the manager has genuinely typed into is left
   // exactly as-is, but an untouched slot always gets swapped for the real
   // server row. Getting this merge wrong the OTHER way (skipping it
-  // entirely the moment ANY slot on this pump had been touched) is exactly
-  // what let a stale, still-blank slot autosave a CREATE for a shift that
-  // already exists on the server — surfacing as "A shift entry already
-  // exists for this date, pump, and shift number" despite the manager
-  // never touching Save Entry, because the silent draft autosave hit it.
+  // entirely the moment ANY slot on this pump had been touched) risks a
+  // stale, still-blank slot's own Save Entry click sending a CREATE for a
+  // shift that already exists on the server, surfacing as "A shift entry
+  // already exists for this date, pump, and shift number".
   const resyncedAfterLoadRef = useRef(false)
   useEffect(() => {
     if (fuelEntriesLoading || resyncedAfterLoadRef.current) return
@@ -2273,21 +2067,15 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
 
   const [confirmRemoveIndex, setConfirmRemoveIndex] = useState(null)
   const [removing, setRemoving] = useState(false)
-  // Separate from confirmRemoveIndex above: removing a shift (via the 2nd/
-  // 3rd shift toggle) drops the tab entirely; discarding a draft keeps the
-  // tab but wipes it back to a blank entry — Shift 1 can't be toggled off,
-  // so this is the only way to reset it if a draft was typed by mistake.
-  const [confirmDiscardIndex, setConfirmDiscardIndex] = useState(null)
-  const [discarding, setDiscarding] = useState(false)
   // Only one shift's full form (readings, payments, bills...) shows at a
   // time — a "Shift 1 / Shift 2 / Shift 3" tab strip switches between them,
   // instead of stacking every shift's whole form one below the other.
   const [activeShiftIndex, setActiveShiftIndex] = useState(0)
   // Switching to another shift tab leaves the current one's unsaved edits
-  // sitting untouched (nothing is lost — see the localStorage persistence
-  // above) — "Leave Anyway" just switches, without saving or discarding
-  // anything. "Save" (see handleSaveAndSwitchShift below) actually runs the
-  // real Save Entry flow for whichever shift(s) on this pump are dirty.
+  // sitting untouched in memory (nothing about them changes) — "Leave
+  // Anyway" just switches, without saving anything. "Save" (see
+  // handleSaveAndSwitchShift below) actually runs the real Save Entry flow
+  // for whichever shift(s) on this pump are dirty.
   const [pendingShiftIndex, setPendingShiftIndex] = useState(null)
   function requestSwitchShift(index) {
     if (index === activeShiftIndex) return
@@ -2355,17 +2143,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
 
   // Gates the "Save this shift before moving on?" prompts (both
   // requestSwitchShift's own shift-tab guard above and pumpDirty/
-  // onDirtyChange just below) on top of raw `_dirty` — a card can already be
-  // `_dirty: true`
-  // on mount with nothing to do with THIS visit: a genuinely abandoned
-  // draft (2nd/3rd shift, say) from a past session, sitting in localStorage,
-  // resurfaces alongside an unrelated already-saved shift the manager only
-  // opened to look at. Nagging about content the manager never touched or
-  // even saw this time just trains them to click through the prompt without
-  // reading it. Nothing about the draft itself changes — it's exactly as
-  // recoverable/discardable as before (see hasDraftToDiscard, which still
-  // reads the raw `_dirty` on purpose) — this only delays the PROMPT until a
-  // real edit actually happens in this browsing session. Set once true and
+  // onDirtyChange just below) on top of raw `_dirty`. Set once true and
   // never reset for the life of this component; a ref rather than state
   // since it's read at click/save time, never rendered on its own.
   const hasEditedThisSessionRef = useRef(false)
@@ -2412,37 +2190,22 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     if (ok) navigate('/lubricants')
   }
 
-  // handleSaveDraft below is invoked from a ShiftCard debounce timer (or its
-  // unmount-flush) that can fire well after the render that produced the
-  // specific handleSaveDraft/buildPayload closure it holds — this shift's
-  // OWN previous save resolving and attaching an id, or an unrelated edit
-  // elsewhere recomputing effectiveCards, both happen in between. Reading
-  // straight off `cards`/`effectiveCards` in that closure would use however
-  // stale THAT render was; a plain ref, reassigned every render (not a
-  // state update — this never itself needs to trigger a re-render), always
-  // has this shift's true latest id/status/content by the time it's read,
-  // no matter which render's closure ends up calling it.
-  const latestCardsRef = useRef({ cards, effectiveCards })
-  latestCardsRef.current = { cards, effectiveCards }
 
-  // _editGen is bumped on every genuine edit to this specific card (typing,
-  // discard-reset) — ShiftCard's autosave effect keys off THIS, not object
-  // identity, specifically because withCarriedOpenings (below) hands every
-  // later shift a brand-new object reference the instant an EARLIER shift's
+  // _editGen is bumped on every genuine edit to this specific card (typing)
+  // — the reconciliation effect above keys off THIS, not object identity,
+  // specifically because withCarriedOpenings (below) hands every later
+  // shift a brand-new object reference the instant an EARLIER shift's
   // closing changes (its derived Opening tracks that live) — even though
-  // nobody touched the later shift at all. Comparing plain object identity
-  // there was firing a spurious autosave for a shift the user never edited,
-  // sometimes with a discarded shift's draft silently reappearing on the
-  // server as a stray, near-blank row. _editGen survives that
+  // nobody touched the later shift at all. _editGen survives that
   // recomputation untouched (withCarriedOpenings spreads the existing
-  // object, it doesn't rebuild it), so only a real edit moves it.
+  // object, it doesn't rebuild it), so only a real edit moves it, letting
+  // that effect tell "untouched" apart from "genuinely being edited".
   // `dirty` defaults to true — the overwhelming majority of calls are a
-  // genuine keystroke (ShiftCard's onChange below). The two call sites that
-  // AREN'T an edit the manager could lose — attaching the id/status a
-  // successful Save Entry just returned, and resetting a card back to blank
-  // after Discard Draft — pass `dirty: false` explicitly, since neither
-  // leaves anything unsaved behind for the unsaved-changes prompt to warn
-  // about (see pumpDirty below).
+  // genuine keystroke (ShiftCard's onChange below). The one call site that
+  // ISN'T an edit the manager could lose — attaching the id/status a
+  // successful Save Entry just returned — passes `dirty: false` explicitly,
+  // since that leaves nothing unsaved behind for the unsaved-changes prompt
+  // to warn about (see pumpDirty below).
   function updateCard(index, patch, dirty = true) {
     if (dirty) hasEditedThisSessionRef.current = true
     setCards((prev) =>
@@ -2476,7 +2239,6 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     if (cards[index].id) {
       setConfirmRemoveIndex(index)
     } else {
-      suppressFlushFor(cards[index].localOnlyId)
       setCards((prev) => prev.filter((_, i) => i !== index))
       setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
     }
@@ -2505,7 +2267,6 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
         await deleteFuelEntry(card.id)
         toast.success(tRoot.toastDeleted)
       }
-      suppressFlushFor(card.localOnlyId)
       setCards((prev) => prev.filter((_, i) => i !== index))
       setActiveShiftIndex((i) => Math.min(i, cards.length - 2))
       setConfirmRemoveIndex(null)
@@ -2515,9 +2276,9 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
       // shift to keep editing. State is still cleaned up above FIRST (not
       // skipped) in case this component doesn't unmount perfectly in sync
       // with the route change — never leave it showing the just-deleted
-      // card even for a frame. Toggling off a never-saved local-only draft
-      // (wasSavedShift false) is normal mid-edit tidying, not a reason to
-      // leave the page, so that path never navigates.
+      // card even for a frame. Toggling off a never-saved shift (wasSavedShift
+      // false) is normal mid-edit tidying, not a reason to leave the page,
+      // so that path never navigates.
       if (wasSavedShift) navigate('/fuel-entry')
     } catch (err) {
       toast.error(err.message || tRoot.toastSaveFailed)
@@ -2527,80 +2288,16 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     }
   }
 
-  // Draft-only by design: a shift that's already final can't reach this
-  // (the button only shows while value.status === 'draft'), so there's no
-  // risk of accidentally erasing a real, saved sale — only ever an
-  // unfinished draft, whether autosaved (has an id → also deleted from
-  // fuelEntries) or never even saved yet (no id → just clears the form).
-  function requestDiscardDraft(index) {
-    setConfirmDiscardIndex(index)
-  }
-
-  // Same double-fire guard as removingRef above.
-  const discardingRef = useRef(false)
-
-  async function confirmDiscardDraft() {
-    if (discardingRef.current) return
-    const index = confirmDiscardIndex
-    if (index == null) return
-    const card = cards[index]
-    discardingRef.current = true
-    setDiscarding(true)
-    try {
-      if (card.id) {
-        await deleteFuelEntry(card.id)
-      }
-      suppressFlushFor(card.localOnlyId)
-      updateCard(index, blankShiftEntry(card.shiftNumber), false)
-      toast.success(tRoot.toastDraftDiscarded)
-      setConfirmDiscardIndex(null)
-    } catch (err) {
-      toast.error(err.message || tRoot.toastSaveFailed)
-    } finally {
-      discardingRef.current = false
-      setDiscarding(false)
-    }
-  }
-
   function buildPayload(index) {
-    const effective = latestCardsRef.current.effectiveCards[index]
+    const effective = effectiveCards[index]
     // _editGen is local bookkeeping only (see updateCard above) — never
     // meant to leave the browser.
     const { id, localOnlyId, _editGen, ...rest } = effective
     return rest
   }
 
-  // localOnlyIds of cards whose ShiftCard instance is about to unmount as
-  // part of a deliberate discard/remove — set synchronously, one line before
-  // the state change that causes that unmount, so it's already in place by
-  // the time that ShiftCard's own unmount-flush check (see the debounce
-  // effect in ShiftCard) runs. Without this, discarding or removing a shift
-  // mid-edit would flush its just-cancelled autosave right back out,
-  // resurrecting the very draft the manager just asked to delete. Entries
-  // are self-cleaning (removed a few seconds later) rather than deleted
-  // immediately after use, since the flush check itself runs on a deferred
-  // microtask.
-  const suppressFlushRef = useRef(new Set())
-  function suppressFlushFor(localOnlyId) {
-    if (!localOnlyId) return
-    suppressFlushRef.current.add(localOnlyId)
-    setTimeout(() => suppressFlushRef.current.delete(localOnlyId), 5000)
-  }
-
-  // Called by ShiftCard's own debounced "autosave" effect — a not-yet-
-  // finalized shift is never written to the backend at all any more. `cards`
-  // (mirrored to localStorage by the effect above) already picks up every
-  // keystroke instantly via updateCard/onChange, well before this debounced
-  // callback even fires — this exists only as that effect's wiring target,
-  // so its "Draft saving…" badge still means something (progress really is
-  // being kept, just in the browser instead of the database) without this
-  // function itself having anything left to do.
-  function handleSaveDraft() {}
-
-  // Final save happens once per shift (not per keystroke, unlike the silent
-  // draft autosave above, which must stay non-blocking or every typing
-  // pause would flash a full-page loader) — a deliberate "Save Entry" click,
-  // same as removing a shift or discarding a draft below, blocks the whole
+  // Final save happens once per shift (not per keystroke) — a deliberate
+  // "Save Entry" click, same as removing a shift below, blocks the whole
   // page with FullPageLoader while it's in flight.
   const [savingFinalIndex, setSavingFinalIndex] = useState(null)
   // Ref guard, not just the `savingFinalIndex` state: the Save Entry
@@ -2641,13 +2338,12 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     }
   }
 
-  // A deliberate write (finalize/remove/discard) in flight on THIS pump —
-  // draft autosave never sets this (see handleSaveDraft's own comment) —
-  // blocks switching/adding/removing shift tabs on this pump too, so a
-  // manager can't e.g. remove Shift 2 while Shift 1's finalize is still
-  // saving. The FullPageLoader rendered below already blocks the rest of
-  // the page visually; this additionally guards this pump's own tab strip.
-  const busy = savingFinalIndex != null || removing || discarding
+  // A deliberate write (finalize/remove) in flight on THIS pump blocks
+  // switching/adding/removing shift tabs on this pump too, so a manager
+  // can't e.g. remove Shift 2 while Shift 1's finalize is still saving. The
+  // FullPageLoader rendered below already blocks the rest of the page
+  // visually; this additionally guards this pump's own tab strip.
+  const busy = savingFinalIndex != null || removing
 
   return (
     <motion.div
@@ -2664,7 +2360,6 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
           {cards.length > 1 ? (
             <div className="flex flex-wrap items-center gap-2">
               {cards.map((card, index) => {
-                const cardStatus = effectiveCards[index]?.status
                 return (
                   <button
                     key={card.id || card.localOnlyId}
@@ -2685,8 +2380,6 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
                     {t.shiftLabel(card.shiftNumber)}
                     {!card.id ? (
                       <span className={`h-1.5 w-1.5 rounded-full ${index === activeShiftIndex ? 'bg-white/70' : 'bg-slate-400'}`} />
-                    ) : cardStatus === 'draft' ? (
-                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
                     ) : null}
                   </button>
                 )
@@ -2747,11 +2440,8 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
               unavailableEmployeeIds={unavailableEmployeeIds}
               creditCustomers={creditCustomers}
               lubricants={lubricants}
-              onSaveDraft={() => handleSaveDraft(index)}
               onSaveFinal={() => handleSaveFinal(index)}
               savingFinal={savingFinalIndex === index}
-              onDiscardDraft={() => requestDiscardDraft(index)}
-              suppressFlushRef={suppressFlushRef}
             />
           </div>
         ))}
@@ -2790,19 +2480,8 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
         loading={removing}
       />
 
-      <ConfirmDialog
-        isOpen={confirmDiscardIndex != null}
-        onClose={() => setConfirmDiscardIndex(null)}
-        onConfirm={confirmDiscardDraft}
-        title={tRoot.discardDraftTitle}
-        description={tRoot.discardDraftDesc}
-        confirmLabel={tRoot.discardDraftButton}
-        loading={discarding}
-      />
-
       {savingFinalIndex != null ? <FullPageLoader label={tRoot.savingChanges} /> : null}
       {removing ? <FullPageLoader label={tRoot.deleting} /> : null}
-      {discarding ? <FullPageLoader label={tRoot.discardDraftButton} /> : null}
     </motion.div>
   )
 })

@@ -259,6 +259,7 @@ export default function EmployeeCredits() {
             <Input
               type="number"
               min="0"
+              step="0.01"
               value={form.amount}
               onChange={(e) => setForm({ ...form, amount: e.target.value })}
               placeholder={t.placeholderAmount}

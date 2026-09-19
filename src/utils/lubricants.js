@@ -38,28 +38,43 @@ export function purchaseBatchesByCost(product) {
     .sort((a, b) => b.cost - a.cost)
 }
 
-// How much stock is available AT a specific sale rate — restocks purchased
-// while that rate was in force (i.e. purchased on/after the date that rate
-// took effect, and before the next rate change), capped at whatever is
-// still on hand overall. There's no per-batch stock ledger, so this is an
-// approximation from price/purchase dates rather than tracked lots — but it
-// lets the manager tell "old-priced stock" apart from "new-priced stock".
-export function stockAvailableAtRate(product, rate) {
-  return availableAtRateBreakdown(product, rate).available
+// Most recent purchase on record (by date), or null if the product has
+// never had one logged — e.g. to pre-fill a form with "whatever we last
+// paid for this", same helper Lubricants' own "Record Purchase" form uses.
+export function lastPurchaseOf(product) {
+  const history = product?.purchaseHistory || []
+  if (!history.length) return null
+  return [...history].sort((a, b) => b.date.localeCompare(a.date))[0]
 }
 
-// The full working behind stockAvailableAtRate above, so a tooltip can show
-// exactly which numbers produced the "Available" figure instead of just the
-// answer — both functions share this one calculation, so the tooltip can
-// never disagree with the actual clamp applied to the count field.
+// How much stock is available at a specific PURCHASE cost — Fuel Entry's
+// oil rows sell out of whichever restock batch the manager picks by its
+// actual per-unit cost (see purchaseBatchesByCost), not the separate
+// selling `priceHistory` tracked above. Deliberately cost-based rather than
+// price-based: this business reprices each restock individually rather
+// than revising one running selling price, so the batches the manager
+// actually needs to tell apart are "the ₹38 lot" vs "the ₹23 lot" — exactly
+// what Purchase History already shows. There's no per-batch stock ledger
+// (`product.stock` is one running total, decremented by every sale
+// regardless of which batch it came from), so this is the total ever
+// bought at that cost, capped at whatever is still on hand overall — an
+// approximation, not a tracked lot.
+export function stockAvailableAtCost(product, cost) {
+  return availableAtCostBreakdown(product, cost).available
+}
+
 // Exported so any screen displaying a product's raw `stock` (e.g. the
 // Lubricants product card) can defend against the same float-noise issue,
-// not just the Available-at-rate figure computed below.
+// not just the Available-at-cost figure computed below.
 export function round3(n) {
   return Math.round(n * 1000) / 1000
 }
 
-export function availableAtRateBreakdown(product, rate) {
+// The full working behind stockAvailableAtCost above, so a tooltip can show
+// exactly which numbers produced the "Available" figure instead of just the
+// answer — both functions share this one calculation, so the tooltip can
+// never disagree with the actual clamp applied to the count field.
+export function availableAtCostBreakdown(product, cost) {
   // Rounded here too, as a display-layer safety net — stock is written by
   // several code paths (sale, purchase, edit/delete undo) and this is the
   // one place both the "Available" label and the count-field clamp read
@@ -67,38 +82,26 @@ export function availableAtRateBreakdown(product, rate) {
   // reaches the screen even if it somehow slipped past the write-time
   // rounding in DataContext.
   const totalStock = round3(Math.max(0, Number(product?.stock) || 0))
-  const history = sortedPriceHistory(product)
-  const targetRate = Number(rate)
-  const idx = history.findIndex((h) => h.rate === targetRate)
+  const batches = purchaseBatchesByCost(product)
+  const targetCost = Number(cost)
 
-  // Only one price has ever been set — there's no other period stock could
-  // belong to, so all of it is available at this (only) rate. This also
-  // covers a product's opening stock, entered before any purchase was ever
-  // logged against it, so it isn't undercounted as "0 available" here while
-  // Lubricants shows the real stock figure.
-  if (history.length <= 1) {
-    return { available: totalStock, totalStock, singleRate: true }
+  // Only one cost has ever been paid — there's no other batch stock could
+  // belong to, so all of it is available at this (only) cost. This also
+  // covers a product's opening stock, recorded as its own purchase entry
+  // (see LubricantService.create_product), so it isn't undercounted as "0
+  // available" here while Lubricants shows the real stock figure.
+  if (batches.length <= 1) {
+    return { available: totalStock, totalStock, singleBatch: true }
   }
 
-  if (idx === -1) {
-    return { available: 0, totalStock, rateNotFound: true }
+  const batch = batches.find((b) => b.cost === targetCost)
+  if (!batch) {
+    return { available: 0, totalStock, costNotFound: true }
   }
-
-  const periodStart = history[idx].effectiveFrom
-  const next = history.slice(idx + 1).find((h) => h.effectiveFrom !== periodStart)
-  const periodEnd = next ? next.effectiveFrom : null // null = this rate is still current
-
-  const purchasedInPeriod = round3(
-    (product?.purchaseHistory || [])
-      .filter((p) => p.date >= periodStart && (periodEnd == null || p.date < periodEnd))
-      .reduce((sum, p) => sum + (Number(p.qty) || 0), 0),
-  )
 
   return {
-    available: round3(Math.max(0, Math.min(purchasedInPeriod, totalStock))),
+    available: round3(Math.max(0, Math.min(batch.qty, totalStock))),
     totalStock,
-    purchasedInPeriod,
-    periodStart,
-    periodEnd,
+    purchasedAtCost: round3(batch.qty),
   }
 }

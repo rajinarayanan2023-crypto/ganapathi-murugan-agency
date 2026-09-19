@@ -165,6 +165,15 @@ export function DataProvider({ children }) {
     localStorage.setItem(CACHED_USER_KEY, JSON.stringify(user))
   }, [])
   const logout = useCallback(() => {
+    // Best-effort server-side revoke of this session's refresh token, fired
+    // before anything below clears it from memory. Without this, "logout"
+    // was purely a client-side illusion — the token itself stayed valid on
+    // the server (see AuthService.logout/refresh_tokens.revoked) until it
+    // naturally expired days later, so anyone who'd captured it before this
+    // moment could keep using it. Never awaited and never allowed to throw:
+    // logout must complete locally even if the network is down or this call
+    // itself fails, and there's nothing useful to do differently either way.
+    if (refreshToken) apiPost('/auth/logout', { refresh_token: refreshToken }).catch(() => {})
     setAuthTokens(null)
     setAccessToken(null)
     setRefreshToken(null)
@@ -180,21 +189,11 @@ export function DataProvider({ children }) {
     // deliberately left alone: they're shared business config for this one
     // station (name, address, rates), not anything specific to whoever's
     // currently logged in, so there's nothing to hide from the next login.
-    //
-    // What's genuinely left behind otherwise: PumpDayEditor's per-shift
-    // drafts (see its DRAFT_STORAGE_PREFIX — 'ga-fuel-pump:draftCards:'),
-    // one localStorage key per pump+date ever typed into but not yet saved.
-    // Unlike everything above, these are real in-progress, unreviewed work
-    // — if this device gets logged into by someone else next (a shared
-    // till/tablet between shifts), they should never see a previous
-    // person's half-typed shift resurface as if it were already there.
-    // Scanning for the prefix, not a fixed key list, since there's one per
-    // pump/date combination ever drafted, not a known-in-advance set.
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i)
-      if (key?.startsWith('ga-fuel-pump:draftCards:')) localStorage.removeItem(key)
-    }
-  }, [])
+    // PumpDayEditor no longer persists any per-shift draft to localStorage
+    // either (removed entirely — nothing is kept anywhere until a
+    // deliberate Save Entry click), so there's nothing left behind there
+    // for a shared till/tablet's next login to accidentally see.
+  }, [refreshToken])
   // A request whose token refresh also fails (e.g. the refresh token itself
   // expired) forces a real logout instead of leaving the UI stuck signed-in
   // with a backend that rejects every call.

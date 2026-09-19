@@ -1,3 +1,5 @@
+import { serverNow } from './serverTime.js'
+
 // Money is never rounded to a whole rupee — reconciliation depends on exact
 // paise-level figures, so every amount always shows 2 decimal digits
 // (e.g. ₹2,423.23) rather than an approximated whole number.
@@ -95,6 +97,10 @@ export function toISODate(date) {
   return `${yyyy}-${mm}-${dd}`
 }
 
+// serverNow(), not new Date() — "today" must never depend on this device's
+// own clock/timezone being set correctly (see serverTime.js for why: a
+// misconfigured device clock used to make entries land on/be looked up
+// under the wrong calendar date, invisibly, on that one device only).
 export function todayISO() {
-  return toISODate(new Date())
+  return toISODate(serverNow())
 }

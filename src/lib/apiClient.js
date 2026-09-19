@@ -1,3 +1,5 @@
+import { recordServerDate } from '../utils/serverTime.js'
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'
 
 export class ApiError extends Error {
@@ -10,6 +12,15 @@ export class ApiError extends Error {
 // In-memory only, set by DataContext on login/logout — never persisted here.
 let accessToken = null
 let refreshToken = null
+// Bumped on every setAuthTokens call (login AND logout). A request that was
+// mid-flight when the user logged out can still have its silent 401->refresh
+// round trip land afterwards — the server call already went out with the
+// pre-logout refresh token before logout() ran, so it can't be recalled, but
+// nothing should let its result quietly repopulate accessToken/refreshToken
+// (and, via onTokensRefreshed, localStorage) once this tab has already
+// decided the session is over. Each request snapshots this at call time and
+// bails out if it no longer matches after awaiting the refresh.
+let authEpoch = 0
 let onSessionExpired = null
 // Notified whenever the silent mid-request refresh below rotates in a new
 // refresh token — without this, only this in-memory copy ever learned about
@@ -29,6 +40,7 @@ let refreshPromise = null
 export function setAuthTokens(tokens) {
   accessToken = tokens?.accessToken || null
   refreshToken = tokens?.refreshToken || null
+  authEpoch += 1
 }
 
 // Refresh tokens are single-use/rotating on the backend (see
@@ -68,11 +80,13 @@ async function rawRequest(path, { method = 'GET', body, auth = false } = {}) {
     headers,
     body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
   })
+  recordServerDate(res.headers.get('Date'))
   const data = await res.json().catch(() => null)
   return { res, data }
 }
 
 async function request(path, opts = {}) {
+  const startEpoch = authEpoch
   let { res, data } = await rawRequest(path, opts)
 
   // One retry: a request made with an expired access token refreshes it
@@ -82,6 +96,16 @@ async function request(path, opts = {}) {
       refreshPromise = null
     })
     const refreshed = await refreshPromise
+    if (authEpoch !== startEpoch) {
+      // The session this request belongs to no longer exists — the user
+      // logged out (or a different login happened) while the refresh above
+      // was in flight. The rotated tokens it came back with are real and
+      // already landed server-side, but adopting them here now would quietly
+      // resurrect a session this tab just tore down (and re-write a refresh
+      // token into localStorage right after logout cleared it), so this
+      // request simply fails instead of replaying or touching any state.
+      throw new ApiError('Session ended.', 401)
+    }
     if (refreshed.res.ok) {
       const tokens = { accessToken: refreshed.data.access_token, refreshToken: refreshed.data.refresh_token }
       setAuthTokens(tokens)
@@ -286,6 +310,13 @@ export function updateLedgerEntryBill(customerId, entryId, data) {
 // server-driven: no client-side wa.me link, no manual download step.
 export function sendCreditReminder(customerId) {
   return apiAuthPost(`/credit-customers/${customerId}/send-reminder`, {})
+}
+
+// Same as sendCreditReminder above, but the attachment (if any) is always
+// THIS ONE transaction row's own bill, not "most recent overall" — see
+// CreditCustomerService.send_ledger_entry_reminder.
+export function sendLedgerEntryReminder(customerId, entryId) {
+  return apiAuthPost(`/credit-customers/${customerId}/ledger/${entryId}/send-reminder`, {})
 }
 
 // ---------- Offer Customers ----------

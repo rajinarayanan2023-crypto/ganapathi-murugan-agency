@@ -7,7 +7,7 @@ import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
 import { closingBalance, closingBalanceBreakdown } from '../data/mockData.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
-import { uploadBillFile, getDownloadUrl, deleteUpload, sendCreditReminder } from '../lib/apiClient.js'
+import { uploadBillFile, getDownloadUrl, deleteUpload, sendCreditReminder, sendLedgerEntryReminder } from '../lib/apiClient.js'
 import { prepareBillFile } from '../utils/fileValidation.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -15,7 +15,7 @@ import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
-import { WhatsAppIcon, openWhatsAppChat } from '../components/BrandIcons.jsx'
+import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import CalcBreakdown from '../components/CalcBreakdown.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
@@ -23,39 +23,6 @@ import { FullPageLoader } from '../components/Loader.jsx'
 const customerEmptyForm = { name: '', phone: '', notes: '' }
 const creditEmptyForm = { fuelType: 'Diesel', ltr: '', rate: '100.45' }
 const paymentEmptyForm = { amount: '', mode: 'Cash' }
-
-async function downloadFileFromUrl(url, filename) {
-  const res = await fetch(url)
-  const blob = await res.blob()
-  const objectUrl = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = objectUrl
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(objectUrl)
-}
-
-// WhatsApp's wa.me click-to-chat link only ever supports pre-filled text —
-// there's no URL-based way to attach a file to it, and window.open() only
-// counts as gesture-backed (so it isn't silently popup-blocked) if it fires
-// as the very first thing inside the click handler. Triggering the bill's
-// download first — even a synthetic <a download> click — consumes that same
-// gesture, so a window.open() right after it gets blocked with no visible
-// error. Opening WhatsApp first, then downloading the bill, keeps both
-// working. `key` is the S3 key — resolved to a real (short-lived) URL right
-// here, at send-time, never ahead of it.
-async function sendBillFileThenOpenWhatsApp(phone, message, key, fileName) {
-  openWhatsAppChat(phone, message)
-  if (!key) return
-  try {
-    const url = await getDownloadUrl(key)
-    await downloadFileFromUrl(url, fileName)
-  } catch {
-    // Best-effort — WhatsApp itself already opened either way.
-  }
-}
 
 export default function CreditBills() {
   const {
@@ -69,7 +36,6 @@ export default function CreditBills() {
     updateLedgerEntryBill,
     removeLedgerEntry,
     fuelRates,
-    station,
   } = useData()
   const { language } = useLanguage()
   const t = CREDIT_BILLS_TEXT[language]
@@ -113,6 +79,10 @@ export default function CreditBills() {
   // id of whichever customer has a reminder send in flight — same
   // single-id-at-a-time pattern as uploadingTxBillId/removingTxBillId above.
   const [sendingReminderId, setSendingReminderId] = useState(null)
+  // Same, but for the per-transaction WhatsApp button inside the ledger
+  // modal — keyed by ledger entry id, not customer id, since a customer-
+  // level send and a specific-row send are two different requests.
+  const [sendingTxReminderId, setSendingTxReminderId] = useState(null)
 
   // One combined flag covering every kind of in-flight write this page can
   // make — while any of them is running, every OTHER action on this screen
@@ -126,7 +96,8 @@ export default function CreditBills() {
     removingTxBillId != null ||
     deletingCustomer ||
     deletingTx ||
-    sendingReminderId != null
+    sendingReminderId != null ||
+    sendingTxReminderId != null
   const busyLabel = deletingCustomer
     ? t.removingCustomer
     : deletingTx
@@ -135,7 +106,7 @@ export default function CreditBills() {
         ? t.removingBillPrompt
         : uploadingTxBillId != null || uploadingCreditBill
           ? t.uploadingBillPrompt
-          : sendingReminderId != null
+          : sendingReminderId != null || sendingTxReminderId != null
             ? t.sendingReminder
             : t.saving
 
@@ -318,22 +289,20 @@ export default function CreditBills() {
     }
   }
 
-  // One WhatsApp reminder per transaction row — references that specific
-  // entry (and sends its bill along, if one's attached by now) rather than
-  // a generic customer-level reminder, since the whole point of attaching
-  // bills per-row is that different entries can be at different stages.
-  function sendTransactionReminder(c, tx) {
-    const detail =
-      tx.type === 'credit'
-        ? `a credit of ${formatCurrency(tx.amount)} recorded on ${formatDate(tx.date)}${tx.note ? ` (${tx.note})` : ''}`
-        : `a payment of ${formatCurrency(tx.amount)} recorded on ${formatDate(tx.date)}`
-    const message = `Hi ${c.name}, this is a reminder from ${station.name} regarding ${detail}. Your outstanding balance is ${formatCurrency(closingBalance(c))}. Kindly clear it at your earliest convenience. Thank you!`
-    if (tx.billUrl) {
-      sendBillFileThenOpenWhatsApp(c.phone, message, tx.billUrl, tx.billName || 'bill')
-      toast.success(t.toastBillDownloadedForWhatsApp(c.name))
-    } else {
-      openWhatsAppChat(c.phone, message)
+  // One WhatsApp reminder per transaction row — same real server-side send
+  // as handleSendReminder above, but the attachment (if any) is always
+  // THIS specific row's own bill, never "most recent overall" — the whole
+  // point of attaching a bill per-row is that different entries can be at
+  // different stages. Fully automatic: no wa.me link, no manual download.
+  async function sendTransactionReminder(c, tx) {
+    setSendingTxReminderId(tx.id)
+    try {
+      await sendLedgerEntryReminder(c.id, tx.id)
       toast.success(t.toastReminderSent(c.name))
+    } catch (err) {
+      toast.error(err.message || t.errorReminderFailed)
+    } finally {
+      setSendingTxReminderId(null)
     }
   }
 
@@ -602,7 +571,16 @@ export default function CreditBills() {
       >
         {rows.length === 0 ? (
           <div className="p-5">
-            <EmptyState icon={Wallet} title={t.emptyTitle} description={t.emptyDesc} />
+            <EmptyState
+              icon={Wallet}
+              title={t.emptyTitle}
+              description={t.emptyDesc}
+              action={
+                <PrimaryButton onClick={openAddCustomer} disabled={busy}>
+                  <Plus size={16} /> {t.addCustomer}
+                </PrimaryButton>
+              }
+            />
           </div>
         ) : (
           <DataTable
@@ -956,7 +934,7 @@ export default function CreditBills() {
                                   className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t.tooltipWhatsApp}
                                 >
-                                  <WhatsAppIcon size={15} />
+                                  {sendingTxReminderId === tx.id ? <Loader2 size={15} className="animate-spin" /> : <WhatsAppIcon size={15} />}
                                 </button>
                               </AppTooltip>
                               {!tx.sourceFuelEntryId ? (

@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import AppTooltip from './AppTooltip.jsx'
 
-export default function Modal({ isOpen, onClose, title, headerExtra, children, maxWidth = 'max-w-lg' }) {
+export default function Modal({ isOpen, onClose, title, headerExtra, children, maxWidth = 'max-w-lg', hideCloseButton = false }) {
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') onClose?.()
@@ -43,15 +43,17 @@ export default function Modal({ isOpen, onClose, title, headerExtra, children, m
               <h3 className="min-w-0 truncate text-base font-semibold text-slate-900">{title}</h3>
               <div className="flex shrink-0 items-center gap-3">
                 {headerExtra}
-                <AppTooltip title="Close">
-                  <button
-                    onClick={onClose}
-                    className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500"
-                    aria-label="Close"
-                  >
-                    <X size={18} />
-                  </button>
-                </AppTooltip>
+                {hideCloseButton ? null : (
+                  <AppTooltip title="Close">
+                    <button
+                      onClick={onClose}
+                      className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500"
+                      aria-label="Close"
+                    >
+                      <X size={18} />
+                    </button>
+                  </AppTooltip>
+                )}
               </div>
             </div>
             <div className="p-5">{children}</div>

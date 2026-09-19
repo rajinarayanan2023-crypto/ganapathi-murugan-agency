@@ -14,12 +14,14 @@ import CalcBreakdown from '../components/CalcBreakdown.jsx'
 import PumpDayEditor from '../components/PumpDayEditor.jsx'
 import AuditModal from '../components/AuditModal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import Modal from '../components/Modal.jsx'
+import { PrimaryButton, SecondaryButton } from '../components/FormControls.jsx'
 
 // Each shift is its own independently-saved record now (see PumpDayEditor —
-// every shift card has its own Save/Save-as-Draft). This page is just the
-// day-level shell around that: pick a date, switch between the two pumps,
-// and see the combined totals once shifts are saved. Nothing here submits
-// anything itself.
+// every shift card has its own Save Entry, with no draft/autosave of any
+// kind). This page is just the day-level shell around that: pick a date,
+// switch between the two pumps, and see the combined totals once shifts are
+// saved. Nothing here submits anything itself.
 export default function FuelEntryForm() {
   const { entryId } = useParams()
   const navigate = useNavigate()
@@ -131,6 +133,27 @@ export default function FuelEntryForm() {
   }, [date, loadAttendanceMonth])
 
   const [activeTab, setActiveTab] = useState(() => linkedEntry?.pumpKey || 'pump1')
+
+  // New Entry only, and only ever checked once per visit to this page — a
+  // heads-up, not a hard block (today deliberately stays selectable even
+  // with existing entries, see datesWithEntries below, since adding another
+  // shift for today is completely normal). Waits for fuelEntries to finish
+  // loading so a fast-arriving page load doesn't miss real data that just
+  // hasn't landed yet; the ref then latches so saving a shift here during
+  // this same visit (which adds to fuelEntries) never re-triggers it.
+  // Holds the id of whichever today's-entry was found (there's no "continue
+  // here" choice — only the exact record found, to jump straight into
+  // editing it), or null while nothing's been found/the prompt is closed.
+  const [todayEntryExistsPrompt, setTodayEntryExistsPrompt] = useState(null)
+  const checkedTodayEntryRef = useRef(false)
+  useEffect(() => {
+    if (entryId) return
+    if (fuelEntriesLoading || checkedTodayEntryRef.current) return
+    checkedTodayEntryRef.current = true
+    const todaysEntry = fuelEntries.find((e) => e.date === todayISO())
+    if (todaysEntry) setTodayEntryExistsPrompt(todaysEntry.id)
+  }, [entryId, fuelEntriesLoading, fuelEntries])
+
   const [auditOpen, setAuditOpen] = useState(false)
   // Its own state, entirely separate from the main audit above — Shift 3's
   // report is its own thing, opened independently.
@@ -271,15 +294,21 @@ export default function FuelEntryForm() {
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-card">
-        <div className="flex items-center gap-3 border-b border-slate-100 pb-1.5">
-          {/* min-w-0 + truncate on the title is what actually keeps this to
-              one row: a flex child won't shrink below its content's natural
-              width by default (min-width: auto), so without this, a long
-              title alone was enough to push Audit past the right edge —
-              genuinely too wide to fit both groups side by side, not just a
-              spacing tweak. Truncating the title (never Audit/Date, which
-              must always stay fully visible) is what buys the room back. */}
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        <div className="flex flex-col gap-2 border-b border-slate-100 pb-1.5 sm:flex-row sm:items-center sm:gap-3">
+          {/* min-w-0 + truncate on the title is what keeps the sm:+ single
+              row from overflowing: a flex child won't shrink below its
+              content's natural width by default (min-width: auto), so
+              without this, a long title alone was enough to push Audit past
+              the right edge on a wide screen — genuinely too wide to fit
+              both groups side by side, not just a spacing tweak. Truncating
+              the title (never Audit/Date, which must always stay fully
+              visible) is what buys the room back on desktop.
+              Below sm, this whole row stacks instead (flex-col above) —
+              forcing everything onto one rigid row is exactly what caused
+              the mobile alignment issue: Audit/Shift-3-Audit/Date together
+              have a real minimum width of their own that a phone screen
+              often can't fit next to the title, even fully truncated. */}
+          <div className="flex min-w-0 items-center gap-2 sm:flex-1 sm:gap-3">
             <button
               type="button"
               onClick={() => guardedRun(anyDirty, () => navigate('/fuel-entry'))}
@@ -290,10 +319,12 @@ export default function FuelEntryForm() {
             <span className="hidden h-4 w-px shrink-0 bg-slate-200 sm:block" />
             <h2 className="truncate text-base font-bold text-slate-800">{entryId ? t.editEntry : t.newEntry}</h2>
           </div>
-          {/* shrink-0 + never wraps — Audit/Shift-3-Audit/Date must always
-              show in full; the title above gives up space instead. Audit
-              comes before Date (left of it) on purpose. */}
-          <div className="flex shrink-0 items-center gap-1.5">
+          {/* On its own row below sm (flex-wrap, so even Audit+Shift3Audit+
+              Date together can drop to a second line rather than overflow on
+              a very narrow phone); sm:+ this becomes the same rigid,
+              non-wrapping, always-fully-visible row as before — Audit still
+              comes before Date on purpose. */}
+          <div className="flex flex-wrap items-center gap-1.5 sm:flex-nowrap sm:shrink-0">
             <button
               type="button"
               onClick={() => setAuditOpen(true)}
@@ -330,6 +361,10 @@ export default function FuelEntryForm() {
                   variant="compact"
                   className="shrink-0"
                   disabled={Boolean(entryId)}
+                  // New entry only — a shift can't be recorded for a day that
+                  // hasn't happened yet. Not applied while editing: entryId
+                  // already disables the field entirely above.
+                  maxDate={entryId ? undefined : todayISO()}
                   shouldDisableDate={entryId ? undefined : (iso) => datesWithEntries.has(iso)}
                 />
               </span>
@@ -439,6 +474,41 @@ export default function FuelEntryForm() {
         cancelLabel={t.unsavedChangesStay}
         confirmTone="leave"
       />
+
+      {/* Deliberately not dismissible by the usual X / backdrop / Escape (a
+          no-op onClose, and the X hidden entirely) — this needs an explicit
+          choice, not an easy way to click past it and forget it was ever
+          shown. */}
+      <Modal isOpen={todayEntryExistsPrompt != null} onClose={() => {}} hideCloseButton title={t.todayEntryExistsTitle} maxWidth="max-w-sm">
+        <p className="text-sm text-slate-600">{t.todayEntryExistsDesc}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <SecondaryButton
+            onClick={() => {
+              setTodayEntryExistsPrompt(null)
+              navigate('/fuel-entry')
+            }}
+            className="px-4 py-2 text-sm"
+          >
+            {t.todayEntryExistsBackToHistory}
+          </SecondaryButton>
+          <PrimaryButton
+            onClick={() => {
+              const targetId = todayEntryExistsPrompt
+              // Explicitly closed here rather than left to the route change
+              // to unmount it — this component (FuelEntryForm) renders both
+              // /fuel-entry/new and /fuel-entry/:entryId/edit, so depending
+              // on exactly how/when that transition lands, the modal could
+              // otherwise still be sitting open (or mid animated-close) for
+              // a beat after the click, reading as "nothing happened."
+              setTodayEntryExistsPrompt(null)
+              navigate(`/fuel-entry/${targetId}/edit`)
+            }}
+            className="px-4 py-2 text-sm"
+          >
+            {t.todayEntryExistsEdit}
+          </PrimaryButton>
+        </div>
+      </Modal>
 
       <AuditModal
         isOpen={auditOpen}

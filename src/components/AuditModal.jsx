@@ -6,7 +6,7 @@ import { FullPageLoader } from './Loader.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
-import { formatDate, formatCurrency, formatLiters, toISODate } from '../utils/format.js'
+import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
 import { aggregateEntries, caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
@@ -354,22 +354,39 @@ export default function AuditModal({
     setEditedVariance(String(Math.round(dayTotals.excessShortage)))
     setAuditorName('')
     setRemarks('')
-    // Opening Stock defaults to the previous day's fuel sold (litres) —
-    // whatever left the tank yesterday is what today's opening balance
-    // starts from — instead of always starting blank. Still just a starting
-    // suggestion: the manager can overtype it same as before, this only
-    // changes what the field shows on open. Computed the same way
-    // dayTotals itself is (sortPumpEntries + withCarriedOpenings +
-    // aggregateEntries, shift 3 excluded) so it never disagrees with what
-    // "Sold Today" would have shown for that prior date. Stock Received is
-    // untouched — there's no way to infer that one, it stays blank.
-    const previousDateISO = toISODate(new Date(new Date(date).getTime() - 86400000))
-    const previousDayEntries = (fuelEntries || []).filter((e) => e.date === previousDateISO && e.shiftNumber !== 3)
+    // Opening Stock defaults to the last CONFIRMED day's fuel sold (litres)
+    // — whatever left the tank as of the last finalized day is what today's
+    // opening balance starts from — instead of always starting blank. Still
+    // just a starting suggestion: the manager can overtype it same as
+    // before, this only changes what the field shows on open.
+    //
+    // Deliberately status:'final' only, and deliberately the most recent
+    // final day rather than always literally yesterday. A shift autosaves to
+    // the DB as status:'draft' well before anyone confirms it (see
+    // PumpDayEditor) — an incomplete/still-being-typed reading sitting there
+    // as a draft must never feed this number, only a reading the manager
+    // actually finished and saved counts as "what really left the tank." If
+    // yesterday has nothing final yet (e.g. it's still mid-entry, or was
+    // skipped entirely), this falls back to whatever the last day with a
+    // final record was, exactly like the nozzle-level opening carry
+    // (PumpDayEditor's blankShiftEntry) already does across day boundaries —
+    // never blank purely because yesterday itself is incomplete.
+    const finalEntriesBeforeToday = (fuelEntries || []).filter(
+      (e) => e.status === 'final' && e.shiftNumber !== 3 && e.date < date,
+    )
+    const lastFinalDate = finalEntriesBeforeToday.reduce((latest, e) => (!latest || e.date > latest ? e.date : latest), null)
+    const previousDayEntries = lastFinalDate ? finalEntriesBeforeToday.filter((e) => e.date === lastFinalDate) : []
     const previousDayPump1 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump1')))
     const previousDayPump2 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump2')))
     const previousDayTotals = aggregateEntries([...previousDayPump1, ...previousDayPump2])
-    setOpeningStockPetrol(String(roundLtr(previousDayTotals.petrolLtr)))
-    setOpeningStockDiesel(String(roundLtr(previousDayTotals.dieselLtr)))
+    // No final record exists yet anywhere before this date (e.g. the very
+    // first audit ever) — defaults to '0', same as the nozzle-level opening
+    // carry (PumpDayEditor's shift1CarriedOpenings) does when it has no
+    // final record to carry from either. Stock Received stays blank below —
+    // there's genuinely no DB record of it to fall back to, whereas '0' here
+    // is a real, correct answer (nothing sold before any record existed).
+    setOpeningStockPetrol(String(lastFinalDate ? roundLtr(previousDayTotals.petrolLtr) : 0))
+    setOpeningStockDiesel(String(lastFinalDate ? roundLtr(previousDayTotals.dieselLtr) : 0))
     setStockReceivedPetrol('')
     setStockReceivedDiesel('')
     setCreditPaymentForm({ customerId: '', amount: '', mode: 'Cash' })

@@ -85,6 +85,14 @@ export default function Attendance() {
 
   const activeEmployees = useMemo(() => employees.filter((e) => e.active !== false), [employees])
 
+  // An employee's joinDate is the earliest date attendance can exist for
+  // them — marking (say) "Absent" for a week before they even joined is
+  // meaningless, not just wrong. Employees with no joinDate on file at all
+  // are never restricted (older records predate this field being required).
+  function hasNotJoinedYet(emp, date) {
+    return !!emp.joinDate && date < emp.joinDate
+  }
+
   const isCurrentMonth = viewYear === now.getFullYear() && viewMonthIdx === now.getMonth()
 
   const monthDays = useMemo(() => {
@@ -121,10 +129,13 @@ export default function Attendance() {
   }
 
   async function markAll(status) {
+    const eligible = activeEmployees.filter((emp) => !hasNotJoinedYet(emp, selectedDate))
+    const skipped = activeEmployees.length - eligible.length
     setSaving(true)
     try {
-      await Promise.all(activeEmployees.map((emp) => setAttendanceDay(emp.id, selectedDate, { status })))
+      await Promise.all(eligible.map((emp) => setAttendanceDay(emp.id, selectedDate, { status })))
       toast.success(t.toastMarkedAll(t.statusLabel[status], formatDate(selectedDate)))
+      if (skipped > 0) toast.error(t.toastSkippedNotJoined(skipped))
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -141,6 +152,13 @@ export default function Attendance() {
 
   async function saveEditAttendance() {
     if (!editTarget) return
+    // Defensive re-check, in case the date changed underneath an already-open
+    // modal — the edit button itself is disabled for this case (see the
+    // status column body below), so this should only ever catch that edge.
+    if (hasNotJoinedYet(editTarget, selectedDate)) {
+      toast.error(t.errorNotYetJoined(formatDate(editTarget.joinDate)))
+      return
+    }
     const isShiftDay = modalStatus === 'oneShift' || modalStatus === 'doubleShift'
     const patch = { status: modalStatus, ...(isShiftDay ? { startTime: modalStartTime } : {}) }
     setSaving(true)
@@ -240,6 +258,7 @@ export default function Attendance() {
         const isShiftDay = status === 'oneShift' || status === 'doubleShift'
         const startTime = record?.startTime || DEFAULT_START_TIME
         const { end, rolledOver } = isShiftDay ? addHoursToTime(startTime, status === 'doubleShift' ? 24 : 12) : {}
+        const notYetJoined = hasNotJoinedYet(emp, selectedDate)
         return (
           <div className="flex items-center justify-between gap-2 py-1">
             <div>
@@ -250,17 +269,27 @@ export default function Attendance() {
                   {t.statusLabel[status]}
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
-                  {t.noRecord}
-                </span>
+                <AppTooltip title={notYetJoined ? t.notYetJoinedTooltip(formatDate(emp.joinDate)) : undefined}>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
+                    {notYetJoined ? t.notYetJoinedBadge : t.noRecord}
+                  </span>
+                </AppTooltip>
               )}
               {isShiftDay ? (
                 <p className="mt-1 text-[10px] font-medium text-slate-400">{t.shiftWindow(formatTime12h(startTime), formatTime12h(end), rolledOver)}</p>
               ) : null}
             </div>
-            <IconButton onClick={() => openEditAttendance(emp)} disabled={busy} aria-label={t.editAttendance} title={t.editAttendance} tone="edit">
-              <Pencil size={15} />
-            </IconButton>
+            <AppTooltip title={notYetJoined ? t.notYetJoinedTooltip(formatDate(emp.joinDate)) : undefined}>
+              <IconButton
+                onClick={() => openEditAttendance(emp)}
+                disabled={busy || notYetJoined}
+                aria-label={t.editAttendance}
+                title={notYetJoined ? undefined : t.editAttendance}
+                tone="edit"
+              >
+                <Pencil size={15} />
+              </IconButton>
+            </AppTooltip>
           </div>
         )
       },

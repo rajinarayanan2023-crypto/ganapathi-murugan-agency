@@ -17,6 +17,13 @@ import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
+// packaging defaults to 'cane' for a brand-new product — most restocks here
+// are bulk (cane) purchases, not individual packets, so this saves an extra
+// click on the common case. Only this initial "Add Product" default; the
+// fallback used elsewhere for an EXISTING product missing packaging data
+// (PACKAGING_ICONS[...] || packet, openEdit's product.packaging || 'packet')
+// stays 'packet' — that's a legacy-data guess, a separate concern from what
+// a fresh product should start as.
 const emptyForm = { name: '', unit: 'Pcs', rate: '', stock: '', packaging: 'cane' }
 
 // Packet = small individual sachets/bottles; Cane = bulk tins/drums. Fuel
@@ -245,9 +252,16 @@ export default function Lubricants() {
   }
 
   function openPurchase(product) {
-    const rate = currentRate(product)
+    // Defaults to the LAST PURCHASE's cost (what was actually paid to a
+    // supplier), not currentRate() — that's the customer-facing SELLING
+    // price, a completely different figure (normally higher, for margin).
+    // Pre-filling "Cost per Unit" with the selling rate silently overstated
+    // every new restock's cost by default unless the manager remembered to
+    // correct it. Left blank (forcing an explicit entry) when there's no
+    // purchase history yet to go by, rather than guessing with the rate.
+    const lastPurchase = lastPurchaseOf(product)
     setPurchaseTarget(product)
-    setPurchaseForm({ qty: '', cost: rate ? String(rate) : '', date: todayISO() })
+    setPurchaseForm({ qty: '', cost: lastPurchase ? String(lastPurchase.cost) : '', date: todayISO() })
     setPurchaseErrors({})
   }
 
@@ -347,7 +361,11 @@ export default function Lubricants() {
     const qtyNum = Number(editPurchaseForm.qty)
     if (editPurchaseForm.qty === '' || qtyNum <= 0) e.qty = t.errorQtyInvalid
     else if (!Number.isInteger(qtyNum)) e.qty = t.errorQtyInteger
-    if (editPurchaseForm.cost === '' || Number(editPurchaseForm.cost) < 0) e.cost = t.errorCostInvalid
+    // <= 0, not < 0 — matches validatePurchase's rule for a brand-new
+    // purchase. This let an EDIT (only) save a purchase at ₹0 cost, purely
+    // from the two checks having drifted apart, not any real reason editing
+    // should allow a free purchase when creating one never could.
+    if (editPurchaseForm.cost === '' || Number(editPurchaseForm.cost) <= 0) e.cost = t.errorCostInvalid
     setEditPurchaseErrors(e)
     return Object.keys(e).length === 0
   }
