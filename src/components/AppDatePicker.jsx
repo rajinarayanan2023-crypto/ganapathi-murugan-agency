@@ -14,6 +14,13 @@ export default function AppDatePicker({
   disabled,
   variant = 'default',
   shouldDisableDate,
+  // Adds MUI's own built-in "x" clear button to the field, correctly
+  // positioned alongside its calendar icon (unlike a hand-rolled overlay
+  // button, which fights the same corner). Off by default — most call
+  // sites (e.g. a required "Effective From") never want the value emptied
+  // this way; a filter field (e.g. Fuel Entry's history date filter) is the
+  // one case that does.
+  clearable = false,
 }) {
   const isInline = variant === 'inline'
   const isCompact = variant === 'compact'
@@ -35,6 +42,7 @@ export default function AppDatePicker({
       // only translated to the dayjs object MUI's own prop expects here.
       shouldDisableDate={shouldDisableDate ? (day) => shouldDisableDate(day.format('YYYY-MM-DD')) : undefined}
       slotProps={{
+        field: clearable ? { clearable: true, onClear: () => onChange('') } : undefined,
         textField: {
           size: 'small',
           className,

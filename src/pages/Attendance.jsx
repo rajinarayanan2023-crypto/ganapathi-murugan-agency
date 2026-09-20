@@ -12,7 +12,7 @@ import { formatDate, formatDayLabel, todayISO, toISODate } from '../utils/format
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import Modal from '../components/Modal.jsx'
-import { Field, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { Field, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
@@ -150,7 +150,8 @@ export default function Attendance() {
     setModalStartTime(record?.startTime || DEFAULT_START_TIME)
   }
 
-  async function saveEditAttendance() {
+  async function saveEditAttendance(e) {
+    e?.preventDefault()
     if (!editTarget) return
     // Defensive re-check, in case the date changed underneath an already-open
     // modal — the edit button itself is disabled for this case (see the
@@ -544,7 +545,7 @@ export default function Attendance() {
         title={editTarget ? t.editAttendanceTitle(editTarget.name) : ''}
       >
         {editTarget ? (
-          <div className="space-y-4">
+          <form onSubmit={saveEditAttendance} onKeyDown={submitOnEnter} className="space-y-4">
             <div className="flex flex-wrap gap-1.5">
               {STATUS_OPTIONS.map((s) => (
                 <button
@@ -578,11 +579,11 @@ export default function Attendance() {
               <SecondaryButton type="button" onClick={() => setEditTarget(null)} disabled={saving}>
                 {t.cancel}
               </SecondaryButton>
-              <PrimaryButton type="button" onClick={saveEditAttendance} disabled={saving}>
+              <PrimaryButton type="submit" disabled={saving}>
                 {t.saveAttendance}
               </PrimaryButton>
             </div>
-          </div>
+          </form>
         ) : null}
       </Modal>
     </div>

@@ -880,11 +880,26 @@ export function DataProvider({ children }) {
     [],
   )
 
+  // Guards against a plain GET (this function, or the Pump-2-oil-sale
+  // refresh below) landing AFTER a mutation that started later but resolved
+  // first — a real race, not just a theoretical one: this fetch can take a
+  // while, and a manager recording a purchase (or any other lubricant edit)
+  // while it's still in flight used to have that GET's now-stale response
+  // silently overwrite their just-saved change the moment it finally
+  // resolved, making it look like the save "didn't show up" until a full
+  // page reload (which no longer had anything left in flight to race).
+  // Bumped by every successful lubricants write below, GET or mutation
+  // alike, so whichever one actually finishes LAST always wins.
+  const lubricantsVersionRef = useRef(0)
+
   const loadLubricants = useCallback(async () => {
     setLubricantsLoading(true)
     setLubricantsError(null)
+    const versionAtStart = lubricantsVersionRef.current
     try {
       const data = await getLubricants()
+      if (lubricantsVersionRef.current !== versionAtStart) return
+      lubricantsVersionRef.current += 1
       setLubricants(data.map(normalizeLubricant))
     } catch (err) {
       setLubricantsError(err.message)
@@ -935,7 +950,15 @@ export function DataProvider({ children }) {
           const created = await apiCreateFuelEntry(toApiFuelEntry(entry))
           const normalized = normalizeFuelEntry(created)
           setFuelEntries((prev) => prev.map((f) => (f.id === tempId ? normalized : f)))
-          if (normalized.status === 'final') refreshFuelEntrySideEffects(normalized)
+          if (normalized.status === 'final') {
+            refreshFuelEntrySideEffects(normalized)
+            // Dashboard's litres/commission/expenses/profit figures are all
+            // computed server-side from FINAL entries — without this, the
+            // Dashboard kept showing whatever it last fetched (up to
+            // DASHBOARD_FRESHNESS_MS stale) until a full page reload forced a
+            // fresh request, same bug as the one this fixed for Expenses.
+            invalidateDashboardSummariesFrom(normalized.date.slice(0, 7))
+          }
           return normalized.id
         } catch (err) {
           setFuelEntries((prev) => prev.filter((f) => f.id !== tempId))
@@ -943,7 +966,7 @@ export function DataProvider({ children }) {
         }
       })()
     },
-    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects],
+    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects, invalidateDashboardSummariesFrom],
   )
 
   const updateFuelEntry = useCallback(
@@ -970,6 +993,10 @@ export function DataProvider({ children }) {
               oilRows: [...(previous?.oilRows || []), ...(normalized.oilRows || [])],
               caneOilRows: [...(previous?.caneOilRows || []), ...(normalized.caneOilRows || [])],
             })
+            // Same staleness fix as addFuelEntry above — the date field is
+            // disabled while editing an existing entry, so previous/normalized
+            // always share one date; only one month ever needs invalidating.
+            invalidateDashboardSummariesFrom(normalized.date.slice(0, 7))
           }
           return normalized.id
         } catch (err) {
@@ -978,7 +1005,7 @@ export function DataProvider({ children }) {
         }
       })()
     },
-    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects],
+    [normalizeFuelEntry, toApiFuelEntry, refreshFuelEntrySideEffects, invalidateDashboardSummariesFrom],
   )
 
   const deleteFuelEntry = useCallback(
@@ -997,14 +1024,17 @@ export function DataProvider({ children }) {
           // need the same post-save refresh addFuelEntry/updateFuelEntry
           // already trigger, or they keep showing the now-reversed figures
           // until the next full reload.
-          if (previous?.status === 'final') refreshFuelEntrySideEffects(previous)
+          if (previous?.status === 'final') {
+            refreshFuelEntrySideEffects(previous)
+            invalidateDashboardSummariesFrom(previous.date.slice(0, 7))
+          }
         } catch (err) {
           if (previous) setFuelEntries((prev) => [previous, ...prev])
           throw err
         }
       })()
     },
-    [refreshFuelEntrySideEffects],
+    [refreshFuelEntrySideEffects, invalidateDashboardSummariesFrom],
   )
 
   // ---------- Lubricants ----------
@@ -1030,6 +1060,7 @@ export function DataProvider({ children }) {
         opening_stock: Number(stock) || 0,
       })
       const product = normalizeLubricant(created)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => [...prev, product])
       return product.id
     },
@@ -1044,6 +1075,7 @@ export function DataProvider({ children }) {
       if ('packaging' in data) payload.packaging = data.packaging
       const updated = await apiUpdateLubricant(id, payload)
       const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === id ? product : l)))
       return product
     },
@@ -1057,6 +1089,7 @@ export function DataProvider({ children }) {
     async (productId, { rate, effectiveFrom }) => {
       const updated = await apiAddPriceRevision(productId, { rate: Number(rate), effective_from: effectiveFrom })
       const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
       return product
     },
@@ -1065,6 +1098,7 @@ export function DataProvider({ children }) {
 
   const deleteLubricant = useCallback(async (id) => {
     await apiDeleteLubricant(id)
+    lubricantsVersionRef.current += 1
     setLubricants((prev) => prev.filter((l) => l.id !== id))
   }, [])
 
@@ -1074,6 +1108,7 @@ export function DataProvider({ children }) {
     async (productId, { qty, date, cost }) => {
       const updated = await apiRecordPurchase(productId, { qty: Number(qty), date, cost: Number(cost) || 0 })
       const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
       return product
     },
@@ -1095,6 +1130,7 @@ export function DataProvider({ children }) {
       if (cost !== undefined) payload.cost = Number(cost)
       const updated = await apiUpdatePurchase(productId, purchaseId, payload)
       const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
       return product
     },
@@ -1107,6 +1143,7 @@ export function DataProvider({ children }) {
     async (productId, purchaseId) => {
       const updated = await apiDeletePurchase(productId, purchaseId)
       const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
       return product
     },
@@ -1352,28 +1389,56 @@ export function DataProvider({ children }) {
     loadExpenses()
   }, [isAuthenticated, loadExpenses])
 
-  const addExpenseDay = useCallback(async (data) => {
-    const created = await apiCreateExpenseDay({
-      date: data.date,
-      items: data.items.map((i) => ({ label: i.label, amount: Number(i.amount) })),
-    })
-    setExpenseDays((prev) => [created, ...prev])
-    return created.id
-  }, [])
+  const addExpenseDay = useCallback(
+    async (data) => {
+      const created = await apiCreateExpenseDay({
+        date: data.date,
+        items: data.items.map((i) => ({ label: i.label, amount: Number(i.amount) })),
+      })
+      setExpenseDays((prev) => [created, ...prev])
+      // Dashboard's total_expenses/profit figures are computed server-side
+      // and cached for DASHBOARD_FRESHNESS_MS — without this, a just-added
+      // expense day kept showing the pre-add total until that cache expired
+      // or the page was reloaded.
+      invalidateDashboardSummariesFrom(created.date.slice(0, 7))
+      return created.id
+    },
+    [invalidateDashboardSummariesFrom],
+  )
 
-  const updateExpenseDay = useCallback(async (id, data) => {
-    const updated = await apiUpdateExpenseDay(id, {
-      date: data.date,
-      items: data.items.map((i) => ({ label: i.label, amount: Number(i.amount) })),
-    })
-    setExpenseDays((prev) => prev.map((d) => (d.id === id ? updated : d)))
-    return updated
-  }, [])
+  const updateExpenseDay = useCallback(
+    async (id, data) => {
+      const updated = await apiUpdateExpenseDay(id, {
+        date: data.date,
+        items: data.items.map((i) => ({ label: i.label, amount: Number(i.amount) })),
+      })
+      setExpenseDays((prev) => {
+        // Caught via the functional updater (not a dependency) so this can
+        // still see the pre-update row without going stale itself — an
+        // edit that also moves the date needs the OLD month invalidated
+        // too, not just the new one, or that month keeps showing a total
+        // that still includes an expense day no longer filed under it.
+        const previous = prev.find((d) => d.id === id)
+        if (previous && previous.date !== updated.date) invalidateDashboardSummariesFrom(previous.date.slice(0, 7))
+        return prev.map((d) => (d.id === id ? updated : d))
+      })
+      invalidateDashboardSummariesFrom(updated.date.slice(0, 7))
+      return updated
+    },
+    [invalidateDashboardSummariesFrom],
+  )
 
-  const deleteExpenseDay = useCallback(async (id) => {
-    await apiDeleteExpenseDay(id)
-    setExpenseDays((prev) => prev.filter((d) => d.id !== id))
-  }, [])
+  const deleteExpenseDay = useCallback(
+    async (id) => {
+      await apiDeleteExpenseDay(id)
+      setExpenseDays((prev) => {
+        const removed = prev.find((d) => d.id === id)
+        if (removed) invalidateDashboardSummariesFrom(removed.date.slice(0, 7))
+        return prev.filter((d) => d.id !== id)
+      })
+    },
+    [invalidateDashboardSummariesFrom],
+  )
 
   const value = useMemo(
     () => ({

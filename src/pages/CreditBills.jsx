@@ -14,7 +14,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import CalcBreakdown from '../components/CalcBreakdown.jsx'
@@ -609,7 +609,7 @@ export default function CreditBills() {
         onClose={savingCustomer ? () => {} : () => setCustomerModalOpen(false)}
         title={editingCustomerId ? t.editCustomer : t.addCustomer}
       >
-        <form onSubmit={handleCustomerSubmit} className="space-y-4">
+        <form onSubmit={handleCustomerSubmit} onKeyDown={submitOnEnter} className="space-y-4">
           <Field label={t.fieldCustomerName} required error={errors.name}>
             <Input
               value={customerForm.name}
@@ -681,7 +681,7 @@ export default function CreditBills() {
         {ledgerCustomer ? (
           <div className="space-y-5">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <form onSubmit={handleAddCredit} className="rounded-xl border border-slate-200 p-3">
+              <form onSubmit={handleAddCredit} onKeyDown={submitOnEnter} className="rounded-xl border border-slate-200 p-3">
                 <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.recordCredit}</h4>
                 <div className="space-y-2">
                   <Field label={t.fieldFuelType}>
@@ -772,7 +772,7 @@ export default function CreditBills() {
                 </div>
               </form>
 
-              <form onSubmit={handleAddPayment} className="rounded-xl border border-slate-200 p-3">
+              <form onSubmit={handleAddPayment} onKeyDown={submitOnEnter} className="rounded-xl border border-slate-200 p-3">
                 <h4 className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
                   <BadgeIndianRupee size={13} /> {t.recordPayment}
                 </h4>

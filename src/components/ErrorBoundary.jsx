@@ -23,7 +23,7 @@ export default class ErrorBoundary extends Component {
 
   render() {
     if (this.state.error) {
-      return (
+      const card = (
         <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-6 py-16 text-center">
           <AlertTriangle size={28} className="text-rose-500" />
           <p className="text-sm font-semibold text-slate-800">This page hit an unexpected error.</p>
@@ -36,6 +36,14 @@ export default class ErrorBoundary extends Component {
           </button>
         </div>
       )
+      // Only set by the app-root boundary in main.jsx, whose crash means the
+      // sidebar/header are gone too — nothing left on screen to give this
+      // card room, unlike a per-page boundary, which sits inside `main`
+      // where the rest of the shell is already providing that.
+      if (this.props.fullScreen) {
+        return <div className="flex min-h-screen items-center justify-center bg-white p-6">{card}</div>
+      }
+      return card
     }
     return this.props.children
   }

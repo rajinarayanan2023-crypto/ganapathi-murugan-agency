@@ -420,7 +420,15 @@ function PurchaseBatches({ t, product }) {
 // could get lost the instant it also re-clamped the count.
 function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, isIncomplete, committedCount }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
-  const available = selectedProduct ? (rate ? stockAvailableAtCost(selectedProduct, rate) : round3(Number(selectedProduct.stock) || 0)) : null
+  // Available is per PURCHASE COST batch (see stockAvailableAtCost) — before
+  // a rate is picked there's no batch to report yet, so this used to fall
+  // back to the product's TOTAL stock across every batch. That number could
+  // (and often did) let a manager type a Sold Count that looked fine against
+  // it, only for isOverStock below to flip on the moment they then picked a
+  // rate whose own batch held less — a validation error appearing to come
+  // out of nowhere. Null here (nothing shown, Sold Count disabled below)
+  // until a rate is actually selected removes that moving target entirely.
+  const available = selectedProduct && rate ? stockAvailableAtCost(selectedProduct, rate) : null
 
   // A FINAL shift already had this exact row's count subtracted from the
   // product's stock the moment it was finalized (see _apply_oil_stock on the
@@ -441,11 +449,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
   // Same breakdown stockAvailableAtCost() itself used to reach `available` —
   // read fresh from the live product/rate every render, so the tooltip can
   // never show a number that disagrees with the clamp actually applied above.
-  const availableBreakdown = selectedProduct
-    ? rate
-      ? availableAtCostBreakdown(selectedProduct, rate)
-      : { available, totalStock: Number(selectedProduct.stock) || 0, singleBatch: true }
-    : null
+  const availableBreakdown = selectedProduct && rate ? availableAtCostBreakdown(selectedProduct, rate) : null
   const availableTooltipRows = availableBreakdown
     ? availableBreakdown.singleBatch || availableBreakdown.costNotFound
       ? [{ label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` }]
@@ -517,7 +521,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             ))}
           </Select>
         </div>
-        {selectedProduct ? (
+        {selectedProduct && rate ? (
           <AppTooltip title={<CalcBreakdown rows={availableTooltipRows} formula={availableTooltipFormula} note={availableTooltipNote} />}>
             <span className="shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-slate-500">
               <span className="underline decoration-dotted decoration-slate-300 underline-offset-4">{t.availableLabel}</span>:{' '}
@@ -534,14 +538,17 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             value={count || ''}
             onChange={(e) => handleCountChange(e.target.value)}
             placeholder="0"
+            disabled={!rate}
             title={
-              isOverStock
-                ? t.oilCountExceedsStockHint(effectiveAvailable)
-                : missingCount
-                  ? t.oilRowIncompleteHint
-                  : available != null
-                    ? t.soldCountHint(available)
-                    : undefined
+              !rate
+                ? t.oilStockSelectRateFirstHint
+                : isOverStock
+                  ? t.oilCountExceedsStockHint(effectiveAvailable)
+                  : missingCount
+                    ? t.oilRowIncompleteHint
+                    : available != null
+                      ? t.soldCountHint(available)
+                      : undefined
             }
             className={`text-xs ${isOverStock || missingCount ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           />

@@ -12,7 +12,7 @@ import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
-import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { Field, Input, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
 function makeItemId() {
@@ -237,7 +237,7 @@ export default function Expenses() {
         onClose={saving ? () => {} : () => setModalOpen(false)}
         title={editingId ? t.editExpenseDay : t.addExpenseDay}
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} onKeyDown={submitOnEnter} className="space-y-4">
           <Field label={t.fieldDate} required error={errors.date} className="max-w-xs">
             <AppDatePicker value={date} onChange={setDate} className="w-full" disabled={saving} />
           </Field>

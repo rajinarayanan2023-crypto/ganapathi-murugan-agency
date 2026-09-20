@@ -230,6 +230,21 @@ export function Select({ error, className = '', children, value, onChange, disab
   )
 }
 
+// Pressing Enter in a plain text/number field should try to save, same as
+// any native form's implicit submission — but that doesn't fire reliably
+// for every field/browser combination in practice (this app's forms kept
+// getting reported as "Enter does nothing"), so it's triggered by hand
+// instead of relying on it. Attach directly to a <form>'s onKeyDown. Only
+// for a plain <input> — never a <textarea> (Enter there means a new line,
+// e.g. a customer's notes field) and never a <button> (which would double
+// up with the browser's own Enter-triggers-click on whichever button is
+// focused, e.g. a Select's trigger — see its own Enter handling above).
+export function submitOnEnter(e) {
+  if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.defaultPrevented) return
+  e.preventDefault()
+  e.currentTarget.requestSubmit()
+}
+
 export function Textarea({ error, className = '', ...props }) {
   return (
     <textarea

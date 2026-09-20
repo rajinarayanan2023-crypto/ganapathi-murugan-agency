@@ -7,7 +7,7 @@ import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from '
 import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
 import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
-import { aggregateEntries, caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
+import { caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
@@ -35,6 +35,18 @@ function roundedCurrency(value) {
   return '₹' + Math.round(Number(value) || 0).toLocaleString('en-IN')
 }
 
+// Every fuel's meter is tested once a day with a fixed, standard 20 L —
+// never sold, never varying — so the Audit report's Petrol/Diesel litres
+// (see roundedPetrolLtr/roundedDieselLtr below) subtract exactly this once
+// per fuel per day, regardless of whatever value actually ended up in each
+// shift's own Testing field. That real, per-shift Testing field still drives
+// every OTHER litres figure in the app (Entry History, Dashboard, the CSV
+// export, dayTotals.petrolLtr/dieselLtr used for the Amount/rate columns
+// right here) exactly as before — this fixed figure is deliberately scoped
+// to the Audit report's own Petrol/Diesel meter-reading row only, not a
+// replacement for the real field anywhere else.
+const AUDIT_TESTING_DEDUCTION_LTR = 20
+
 // A pump's litres for the Audit report: NOT the sum of every shift's own
 // (closing − opening − testing) delta rounded once at the end (that's what
 // pump.aggregate/dayTotals already give elsewhere, still used for the
@@ -43,11 +55,11 @@ function roundedCurrency(value) {
 // pump's FIRST shift's opening reading and LAST shift's closing reading,
 // each nozzle rounded to a whole litre first (the way it's actually read off
 // the meter), then subtracted — per nozzle, then the two nozzles summed.
-// Testing litres are deliberately never subtracted anywhere in this audit
-// figure (per manager request — the meter-to-meter reading is the whole
-// point of an audit check, not the net-of-testing sale figure). `entries`
-// must already be chronologically sorted (see sortPumpEntries) with carried
-// openings applied (see withCarriedOpenings) — same as
+// The fixed AUDIT_TESTING_DEDUCTION_LTR above is applied once per fuel per
+// day (both pumps combined), not per pump — so it's subtracted where
+// roundedPetrolLtr/roundedDieselLtr are computed below, not in here.
+// `entries` must already be chronologically sorted (see sortPumpEntries)
+// with carried openings applied (see withCarriedOpenings) — same as
 // pump1.entries/pump2.entries. Also keeps every nozzle's own opening/
 // closing/liters per shift (not just the shift-level sum) so the tooltip
 // can show the full nozzle → shift → pump → fuel chain, not just the two
@@ -80,11 +92,12 @@ function pumpFuelBoundaryBreakdown(entries, fuelKey, { exact = false } = {}) {
 // last-shift-closing reading, rolled up into its pump's total, then (for a
 // two-pump fuel) both pumps' formula — so an auditor can see exactly which
 // two meter readings produced each nozzle's figure, and how the nozzles/
-// pumps add up to the final total. Testing litres never appear here — this
-// audit figure deliberately never subtracts them (see
-// pumpFuelBoundaryBreakdown). `pumps` is one entry (2T Oil, pump 2 only) or
-// two (Petrol/Diesel, both pumps).
-function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false }) {
+// pumps add up to the final total. `pumps` is one entry (2T Oil, pump 2
+// only) or two (Petrol/Diesel, both pumps). `testingDeduction` (Petrol/
+// Diesel only, see AUDIT_TESTING_DEDUCTION_LTR) is shown as its own row and
+// folded into the formula, so the total here can never silently disagree
+// with the fixed deduction actually applied to totalLabel.
+function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, nozzleLabel, exact = false, testingDeduction = 0, testingDeductionLabel }) {
   const fmt = (v) => (exact ? (Number(v) || 0).toFixed(2) : String(v))
   const rows = []
   for (const { label: pumpLabel, breakdown } of pumps) {
@@ -98,10 +111,15 @@ function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, noz
     }
     rows.push({ label: `${pumpLabel} Total`, value: `${fmt(breakdown.liters)} L` })
   }
-  const formula =
+  if (testingDeduction > 0) rows.push({ label: testingDeductionLabel, value: `− ${fmt(testingDeduction)} L` })
+  const pumpsSum =
     pumps.length === 2
-      ? `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) + ${pumps[1].label} (${fmt(pumps[1].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
-      : `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) = ${fuelLabel} (${totalLabel})`
+      ? `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L) + ${pumps[1].label} (${fmt(pumps[1].breakdown.liters)} L)`
+      : `${pumps[0].label} (${fmt(pumps[0].breakdown.liters)} L)`
+  const formula =
+    testingDeduction > 0
+      ? `${pumpsSum} − ${testingDeductionLabel} (${fmt(testingDeduction)} L) = ${fuelLabel} (${totalLabel})`
+      : `${pumpsSum} = ${fuelLabel} (${totalLabel})`
   return { rows, formula, note }
 }
 
@@ -354,39 +372,55 @@ export default function AuditModal({
     setEditedVariance(String(Math.round(dayTotals.excessShortage)))
     setAuditorName('')
     setRemarks('')
-    // Opening Stock defaults to the last CONFIRMED day's fuel sold (litres)
-    // — whatever left the tank as of the last finalized day is what today's
-    // opening balance starts from — instead of always starting blank. Still
-    // just a starting suggestion: the manager can overtype it same as
-    // before, this only changes what the field shows on open.
+    // Opening Stock defaults to the previous day's own Audit "Fuel Sold"
+    // figure (litres) — whatever left the tank as of the last day with an
+    // entry is what today's opening balance starts from — instead of always
+    // starting blank. Still just a starting suggestion: the manager can
+    // overtype it same as before, this only changes what the field shows on
+    // open.
     //
-    // Deliberately status:'final' only, and deliberately the most recent
-    // final day rather than always literally yesterday. A shift autosaves to
-    // the DB as status:'draft' well before anyone confirms it (see
-    // PumpDayEditor) — an incomplete/still-being-typed reading sitting there
-    // as a draft must never feed this number, only a reading the manager
-    // actually finished and saved counts as "what really left the tank." If
-    // yesterday has nothing final yet (e.g. it's still mid-entry, or was
-    // skipped entirely), this falls back to whatever the last day with a
-    // final record was, exactly like the nozzle-level opening carry
-    // (PumpDayEditor's blankShiftEntry) already does across day boundaries —
-    // never blank purely because yesterday itself is incomplete.
-    const finalEntriesBeforeToday = (fuelEntries || []).filter(
-      (e) => e.status === 'final' && e.shiftNumber !== 3 && e.date < date,
-    )
-    const lastFinalDate = finalEntriesBeforeToday.reduce((latest, e) => (!latest || e.date > latest ? e.date : latest), null)
-    const previousDayEntries = lastFinalDate ? finalEntriesBeforeToday.filter((e) => e.date === lastFinalDate) : []
+    // No status filter here on purpose, unlike an earlier version of this
+    // that required status:'final' — this modal's OWN "Fuel Sold — Entire
+    // Day" row for TODAY (see pump1/pump2 props, built in FuelEntryForm's
+    // dayBreakdown) is drawn from EVERY entry for that date regardless of
+    // draft/final, so requiring 'final' here compared today's opening stock
+    // against a DIFFERENT, more restrictive set of entries than what
+    // yesterday's own audit actually displayed on screen — the two would
+    // silently disagree even though nothing about yesterday's numbers had
+    // actually changed. Matching that same unfiltered set is what makes
+    // "today's audit sold figure" and "tomorrow's opening stock" the exact
+    // same number, every time.
+    const entriesBeforeToday = (fuelEntries || []).filter((e) => e.shiftNumber !== 3 && e.date < date)
+    const lastEntryDate = entriesBeforeToday.reduce((latest, e) => (!latest || e.date > latest ? e.date : latest), null)
+    const previousDayEntries = lastEntryDate ? entriesBeforeToday.filter((e) => e.date === lastEntryDate) : []
     const previousDayPump1 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump1')))
     const previousDayPump2 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump2')))
-    const previousDayTotals = aggregateEntries([...previousDayPump1, ...previousDayPump2])
-    // No final record exists yet anywhere before this date (e.g. the very
-    // first audit ever) — defaults to '0', same as the nozzle-level opening
-    // carry (PumpDayEditor's shift1CarriedOpenings) does when it has no
-    // final record to carry from either. Stock Received stays blank below —
-    // there's genuinely no DB record of it to fall back to, whereas '0' here
-    // is a real, correct answer (nothing sold before any record existed).
-    setOpeningStockPetrol(String(lastFinalDate ? roundLtr(previousDayTotals.petrolLtr) : 0))
-    setOpeningStockDiesel(String(lastFinalDate ? roundLtr(previousDayTotals.dieselLtr) : 0))
+    // Same pumpFuelBoundaryBreakdown + fixed AUDIT_TESTING_DEDUCTION_LTR this
+    // modal's own "Fuel Sold — Entire Day" row uses for TODAY (see
+    // roundedPetrolLtr/roundedDieselLtr below) — not aggregateEntries'
+    // generic, real-Testing-field dayTotals figure used everywhere else in
+    // the app. Yesterday's audit showed a specific "sold" number on screen
+    // (real DB readings, fixed 20L/day testing taken off); today's Opening
+    // Stock has to start from that EXACT same number, not a different one
+    // quietly re-derived a different way — otherwise the two audits, opened
+    // on consecutive days, would disagree about what left the tank between
+    // them even though nothing changed in the DB.
+    const previousDayPetrolSold = Math.max(
+      0,
+      pumpFuelBoundaryBreakdown(previousDayPump1, 'petrol').liters + pumpFuelBoundaryBreakdown(previousDayPump2, 'petrol').liters - AUDIT_TESTING_DEDUCTION_LTR,
+    )
+    const previousDayDieselSold = Math.max(
+      0,
+      pumpFuelBoundaryBreakdown(previousDayPump1, 'diesel').liters + pumpFuelBoundaryBreakdown(previousDayPump2, 'diesel').liters - AUDIT_TESTING_DEDUCTION_LTR,
+    )
+    // No record exists yet anywhere before this date (e.g. the very first
+    // audit ever) — defaults to '0', same as the nozzle-level opening carry
+    // (PumpDayEditor's shift1CarriedOpenings) does when it has nothing to
+    // carry from either. Stock Received stays blank below — there's
+    // genuinely no DB record of it to fall back to, whereas '0' here is a
+    // real, correct answer (nothing sold before any record existed).
+    setOpeningStockPetrol(String(lastEntryDate ? previousDayPetrolSold : 0))
+    setOpeningStockDiesel(String(lastEntryDate ? previousDayDieselSold : 0))
     setStockReceivedPetrol('')
     setStockReceivedDiesel('')
     setCreditPaymentForm({ customerId: '', amount: '', mode: 'Cash' })
@@ -427,10 +461,15 @@ export default function AuditModal({
   // Oil is only ever sold through Pump 2's nozzle (see FUEL_KEYS_BY_PUMP in
   // fuelCalc.js) — one pump's breakdown, kept unrounded (`exact: true`) —
   // 2T Oil is deliberately NOT rounded off (per manager request), shown and
-  // reported at its real decimal litres, unlike Petrol/Diesel above.
+  // reported at its real decimal litres, unlike Petrol/Diesel above. It also
+  // gets no AUDIT_TESTING_DEDUCTION_LTR — that fixed deduction is Petrol/
+  // Diesel only, per how it was requested.
   const pump2OilBreakdown = useMemo(() => pumpFuelBoundaryBreakdown(pump2.entries, 'oil', { exact: true }), [pump2.entries])
-  const roundedPetrolLtr = pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters
-  const roundedDieselLtr = pump1DieselBreakdown.liters + pump2DieselBreakdown.liters
+  // Math.max(0, ...): a day with barely any fuel sold (a half-day open, or a
+  // near-empty tank) could plausibly sell under 20L total — the fixed daily
+  // testing deduction must never push a real, small sale figure negative.
+  const roundedPetrolLtr = Math.max(0, pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters - AUDIT_TESTING_DEDUCTION_LTR)
+  const roundedDieselLtr = Math.max(0, pump1DieselBreakdown.liters + pump2DieselBreakdown.liters - AUDIT_TESTING_DEDUCTION_LTR)
   const exactOilLtr = pump2OilBreakdown.liters
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
@@ -540,7 +579,9 @@ export default function AuditModal({
     const header = sheet.addRow([t.colFuel, t.colLitres, t.colAmount])
     header.font = { bold: true }
     sheet.addRow([t.colPetrol, roundedPetrolLtr, roundedCurrency(dayTotals.petrolAmount)])
+    sheet.addRow(['', t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
     sheet.addRow([t.colDiesel, roundedDieselLtr, roundedCurrency(dayTotals.dieselAmount)])
+    sheet.addRow(['', t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
     if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, roundedCurrency(dayTotals.oilAmount)])
     sheet.addRow([t.colPocketCane, '—', roundedCurrency(pocketAndServoOilAmount)])
     sheet.addRow([t.fieldSale, '', roundedCurrency(dayTotals.totalSaleAmount)]).font = { bold: true }
@@ -746,12 +787,15 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
+                            testingDeduction: AUDIT_TESTING_DEDUCTION_LTR,
+                            testingDeductionLabel: t.testingDeductionLabel,
                           })}
                         />
                       }
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedPetrolLtr} L</span>
                     </AppTooltip>
+                    <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)}</p>
                   </td>
                   <td className="px-3 py-2 text-right text-slate-600">
                     <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.petrolLtr, dayTotals.petrolAmount, t)} />}>
@@ -777,12 +821,15 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
+                            testingDeduction: AUDIT_TESTING_DEDUCTION_LTR,
+                            testingDeductionLabel: t.testingDeductionLabel,
                           })}
                         />
                       }
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedDieselLtr} L</span>
                     </AppTooltip>
+                    <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)}</p>
                   </td>
                   <td className="px-3 py-2 text-right text-slate-600">
                     <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.dieselLtr, dayTotals.dieselAmount, t)} />}>

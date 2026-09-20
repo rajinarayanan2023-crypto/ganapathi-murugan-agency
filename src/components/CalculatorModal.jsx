@@ -183,16 +183,20 @@ export default function CalculatorModal({ isOpen, onClose }) {
   const { language } = useLanguage()
   const t = CALCULATOR_TEXT[language]
 
+  // expr/result/justEvaluated are deliberately NOT reset when the modal
+  // closes (see the Modal's onClose below) — this component stays mounted
+  // for the app's whole lifetime (Layout just toggles `isOpen`), so plain
+  // React state already carries the in-progress expression across a
+  // close/reopen for free, the same way `history` below always has. Reopen
+  // it after checking something else and it's still exactly where it was
+  // left, same convention every real pocket calculator follows.
   const [expr, setExpr] = useState('')
   const [result, setResult] = useState(null) // last computed value, shown as a live preview
   // True right after "=" — the next digit/"(" starts a fresh expression,
   // but the next operator continues on from the result (e.g. "=" then "+"
   // carries the answer forward, matching how every real calculator behaves).
   const [justEvaluated, setJustEvaluated] = useState(false)
-  // Most recent first, capped at MAX_HISTORY — kept across closes/reopens
-  // within this session (unlike the current expression below), since
-  // browsing a moment-ago calculation after glancing away is the whole
-  // point of a history strip.
+  // Most recent first, capped at MAX_HISTORY.
   const [history, setHistory] = useState([])
   // The display below is a real, focusable input (not just a <p>) so typing
   // works the instant the modal opens without needing to click a button
@@ -212,12 +216,26 @@ export default function CalculatorModal({ isOpen, onClose }) {
     setJustEvaluated(false)
   }
 
-  // Same reasoning as the cash calculator this replaces: reopening should
-  // never resurface a stale in-progress expression from an unrelated
-  // earlier task — history above is exempt, that's the point of it.
-  function handleClose() {
-    resetAll()
-    onClose?.()
+  // Pasting a value (Ctrl/Cmd+V, or a browser/OS "Paste" menu action) lands
+  // it as the next operand — same rule append() already uses for typed
+  // digits: right after "=" it starts a fresh expression, otherwise it's
+  // appended to whatever's already there (e.g. "12+" then pasting "45"
+  // gives "12+45"). Only ever reads clipboard TEXT, and only keeps
+  // characters a bare number can contain — a pasted "₹1,234.50" or
+  // "1234.50 " lands as a clean 1234.50 instead of being silently rejected
+  // or corrupting the expression with a character this calculator's parser
+  // doesn't understand. Anything that isn't recognizable as one plain
+  // number (a sentence, multiple numbers, empty clipboard) is a no-op —
+  // never partially inserted.
+  function pasteNumber(text) {
+    const cleaned = (text || '').trim().replace(/[^0-9.-]/g, '')
+    if (!/^-?\d*\.?\d+$/.test(cleaned)) return
+    setExpr((prev) => {
+      const base = justEvaluated ? '' : prev
+      const next = base + cleaned
+      return next.length > MAX_EXPR_LENGTH ? base : next
+    })
+    setJustEvaluated(false)
   }
 
   function append(token, { isOperator = false, isOpenParen = false } = {}) {
@@ -295,7 +313,6 @@ export default function CalculatorModal({ isOpen, onClose }) {
       else if (e.key === '%') append('%')
       else if (e.key === 'Enter' || e.key === '=') handleEquals()
       else if (e.key === 'Backspace') backspace()
-      else if (e.key === 'Escape') resetAll()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -313,7 +330,7 @@ export default function CalculatorModal({ isOpen, onClose }) {
   const previewValue = !justEvaluated && result != null && expr.trim() ? formatResult(result) : null
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title={t.title} maxWidth="max-w-md">
+    <Modal isOpen={isOpen} onClose={onClose} title={t.title} maxWidth="max-w-md">
       <div className="space-y-2">
         {history.length > 0 ? (
           <div className="max-h-20 space-y-0.5 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50 px-3 py-1.5">
@@ -342,12 +359,21 @@ export default function CalculatorModal({ isOpen, onClose }) {
               expr/result above, and onKeyDown only blocks the browser's own
               native character insertion — the actual key handling is the
               same window-level listener below, which fires regardless of
-              what has focus, this input included. */}
+              what has focus, this input included. Ctrl/Cmd+V is the one key
+              combo let through (not preventDefault'd) so the browser still
+              fires its native paste event for onPaste below to catch. */}
           <input
             ref={displayInputRef}
             value={displayValue}
             onChange={() => {}}
-            onKeyDown={(e) => e.preventDefault()}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') return
+              e.preventDefault()
+            }}
+            onPaste={(e) => {
+              e.preventDefault()
+              pasteNumber(e.clipboardData.getData('text'))
+            }}
             inputMode="none"
             aria-label={t.title}
             className="w-full truncate border-0 bg-transparent text-right text-3xl font-bold text-white caret-white outline-none"

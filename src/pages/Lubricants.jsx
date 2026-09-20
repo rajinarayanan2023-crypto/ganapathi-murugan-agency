@@ -12,7 +12,7 @@ import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import { SkeletonCardGrid } from '../components/Skeleton.jsx'
-import { Field, Input, Select, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
+import { Field, Input, Select, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
@@ -176,6 +176,13 @@ export default function Lubricants() {
   }, [lubricants, search, packagingFilter])
 
   const totalStock = useMemo(() => round3(lubricants.reduce((sum, l) => sum + (Number(l.stock) || 0), 0)), [lubricants])
+
+  // "Products in Catalog" is meant to read as "products you can actually
+  // sell right now" — a product sitting at 0 stock (e.g. Test1 above) isn't
+  // available to sell until it's restocked, so counting it here overstated
+  // what's really on the shelf. Still listed in the grid below either way;
+  // only this headline count excludes it.
+  const inStockProductCount = useMemo(() => lubricants.filter((l) => (Number(l.stock) || 0) > 0).length, [lubricants])
 
   // Lowest stock first — the most urgent restock need at the top of the
   // list, so the manager doesn't have to hunt for it among the ones that
@@ -493,7 +500,7 @@ export default function Lubricants() {
               </button>
             ))}
           </div>
-          <InlineStat icon={Droplet} label={t.statProducts} value={lubricants.length} accent="brand" />
+          <InlineStat icon={Droplet} label={t.statProducts} value={inStockProductCount} accent="brand" />
           <InlineStat icon={Boxes} label={t.statTotalStock} value={totalStock} accent="amber" />
           <InlineStat
             icon={AlertTriangle}
@@ -638,7 +645,7 @@ export default function Lubricants() {
         onClose={saving ? () => {} : () => setModalOpen(false)}
         title={editingId ? t.editProduct : t.addProduct}
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} onKeyDown={submitOnEnter} className="space-y-4">
           <Field label={t.fieldProductName} required error={errors.name}>
             <Input
               value={form.name}
@@ -732,7 +739,7 @@ export default function Lubricants() {
         title={purchaseTarget ? t.purchaseTitle(purchaseTarget.name) : ''}
       >
         {livePurchaseTarget ? (
-          <form onSubmit={handlePurchaseSubmit} className="space-y-4">
+          <form onSubmit={handlePurchaseSubmit} onKeyDown={submitOnEnter} className="space-y-4">
             <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
               <Boxes size={14} className="text-slate-400" />
               {t.stockLabel}: <span className="font-semibold text-slate-800">{round3(livePurchaseTarget.stock ?? 0)} {livePurchaseTarget.unit}</span>
@@ -927,7 +934,7 @@ export default function Lubricants() {
         title={priceTarget ? t.revisePriceTitle(priceTarget.name) : ''}
       >
         {priceTarget ? (
-          <form onSubmit={handlePriceSubmit} className="space-y-4">
+          <form onSubmit={handlePriceSubmit} onKeyDown={submitOnEnter} className="space-y-4">
             <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
               <Tag size={14} className="text-slate-400" />
               {t.fieldCurrentRate}: <span className="font-semibold text-slate-800">{formatCurrency(currentRate(priceTarget))}</span>

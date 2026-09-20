@@ -182,6 +182,11 @@ export default function FuelEntry() {
   const loading = fuelEntriesLoading
   const navigate = useNavigate()
 
+  // Narrows the history table to just one calendar date — separate from the
+  // free-text search box above (which already matches a typed date STRING
+  // like "28/08"), this is a real calendar picker for jumping straight to a
+  // specific day without having to type or scroll/sort for it.
+  const [dateFilter, setDateFilter] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   // Only the row actually being deleted/exported shows a disabled+spinner
   // state — a delete/export request taking a moment shouldn't freeze every
@@ -459,6 +464,8 @@ export default function FuelEntry() {
     [fuelEntries, effectiveById, employees, t],
   )
 
+  const filteredRows = useMemo(() => (dateFilter ? rows.filter((r) => r.date === dateFilter) : rows), [rows, dateFilter])
+
   const historyColumns = [
     {
       field: 'date',
@@ -645,7 +652,7 @@ export default function FuelEntry() {
         ) : (
           <DataTable
             columns={historyColumns}
-            data={rows}
+            data={filteredRows}
             rowKey="id"
             globalFilterFields={['dateDisplay', 'pumpLabel', 'employeeName']}
             searchPlaceholder={t.searchPlaceholder}
@@ -655,6 +662,17 @@ export default function FuelEntry() {
             exportFilename="fuel-entries"
             dense
             onRowClick={busy ? undefined : (row) => navigate(`/fuel-entry/${row.id}/edit`)}
+            trailingContent={
+              <AppTooltip title={t.filterByDateTooltip}>
+                {/* Wide enough for the date text plus MUI's own clear (x) and
+                    calendar-toggle icon buttons together without truncating
+                    once a date is picked — narrower widths (this started at
+                    168px) clipped the day/month digits right under the icons. */}
+                <div className="w-full shrink-0 sm:w-[200px]">
+                  <AppDatePicker value={dateFilter} onChange={setDateFilter} maxDate={todayISO()} clearable className="w-full" />
+                </div>
+              </AppTooltip>
+            }
             toolbarActions={
               <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">
                 <Plus size={14} /> {t.newDayEntry}
