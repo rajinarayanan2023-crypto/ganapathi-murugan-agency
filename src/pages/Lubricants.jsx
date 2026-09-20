@@ -696,7 +696,7 @@ export default function Lubricants() {
                 <div className="flex h-[38px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600">
                   <Tag size={14} className="shrink-0 text-slate-400" />
                   <span className="font-semibold text-slate-800">{formatCurrency(currentRate(editingProduct || {}))}</span>
-                  <button
+                  {/* <button
                     type="button"
                     onClick={() => {
                       setModalOpen(false)
@@ -706,7 +706,7 @@ export default function Lubricants() {
                     className="ml-auto text-xs font-semibold text-brand-600 hover:underline disabled:pointer-events-none disabled:opacity-50"
                   >
                     {t.revisePriceLink}
-                  </button>
+                  </button> */}
                 </div>
               </Field>
             ) : (
@@ -725,7 +725,16 @@ export default function Lubricants() {
             )}
           </div>
           <Field label={t.fieldPackaging}>
-            <Select value={form.packaging} onChange={(e) => setForm({ ...form, packaging: e.target.value })} disabled={saving}>
+            {/* Locked once editing an existing product — Fuel Entry's Pump 2
+                oil pickers (Pocket vs Servo/cane) split purely on this field,
+                so changing it out from under an already-referenced product
+                would silently move it into the other section. */}
+            <Select
+              value={form.packaging}
+              onChange={(e) => setForm({ ...form, packaging: e.target.value })}
+              disabled={saving || Boolean(editingId)}
+              title={editingId ? t.packagingDisabledEditHint : undefined}
+            >
               <option value="packet">{t.packagingLabel.packet}</option>
               <option value="cane">{t.packagingLabel.cane}</option>
             </Select>
