@@ -281,17 +281,21 @@ function duplicateRowIds(rows) {
 // never-touched row isn't "incomplete", it's just unused (same "don't flag
 // what nobody's touched yet" rule as isReadingClosingTooLow above).
 //
-// Checked as "> 0", not just "not blank": a row loaded back from the server
-// (see normalizeFuelOilRow in DataContext.jsx) always carries real numbers,
-// never '' — a legacy row saved before this validation existed (product
-// picked, Rate/Count never actually filled in) round-trips as stockCount: 0,
-// stockRate: 0, which a blank-string check alone would wrongly read as
-// "already filled in". Neither field is ever legitimately 0 for a real oil
-// sale — a rate of ₹0 or a sold count of 0 both mean nothing was recorded —
-// so either one is exactly as incomplete as it being blank.
-function isOilRowIncomplete(row) {
+// "Has a rate" means it matches one of the product's CURRENT purchase-batch
+// costs (see purchaseBatchesByCost), not just "some positive number". A
+// row's stockRate is a plain copied number, never a live reference (see
+// utils/lubricants.js's own comment on this) — so a batch that's since been
+// removed, or a legacy/corrupted value that was never a real batch cost to
+// begin with, leaves the Rate dropdown showing "Select rate..." (nothing
+// selected) while the row still technically holds a positive number. A
+// plain "> 0" check let exactly that slip through Save looking complete
+// when the field the manager can actually see says otherwise. This same
+// match-against-real-batches rule also still catches a genuinely blank or
+// zero rate — neither one is ever a real batch cost either.
+function isOilRowIncomplete(row, lubricants) {
   if (!row?.productId) return false
-  const hasRate = row.stockRate !== '' && row.stockRate != null && Number(row.stockRate) > 0
+  const product = (lubricants || []).find((p) => p.id === row.productId)
+  const hasRate = purchaseBatchesByCost(product).some((b) => b.cost === Number(row.stockRate))
   const hasCount = row.stockCount !== '' && row.stockCount != null && Number(row.stockCount) > 0
   return !hasRate || !hasCount
 }
@@ -300,9 +304,9 @@ function isOilRowIncomplete(row) {
 // Rate and/or Sold Count still blank, or null if every row is either fully
 // filled in or has no product picked at all. Same "find the exact offender,
 // then block+focus" pattern as findOilRowExceedingStock below.
-function findIncompleteOilRow(oilRows, caneOilRows) {
+function findIncompleteOilRow(oilRows, caneOilRows, lubricants) {
   for (const row of [...(oilRows || []), ...(caneOilRows || [])]) {
-    if (isOilRowIncomplete(row)) return row
+    if (isOilRowIncomplete(row, lubricants)) return row
   }
   return null
 }
@@ -420,6 +424,10 @@ function PurchaseBatches({ t, product }) {
 // could get lost the instant it also re-clamped the count.
 function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRateAndCountChange, amount, onRemove, showRemove, isDuplicate, isIncomplete, committedCount }) {
   const selectedProduct = (lubricants || []).find((p) => p.id === productId)
+  // Same source the Rate <select>'s own options come from below — computed
+  // once here and reused, so "is this rate real" (missingRate) can never
+  // disagree with what the dropdown itself is actually offering.
+  const batches = purchaseBatchesByCost(selectedProduct)
   // Available is per PURCHASE COST batch (see stockAvailableAtCost) — before
   // a rate is picked there's no batch to report yet, so this used to fall
   // back to the product's TOTAL stock across every batch. That number could
@@ -469,8 +477,10 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
   const isOverStock = isOilCountOverStock(count, effectiveAvailable)
   // isIncomplete just means "this row needs attention" — only actually
   // highlight whichever of Rate/Count is the one still blank, not both, when
-  // the manager already filled in one of them.
-  const missingRate = isIncomplete && !(rate !== '' && rate != null && Number(rate) > 0)
+  // the manager already filled in one of them. "Missing" rate means it
+  // doesn't match any of this product's real current batches (see
+  // isOilRowIncomplete's own comment) — not just "isn't a positive number".
+  const missingRate = isIncomplete && !batches.some((b) => b.cost === Number(rate))
   const missingCount = isIncomplete && !(count !== '' && count != null && Number(count) > 0)
 
   function handleCountChange(v) {
@@ -514,7 +524,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             className={`text-xs ${isDuplicate || missingRate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
           >
             <option value="">{t.selectRate}</option>
-            {purchaseBatchesByCost(selectedProduct).map((b) => (
+            {batches.map((b) => (
               <option key={b.cost} value={b.cost}>
                 {formatCurrency(b.cost)}
               </option>
@@ -901,10 +911,10 @@ const ShiftCard = forwardRef(function ShiftCard(
   const incompleteOilRowIds = useMemo(() => {
     const ids = new Set()
     for (const row of [...(value.oilRows || []), ...(value.caneOilRows || [])]) {
-      if (isOilRowIncomplete(row)) ids.add(row.id)
+      if (isOilRowIncomplete(row, lubricants)) ids.add(row.id)
     }
     return ids
-  }, [value.oilRows, value.caneOilRows])
+  }, [value.oilRows, value.caneOilRows, lubricants])
   // Live, not gated by attemptedSubmit — same as the oil-row duplicate check
   // above, a duplicate payment-line key is unambiguously wrong the moment it
   // happens, not just at save time.
@@ -1000,7 +1010,7 @@ const ShiftCard = forwardRef(function ShiftCard(
     // would otherwise save silently contributing ₹0 — same
     // "shows a problem, but only blocking Save actually stops it" pattern as
     // the meter-reading check above.
-    const incompleteOilRow = findIncompleteOilRow(value.oilRows, value.caneOilRows)
+    const incompleteOilRow = findIncompleteOilRow(value.oilRows, value.caneOilRows, lubricants)
     if (incompleteOilRow) {
       setAttemptedSubmit(true)
       toast.error(tRoot.errorOilRowIncomplete)
@@ -1097,11 +1107,7 @@ const ShiftCard = forwardRef(function ShiftCard(
   return (
     <div className="rounded-lg border border-slate-200 bg-white/80 p-4" onKeyDown={handleCardKeyDown}>
       <div className="mb-3.5 flex flex-wrap items-center gap-2">
-        {value.id ? (
-          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-600">{t.savedLabel}</span>
-        ) : (
-          <span className="shrink-0 text-xs font-semibold text-slate-600">{t.employeeNameLabel}</span>
-        )}
+        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.employeeNameLabel}</span>
         {/* value.id + createdByName — a genuinely saved shift whose creator
             actually resolved to a real Users row (see attach_actor_names on
             the backend; null if that account's since been deleted). Purely

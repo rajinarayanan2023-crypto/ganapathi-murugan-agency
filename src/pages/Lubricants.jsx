@@ -113,6 +113,7 @@ export default function Lubricants() {
     updateLubricant,
     deleteLubricant,
     reviseLubricantPrice,
+    deletePriceRevision,
     addPurchase,
     updatePurchase,
     deletePurchase,
@@ -147,6 +148,8 @@ export default function Lubricants() {
   const [savingEditPurchase, setSavingEditPurchase] = useState(false)
   const [confirmDeletePurchaseId, setConfirmDeletePurchaseId] = useState(null)
   const [deletingPurchaseId, setDeletingPurchaseId] = useState(null)
+  const [confirmDeletePriceId, setConfirmDeletePriceId] = useState(null)
+  const [deletingPriceId, setDeletingPriceId] = useState(null)
   // One combined flag covering every kind of in-flight write this page can
   // make (add/edit, price revision, purchase, delete) — while any of them is
   // running, every OTHER action on this screen is blocked too.
@@ -156,7 +159,8 @@ export default function Lubricants() {
     savingPurchase ||
     deletingId != null ||
     savingEditPurchase ||
-    deletingPurchaseId != null
+    deletingPurchaseId != null ||
+    deletingPriceId != null
   const [priceTarget, setPriceTarget] = useState(null)
   const [priceForm, setPriceForm] = useState(emptyPriceForm)
   const [priceErrors, setPriceErrors] = useState({})
@@ -202,6 +206,10 @@ export default function Lubricants() {
   // history list) immediately, without needing to close and reopen this
   // modal to see it.
   const livePurchaseTarget = purchaseTarget ? lubricants.find((l) => l.id === purchaseTarget.id) || purchaseTarget : null
+  // Same live-reread pattern as livePurchaseTarget above, for the Revise
+  // Price modal's own history list — so deleting a price entry (below)
+  // updates that list immediately without closing the modal.
+  const livePriceTarget = priceTarget ? lubricants.find((l) => l.id === priceTarget.id) || priceTarget : null
 
   function openAdd() {
     setEditingId(null)
@@ -430,6 +438,22 @@ export default function Lubricants() {
     }
   }
 
+  // The API rejects (409) removing a product's last remaining price — that
+  // specific message comes straight through via err.message, same as
+  // handleDeletePurchase's stock-negative guard above.
+  async function handleDeletePrice(productId, revisionId) {
+    setDeletingPriceId(revisionId)
+    try {
+      await deletePriceRevision(productId, revisionId)
+      toast.success(t.toastPriceRemoved)
+      setConfirmDeletePriceId(null)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setDeletingPriceId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -565,6 +589,8 @@ export default function Lubricants() {
                   </AppTooltip>
                 </div>
                 <div className="mt-2 flex flex-wrap justify-center gap-1">
+                  {/* Revise Price temporarily hidden from the card — kept here, not
+                      deleted, for whenever it comes back.
                   <IconButton
                     onClick={() => openRevisePrice(product)}
                     disabled={busy}
@@ -574,6 +600,7 @@ export default function Lubricants() {
                   >
                     <Tag size={14} />
                   </IconButton>
+                  */}
                   <IconButton
                     onClick={() => openPurchase(product)}
                     disabled={busy}
@@ -928,6 +955,15 @@ export default function Lubricants() {
         loading={deletingPurchaseId != null}
       />
 
+      <ConfirmDialog
+        isOpen={!!confirmDeletePriceId}
+        onClose={() => setConfirmDeletePriceId(null)}
+        onConfirm={() => handleDeletePrice(livePriceTarget?.id, confirmDeletePriceId)}
+        title={t.removePriceTitle}
+        description={t.removePriceDesc}
+        loading={deletingPriceId != null}
+      />
+
       <Modal
         isOpen={!!priceTarget}
         onClose={savingPrice ? () => {} : () => setPriceTarget(null)}
@@ -937,7 +973,7 @@ export default function Lubricants() {
           <form onSubmit={handlePriceSubmit} onKeyDown={submitOnEnter} className="space-y-4">
             <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
               <Tag size={14} className="text-slate-400" />
-              {t.fieldCurrentRate}: <span className="font-semibold text-slate-800">{formatCurrency(currentRate(priceTarget))}</span>
+              {t.fieldCurrentRate}: <span className="font-semibold text-slate-800">{formatCurrency(currentRate(livePriceTarget))}</span>
             </div>
 
             <Field label={t.fieldNewRate} error={priceErrors.rate}>
@@ -966,13 +1002,31 @@ export default function Lubricants() {
             <div>
               <p className="mb-1.5 text-xs font-semibold text-slate-600">{t.priceHistoryTitle}</p>
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
-                {sortedPriceHistory(priceTarget).length ? (
-                  [...sortedPriceHistory(priceTarget)].reverse().map((entry) => (
-                    <div key={entry.effectiveFrom} className="flex items-center gap-1.5 text-xs text-slate-500">
-                      <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                      {t.priceHistoryEntry(entry.rate, formatDate(entry.effectiveFrom))}
-                    </div>
-                  ))
+                {sortedPriceHistory(livePriceTarget).length ? (
+                  [...sortedPriceHistory(livePriceTarget)].reverse().map((entry) => {
+                    // The API rejects removing a product's last remaining
+                    // price (see LubricantService.delete_price_revision) —
+                    // disabled here too, rather than letting the click go
+                    // through only to bounce back as an error toast.
+                    const isOnlyOne = sortedPriceHistory(livePriceTarget).length <= 1
+                    return (
+                      <div key={entry.id} className="flex items-center gap-1.5 text-xs text-slate-500">
+                        <CalendarDays size={11} className="shrink-0 text-slate-400" />
+                        <span className="flex-1">{t.priceHistoryEntry(entry.rate, formatDate(entry.effectiveFrom))}</span>
+                        <IconButton
+                          type="button"
+                          onClick={() => setConfirmDeletePriceId(entry.id)}
+                          disabled={busy || isOnlyOne}
+                          aria-label={t.removePriceTooltip}
+                          title={isOnlyOne ? t.removePriceOnlyOneHint : t.removePriceTooltip}
+                          tone="delete"
+                          className="shrink-0"
+                        >
+                          <Trash2 size={11} />
+                        </IconButton>
+                      </div>
+                    )
+                  })
                 ) : (
                   <p className="text-xs text-slate-400">{t.priceHistoryEmpty}</p>
                 )}

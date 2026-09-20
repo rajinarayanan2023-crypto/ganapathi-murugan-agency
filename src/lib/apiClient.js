@@ -235,6 +235,13 @@ export function addPriceRevision(id, { rate, effective_from }) {
   return apiAuthPost(`/lubricants/${id}/price-history`, { rate, effective_from })
 }
 
+// The backend rejects (409) deleting a product's only remaining price —
+// there must always be at least one on record for currentRate()/rateOnDate()
+// to fall back on.
+export function deletePriceRevision(productId, revisionId) {
+  return apiDelete(`/lubricants/${productId}/price-history/${revisionId}`)
+}
+
 export function recordPurchase(id, { qty, cost, date }) {
   return apiAuthPost(`/lubricants/${id}/purchases`, { qty, cost, date })
 }

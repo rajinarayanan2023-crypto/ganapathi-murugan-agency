@@ -21,6 +21,7 @@ import {
   updateLubricant as apiUpdateLubricant,
   deleteLubricant as apiDeleteLubricant,
   addPriceRevision as apiAddPriceRevision,
+  deletePriceRevision as apiDeletePriceRevision,
   recordPurchase as apiRecordPurchase,
   updatePurchase as apiUpdatePurchase,
   deletePurchase as apiDeletePurchase,
@@ -872,7 +873,7 @@ export function DataProvider({ children }) {
       unit: p.unit,
       packaging: p.packaging,
       stock: Number(p.stock),
-      priceHistory: (p.price_history || []).map((h) => ({ effectiveFrom: h.effective_from, rate: Number(h.rate) })),
+      priceHistory: (p.price_history || []).map((h) => ({ id: h.id, effectiveFrom: h.effective_from, rate: Number(h.rate) })),
       purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
       lastSoldDate: p.last_sold_date || null,
       totalSold: Number(p.total_sold) || 0,
@@ -1088,6 +1089,20 @@ export function DataProvider({ children }) {
   const reviseLubricantPrice = useCallback(
     async (productId, { rate, effectiveFrom }) => {
       const updated = await apiAddPriceRevision(productId, { rate: Number(rate), effective_from: effectiveFrom })
+      const product = normalizeLubricant(updated)
+      lubricantsVersionRef.current += 1
+      setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
+      return product
+    },
+    [normalizeLubricant],
+  )
+
+  // Same "at least one on record" guard as deleteSalaryRevision — the API
+  // rejects (409, surfaced via ApiError.message) deleting a product's last
+  // remaining price.
+  const deletePriceRevision = useCallback(
+    async (productId, revisionId) => {
+      const updated = await apiDeletePriceRevision(productId, revisionId)
       const product = normalizeLubricant(updated)
       lubricantsVersionRef.current += 1
       setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
@@ -1493,6 +1508,7 @@ export function DataProvider({ children }) {
       updateLubricant,
       deleteLubricant,
       reviseLubricantPrice,
+      deletePriceRevision,
       addPurchase,
       updatePurchase,
       deletePurchase,
@@ -1573,6 +1589,7 @@ export function DataProvider({ children }) {
       updateLubricant,
       deleteLubricant,
       reviseLubricantPrice,
+      deletePriceRevision,
       addPurchase,
       updatePurchase,
       deletePurchase,
