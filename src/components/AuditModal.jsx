@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Send, Download, ClipboardCheck, X, Loader2 } from 'lucide-react'
+import { Send, Download, ClipboardCheck, X, Loader2, CalendarDays } from 'lucide-react'
 import Modal from './Modal.jsx'
 import { FullPageLoader } from './Loader.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from './FormControls.jsx'
@@ -8,6 +8,7 @@ import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
 import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
 import { caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
+import { fuelRatesOnDate } from '../utils/fuelRate.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
@@ -87,6 +88,45 @@ function pumpFuelBoundaryBreakdown(entries, fuelKey, { exact = false } = {}) {
   return { nozzles, liters, firstShiftNumber: firstEntry.shiftNumber, lastShiftNumber: lastEntry.shiftNumber }
 }
 
+// Sold litres for one stock CHECKPOINT — a calendar date's main-day
+// (shift 1+2) reading, or that same date's Shift 3 reading — the same
+// boundary-meter calculation that checkpoint's own audit shows as its Fuel
+// Sold figure. The fixed AUDIT_TESTING_DEDUCTION_LTR is taken off exactly
+// once per day, from whichever checkpoint is that day's LAST one: Shift 3's
+// own reading when Shift 3 exists for targetDate, otherwise the day
+// checkpoint — same rule as testingDeductionLtr in the component body.
+function checkpointSoldLiters(fuelEntries, targetDate, isShift3, fuelKey) {
+  const entries = (fuelEntries || []).filter(
+    (e) => e.date === targetDate && (isShift3 ? e.shiftNumber === 3 : e.shiftNumber !== 3),
+  )
+  const pump1 = withCarriedOpenings(sortPumpEntries(entries.filter((e) => e.pumpKey === 'pump1')))
+  const pump2 = withCarriedOpenings(sortPumpEntries(entries.filter((e) => e.pumpKey === 'pump2')))
+  const raw = pumpFuelBoundaryBreakdown(pump1, fuelKey).liters + pumpFuelBoundaryBreakdown(pump2, fuelKey).liters
+  const dayHasShift3 = (fuelEntries || []).some((e) => e.date === targetDate && e.shiftNumber === 3)
+  const deduction = !isShift3 && dayHasShift3 ? 0 : AUDIT_TESTING_DEDUCTION_LTR
+  return Math.max(0, raw - deduction)
+}
+
+// The checkpoint whose Current Stock a given (date, isShift3) checkpoint
+// should carry its own Opening Stock forward from — see FuelStockLog's own
+// model comment for the full chronology: Shift 3 always continues from
+// that SAME date's day checkpoint (never an earlier date's); a day
+// checkpoint carries from the most recent EARLIER date's latest checkpoint
+// — that date's own Shift 3 one if it has one (the true latest that day),
+// otherwise its day one.
+function previousStockCheckpoint(fuelStockLogs, targetDate, isShift3) {
+  const logs = fuelStockLogs || []
+  if (isShift3) {
+    const sameDayEntry = logs.find((l) => l.logDate === targetDate && !l.isShift3)
+    if (sameDayEntry) return sameDayEntry
+  }
+  const earlier = logs.filter((l) => l.logDate < targetDate)
+  if (!earlier.length) return null
+  const latestDate = earlier.reduce((latest, l) => (l.logDate > latest ? l.logDate : latest), earlier[0].logDate)
+  const onLatestDate = earlier.filter((l) => l.logDate === latestDate)
+  return onLatestDate.find((l) => l.isShift3) || onLatestDate.find((l) => !l.isShift3) || null
+}
+
 // Builds the CalcBreakdown content for the Petrol/Diesel/2T-Oil
 // round-off-formula tooltip: each nozzle's own first-shift-opening →
 // last-shift-closing reading, rolled up into its pump's total, then (for a
@@ -121,25 +161,6 @@ function pumpLitersTooltip({ pumps, fuelLabel, totalLabel, note, shiftLabel, noz
       ? `${pumpsSum} − ${testingDeductionLabel} (${fmt(testingDeduction)} L) = ${fuelLabel} (${totalLabel})`
       : `${pumpsSum} = ${fuelLabel} (${totalLabel})`
   return { rows, formula, note }
-}
-
-// Builds the CalcBreakdown content for a fuel row's pricing tooltip — same
-// idea as the Rate/Litres/Amount columns on the Fuel Entry screen's nozzle
-// grid, condensed into one tooltip since this table only has room for a
-// single (rounded) Litres figure and a single Amount figure per fuel.
-// `exactLiters` must be the unrounded total (before AuditModal's own
-// roundLtr) so the rate shown here is the real one, not skewed by rounding.
-function pricingTooltip(exactLiters, amount, t) {
-  const liters = Number(exactLiters) || 0
-  const rate = liters > 0 ? amount / liters : 0
-  return {
-    rows: [
-      { label: t.exactLitersLabel, value: formatLiters(liters) },
-      { label: t.rateLabel, value: `${formatCurrency(rate)} / L` },
-    ],
-    formula: `${formatLiters(liters)} × ${formatCurrency(rate)} = ${formatCurrency(amount)}`,
-    note: t.pricingNote,
-  }
 }
 
 // Every 2T pocket-oil / Servo (cane) oil row sold today, grouped by product
@@ -325,16 +346,29 @@ export default function AuditModal({
   creditCustomers,
   lubricants,
   variantLabel,
+  hasShift3 = false,
 }) {
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language].audit
-  const { addLedgerEntry, removeLedgerEntry, fuelEntries } = useData()
+  const { addLedgerEntry, removeLedgerEntry, fuelEntries, fuelStockLogs, saveFuelStockLog, fuelRateHistory } = useData()
 
   // A second, independent audit (e.g. the Shift 3 / price-change report)
   // reuses this exact component but is labeled distinctly, both on screen
   // and in the exported report, so the two are never mistaken for each other.
   const modalTitle = variantLabel ? `${t.modalTitle} — ${variantLabel}` : t.modalTitle
   const reportTitle = variantLabel ? `${t.reportTitle} — ${variantLabel}` : t.reportTitle
+  // Everything gated on this is a WHOLE-DAY concept — the fixed daily
+  // testing allowance and the tank-stock reconciliation (Opening/Received/
+  // Current/Sold Today, carried forward from the previous day's own sold
+  // litres) — that only makes sense for the real Shift 1+2 day total.
+  // Shift 3 is a separate, narrow report for one specific price-change
+  // moment (see FuelEntryForm's dayBreakdown.shift3Pump1/shift3Pump2, a
+  // single shift's own entries, not the day's), passed in here with
+  // variantLabel set — a day-level stock carry-forward applied to that
+  // narrow window would be meaningless, not just redundant. The fixed daily
+  // testing deduction, though, moves to whichever audit is that day's LAST
+  // one — see testingDeductionLtr below.
+  const isDayAudit = !variantLabel
 
   const [auditorName, setAuditorName] = useState('')
   const [remarks, setRemarks] = useState('')
@@ -372,57 +406,65 @@ export default function AuditModal({
     setEditedVariance(String(Math.round(dayTotals.excessShortage)))
     setAuditorName('')
     setRemarks('')
-    // Opening Stock defaults to the previous day's own Audit "Fuel Sold"
-    // figure (litres) — whatever left the tank as of the last day with an
-    // entry is what today's opening balance starts from — instead of always
-    // starting blank. Still just a starting suggestion: the manager can
-    // overtype it same as before, this only changes what the field shows on
-    // open.
-    //
-    // No status filter here on purpose, unlike an earlier version of this
-    // that required status:'final' — this modal's OWN "Fuel Sold — Entire
-    // Day" row for TODAY (see pump1/pump2 props, built in FuelEntryForm's
-    // dayBreakdown) is drawn from EVERY entry for that date regardless of
-    // draft/final, so requiring 'final' here compared today's opening stock
-    // against a DIFFERENT, more restrictive set of entries than what
-    // yesterday's own audit actually displayed on screen — the two would
-    // silently disagree even though nothing about yesterday's numbers had
-    // actually changed. Matching that same unfiltered set is what makes
-    // "today's audit sold figure" and "tomorrow's opening stock" the exact
-    // same number, every time.
-    const entriesBeforeToday = (fuelEntries || []).filter((e) => e.shiftNumber !== 3 && e.date < date)
-    const lastEntryDate = entriesBeforeToday.reduce((latest, e) => (!latest || e.date > latest ? e.date : latest), null)
-    const previousDayEntries = lastEntryDate ? entriesBeforeToday.filter((e) => e.date === lastEntryDate) : []
-    const previousDayPump1 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump1')))
-    const previousDayPump2 = withCarriedOpenings(sortPumpEntries(previousDayEntries.filter((e) => e.pumpKey === 'pump2')))
-    // Same pumpFuelBoundaryBreakdown + fixed AUDIT_TESTING_DEDUCTION_LTR this
-    // modal's own "Fuel Sold — Entire Day" row uses for TODAY (see
-    // roundedPetrolLtr/roundedDieselLtr below) — not aggregateEntries'
-    // generic, real-Testing-field dayTotals figure used everywhere else in
-    // the app. Yesterday's audit showed a specific "sold" number on screen
-    // (real DB readings, fixed 20L/day testing taken off); today's Opening
-    // Stock has to start from that EXACT same number, not a different one
-    // quietly re-derived a different way — otherwise the two audits, opened
-    // on consecutive days, would disagree about what left the tank between
-    // them even though nothing changed in the DB.
-    const previousDayPetrolSold = Math.max(
-      0,
-      pumpFuelBoundaryBreakdown(previousDayPump1, 'petrol').liters + pumpFuelBoundaryBreakdown(previousDayPump2, 'petrol').liters - AUDIT_TESTING_DEDUCTION_LTR,
-    )
-    const previousDayDieselSold = Math.max(
-      0,
-      pumpFuelBoundaryBreakdown(previousDayPump1, 'diesel').liters + pumpFuelBoundaryBreakdown(previousDayPump2, 'diesel').liters - AUDIT_TESTING_DEDUCTION_LTR,
-    )
-    // No record exists yet anywhere before this date (e.g. the very first
-    // audit ever) — defaults to '0', same as the nozzle-level opening carry
-    // (PumpDayEditor's shift1CarriedOpenings) does when it has nothing to
-    // carry from either. Stock Received stays blank below — there's
-    // genuinely no DB record of it to fall back to, whereas '0' here is a
-    // real, correct answer (nothing sold before any record existed).
-    setOpeningStockPetrol(String(lastEntryDate ? previousDayPetrolSold : 0))
-    setOpeningStockDiesel(String(lastEntryDate ? previousDayDieselSold : 0))
-    setStockReceivedPetrol('')
-    setStockReceivedDiesel('')
+    // Defaults to the real rate effective on this audit's date, same
+    // date-effective lookup the Fuel Entry screen itself uses — not just
+    // "today's" rate, since an audit can be reopened for a past date.
+    const ratesOnDate = fuelRatesOnDate(fuelRateHistory, date)
+    setAuditRatePetrol(String(ratesOnDate.petrol || 0))
+    setAuditRateDiesel(String(ratesOnDate.diesel || 0))
+    setAuditRateOil(String(ratesOnDate.oil || 0))
+    // Fuel Stock — real, saved DB records now (see app/models/fuel_stock_log.py
+    // and DataContext's saveFuelStockLog), not re-derived guesses. Both the
+    // day audit and the Shift 3 audit get their own checkpoint here
+    // (is_shift3 distinguishes them) — see previousStockCheckpoint/
+    // checkpointSoldLiters above for the carry-forward chain between them.
+    const todayLog = (fuelStockLogs || []).find((l) => l.logDate === date && l.isShift3 === !isDayAudit)
+    if (todayLog) {
+      // Already saved once already (e.g. reopening this same audit later) —
+      // resume exactly what was saved, not a freshly re-derived default,
+      // so reopening never looks like it forgot what was already entered.
+      // Still surfaced below (mode 'saved') so it's never ambiguous whether
+      // a number is a fresh carry-forward guess or an already-confirmed record.
+      setOpeningStockPetrol(String(todayLog.petrolOpeningStock))
+      setStockReceivedPetrol(String(todayLog.petrolStockReceived))
+      setOpeningStockDiesel(String(todayLog.dieselOpeningStock))
+      setStockReceivedDiesel(String(todayLog.dieselStockReceived))
+      setOpeningStockSource({ mode: 'saved', logDate: date, isShift3: !isDayAudit })
+    } else {
+      // No record for this checkpoint yet — Opening Stock defaults from the
+      // previous checkpoint's true closing balance: that checkpoint's own
+      // saved opening + received, minus its real sold litres (re-derived
+      // fresh from its actual fuel entries, exactly the same
+      // pumpFuelBoundaryBreakdown + testing deduction its own audit would
+      // show) — never a stored "sold" figure, so a reading corrected after
+      // the fact can't leave this stale. For the Shift 3 audit, that
+      // "previous checkpoint" is always this SAME date's day checkpoint
+      // (previousStockCheckpoint handles that); for the day audit, it's the
+      // latest checkpoint (day or Shift 3) from the most recent earlier date.
+      const source = previousStockCheckpoint(fuelStockLogs, date, !isDayAudit)
+      if (source) {
+        const petrolSold = checkpointSoldLiters(fuelEntries, source.logDate, source.isShift3, 'petrol')
+        const dieselSold = checkpointSoldLiters(fuelEntries, source.logDate, source.isShift3, 'diesel')
+        setOpeningStockPetrol(String(Math.max(0, source.petrolOpeningStock + source.petrolStockReceived - petrolSold)))
+        setOpeningStockDiesel(String(Math.max(0, source.dieselOpeningStock + source.dieselStockReceived - dieselSold)))
+        // Surfaced on screen next to the Fuel Stock table (see
+        // openingStockSource below) so the manager can see exactly which
+        // earlier checkpoint this default was carried forward from, instead
+        // of it looking like an unexplained number.
+        setOpeningStockSource({ mode: 'carried', logDate: source.logDate, isShift3: source.isShift3 })
+      } else {
+        // No fuel stock log exists yet anywhere before this checkpoint (e.g.
+        // the very first audit ever) — '0' is a real, correct answer here
+        // (nothing logged before any record existed), not a guess. Still
+        // surfaced (mode 'none') so every audit shows SOME explanation for
+        // its Opening Stock, never a silent, unexplained number.
+        setOpeningStockPetrol('0')
+        setOpeningStockDiesel('0')
+        setOpeningStockSource({ mode: 'none' })
+      }
+      setStockReceivedPetrol('')
+      setStockReceivedDiesel('')
+    }
     setCreditPaymentForm({ customerId: '', amount: '', mode: 'Cash' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, date])
@@ -440,6 +482,22 @@ export default function AuditModal({
   const [openingStockDiesel, setOpeningStockDiesel] = useState('')
   const [stockReceivedPetrol, setStockReceivedPetrol] = useState('')
   const [stockReceivedDiesel, setStockReceivedDiesel] = useState('')
+  // Which earlier checkpoint (date + day/shift3 scope) the Opening Stock
+  // fields above were just auto-carried forward from — null whenever
+  // there's nothing to explain (a saved checkpoint was resumed as-is, or
+  // this is the very first checkpoint ever with nothing before it).
+  const [openingStockSource, setOpeningStockSource] = useState(null)
+  // Audit-only rate override — defaults to the real rate effective on this
+  // audit's date (see fuelRatesOnDate), but the auditor can revise it here to
+  // see the Fuel Sold table recompute live. This never writes back to Fuel
+  // Rate History or any fuel entry — it only changes what THIS report's
+  // Amount column shows (Rounded Litres × this rate), independent of
+  // whatever rate each shift's own entries were actually saved with
+  // (dayTotals.petrolAmount/dieselAmount/oilAmount, still used elsewhere on
+  // this screen, e.g. the Overall Day Total banner).
+  const [auditRatePetrol, setAuditRatePetrol] = useState('')
+  const [auditRateDiesel, setAuditRateDiesel] = useState('')
+  const [auditRateOil, setAuditRateOil] = useState('')
 
   const variance = Number(editedVariance) || 0
   const dayEntries = useMemo(() => [...(pump1.entries || []), ...(pump2.entries || [])], [pump1.entries, pump2.entries])
@@ -468,9 +526,21 @@ export default function AuditModal({
   // Math.max(0, ...): a day with barely any fuel sold (a half-day open, or a
   // near-empty tank) could plausibly sell under 20L total — the fixed daily
   // testing deduction must never push a real, small sale figure negative.
-  const roundedPetrolLtr = Math.max(0, pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters - AUDIT_TESTING_DEDUCTION_LTR)
-  const roundedDieselLtr = Math.max(0, pump1DieselBreakdown.liters + pump2DieselBreakdown.liters - AUDIT_TESTING_DEDUCTION_LTR)
+  // The 20L allowance is charged exactly once per day, against whichever
+  // audit is that day's LAST one: the main day audit when there's no Shift 3
+  // report, or Shift 3's own report when Shift 3 IS enabled for this date
+  // (hasShift3) — never both, and never the main audit once Shift 3 exists.
+  const testingDeductionLtr = isDayAudit ? (hasShift3 ? 0 : AUDIT_TESTING_DEDUCTION_LTR) : AUDIT_TESTING_DEDUCTION_LTR
+  const roundedPetrolLtr = Math.max(0, pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters - testingDeductionLtr)
+  const roundedDieselLtr = Math.max(0, pump1DieselBreakdown.liters + pump2DieselBreakdown.liters - testingDeductionLtr)
   const exactOilLtr = pump2OilBreakdown.liters
+  // Audit-only Amount = this report's own Rounded/Exact Litres × the
+  // auditor-revisable rate above — deliberately NOT dayTotals.petrolAmount/
+  // dieselAmount/oilAmount (each shift's own saved rate × its own litres),
+  // so revising the rate here recomputes the whole row instantly.
+  const auditPetrolAmount = roundedPetrolLtr * (Number(auditRatePetrol) || 0)
+  const auditDieselAmount = roundedDieselLtr * (Number(auditRateDiesel) || 0)
+  const auditOilAmount = exactOilLtr * (Number(auditRateOil) || 0)
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
   const employeeCreditLabel = FUEL_ENTRY_TEXT[language].pumpEditor.employeeCreditLabel
@@ -480,6 +550,11 @@ export default function AuditModal({
   const remainingExpenseRows = useMemo(() => remainingExpensesBreakdown(dayEntries), [dayEntries])
   const remainingExpensesTotal = useMemo(() => remainingExpenseRows.reduce((sum, r) => sum + r.amount, 0), [remainingExpenseRows])
   const pocketAndServoOilAmount = dayTotals.pocketOilTotal + dayTotals.caneOilTotal
+  // This table's own bottom-line total — mirrors fuelCalc.js's
+  // totalSaleAmount formula (fuel amounts + pocket/servo oil), but built from
+  // the audit-rate amounts above instead of dayTotals', so it stays
+  // internally consistent with the rows actually shown in this table.
+  const auditTotalSaleAmount = auditPetrolAmount + auditDieselAmount + auditOilAmount + pocketAndServoOilAmount
   const lubricantSalesRows = useMemo(() => lubricantSalesBreakdown(dayEntries, lubricants), [dayEntries, lubricants])
   const lubricantOffersApplied = useMemo(() => caneOilOffersApplied(dayEntries), [dayEntries])
 
@@ -498,6 +573,48 @@ export default function AuditModal({
     return rows
   }, [creditCustomers, date])
   const todaysCreditPaymentsTotal = useMemo(() => todaysCreditPayments.reduce((sum, r) => sum + r.amount, 0), [todaysCreditPayments])
+
+  // Explicit action, never automatic — the manager fills in Opening Stock/
+  // Stock Received and clicks Save, same "nothing happens until a real
+  // click" contract as every other write in this app (see
+  // FuelStockLogService.create_or_revise for the actual upsert-by-date
+  // logic). Sold Today/Current Stock are never part of this write — they're
+  // always computed live from the real fuel entries wherever they're shown,
+  // so editing a meter reading for this date afterward can't leave a stale
+  // figure behind; only Opening Stock/Stock Received themselves are ever
+  // saved, and saving them again for the same date just replaces this row.
+  const [savingStock, setSavingStock] = useState(false)
+
+  async function handleSaveStock() {
+    // Current Stock going negative means the typed Opening Stock/Stock
+    // Received figures can't be right (there's physically no such thing as
+    // negative fuel in the tank) — caught here, before the write, rather
+    // than saving a nonsensical figure the next checkpoint would then carry
+    // forward too.
+    if (currentStockPetrol < 0) {
+      toast.error(t.toastNegativeStock(t.colPetrol, roundLtr(currentStockPetrol)))
+      return
+    }
+    if (currentStockDiesel < 0) {
+      toast.error(t.toastNegativeStock(t.colDiesel, roundLtr(currentStockDiesel)))
+      return
+    }
+    setSavingStock(true)
+    try {
+      await saveFuelStockLog(date, {
+        isShift3: !isDayAudit,
+        petrolOpeningStock: Number(openingStockPetrol) || 0,
+        petrolStockReceived: Number(stockReceivedPetrol) || 0,
+        dieselOpeningStock: Number(openingStockDiesel) || 0,
+        dieselStockReceived: Number(stockReceivedDiesel) || 0,
+      })
+      toast.success(t.toastStockSaved)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setSavingStock(false)
+    }
+  }
 
   // addLedgerEntry is a real network call with no optimistic update (unlike
   // the fuel-entry autosave elsewhere in this app) — the "today's credit
@@ -576,15 +693,15 @@ export default function AuditModal({
     sheet.addRow([])
 
     sheet.addRow([t.daySummaryTitle]).font = { bold: true }
-    const header = sheet.addRow([t.colFuel, t.colLitres, t.colAmount])
+    const header = sheet.addRow([t.colFuel, t.colLitres, t.colRate, t.colAmount])
     header.font = { bold: true }
-    sheet.addRow([t.colPetrol, roundedPetrolLtr, roundedCurrency(dayTotals.petrolAmount)])
-    sheet.addRow(['', t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
-    sheet.addRow([t.colDiesel, roundedDieselLtr, roundedCurrency(dayTotals.dieselAmount)])
-    sheet.addRow(['', t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
-    if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, roundedCurrency(dayTotals.oilAmount)])
-    sheet.addRow([t.colPocketCane, '—', roundedCurrency(pocketAndServoOilAmount)])
-    sheet.addRow([t.fieldSale, '', roundedCurrency(dayTotals.totalSaleAmount)]).font = { bold: true }
+    sheet.addRow([t.colPetrol, roundedPetrolLtr, Number(auditRatePetrol) || 0, roundedCurrency(auditPetrolAmount)])
+    if (testingDeductionLtr > 0) sheet.addRow(['', t.testingDeductionNote(testingDeductionLtr)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
+    sheet.addRow([t.colDiesel, roundedDieselLtr, Number(auditRateDiesel) || 0, roundedCurrency(auditDieselAmount)])
+    if (testingDeductionLtr > 0) sheet.addRow(['', t.testingDeductionNote(testingDeductionLtr)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
+    if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, Number(auditRateOil) || 0, roundedCurrency(auditOilAmount)])
+    sheet.addRow([t.colPocketCane, '—', '—', roundedCurrency(pocketAndServoOilAmount)])
+    sheet.addRow([t.fieldSale, '', '', roundedCurrency(auditTotalSaleAmount)]).font = { bold: true }
     sheet.addRow([])
 
     sheet.addRow([t.lubricantSalesTitle]).font = { bold: true }
@@ -732,6 +849,7 @@ export default function AuditModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={modalTitle} maxWidth="max-w-7xl">
       {sendingAction === 'email' ? <FullPageLoader label={t.sendingEmailLabel} /> : null}
+      {savingStock ? <FullPageLoader label={t.savingStockLabel} /> : null}
       {addingCreditPayment ? (
         <FullPageLoader label={t.recordingCreditPaymentLabel} />
       ) : removingCreditPaymentId != null ? (
@@ -767,6 +885,7 @@ export default function AuditModal({
                 <tr className="text-slate-400">
                   <th className="px-3 py-2 font-semibold">{t.colFuel}</th>
                   <th className="px-3 py-2 font-semibold">{t.colLitres}</th>
+                  <th className="px-3 py-2 font-semibold">{t.colRate}</th>
                   <th className="px-3 py-2 text-right font-semibold">{t.colAmount}</th>
                 </tr>
               </thead>
@@ -787,7 +906,7 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
-                            testingDeduction: AUDIT_TESTING_DEDUCTION_LTR,
+                            testingDeduction: testingDeductionLtr,
                             testingDeductionLabel: t.testingDeductionLabel,
                           })}
                         />
@@ -795,15 +914,16 @@ export default function AuditModal({
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedPetrolLtr} L</span>
                     </AppTooltip>
-                    <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)}</p>
+                    {testingDeductionLtr > 0 ? (
+                      <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(testingDeductionLtr)}</p>
+                    ) : null}
                   </td>
-                  <td className="px-3 py-2 text-right text-slate-600">
-                    <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.petrolLtr, dayTotals.petrolAmount, t)} />}>
-                      <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">
-                        {roundedCurrency(dayTotals.petrolAmount)}
-                      </span>
-                    </AppTooltip>
+                  <td className="px-3 py-2">
+                    <div className="w-20">
+                      <Input type="number" step="any" min="0" value={auditRatePetrol} onChange={(e) => setAuditRatePetrol(e.target.value)} placeholder="0" />
+                    </div>
                   </td>
+                  <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditPetrolAmount)}</td>
                 </tr>
                 <tr className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold text-blue-600">{t.colDiesel}</td>
@@ -821,7 +941,7 @@ export default function AuditModal({
                             note: t.litersRoundOffNote,
                             shiftLabel,
                             nozzleLabel,
-                            testingDeduction: AUDIT_TESTING_DEDUCTION_LTR,
+                            testingDeduction: testingDeductionLtr,
                             testingDeductionLabel: t.testingDeductionLabel,
                           })}
                         />
@@ -829,15 +949,16 @@ export default function AuditModal({
                     >
                       <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">{roundedDieselLtr} L</span>
                     </AppTooltip>
-                    <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(AUDIT_TESTING_DEDUCTION_LTR)}</p>
+                    {testingDeductionLtr > 0 ? (
+                      <p className="mt-0.5 text-[11px] font-normal text-slate-400">{t.testingDeductionNote(testingDeductionLtr)}</p>
+                    ) : null}
                   </td>
-                  <td className="px-3 py-2 text-right text-slate-600">
-                    <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.dieselLtr, dayTotals.dieselAmount, t)} />}>
-                      <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">
-                        {roundedCurrency(dayTotals.dieselAmount)}
-                      </span>
-                    </AppTooltip>
+                  <td className="px-3 py-2">
+                    <div className="w-20">
+                      <Input type="number" step="any" min="0" value={auditRateDiesel} onChange={(e) => setAuditRateDiesel(e.target.value)} placeholder="0" />
+                    </div>
                   </td>
+                  <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditDieselAmount)}</td>
                 </tr>
                 {dayTotals.oilLtr ? (
                   <tr className="border-t border-slate-100">
@@ -863,23 +984,23 @@ export default function AuditModal({
                         </span>
                       </AppTooltip>
                     </td>
-                    <td className="px-3 py-2 text-right text-slate-600">
-                      <AppTooltip title={<CalcBreakdown {...pricingTooltip(dayTotals.oilLtr, dayTotals.oilAmount, t)} />}>
-                        <span className="cursor-help underline decoration-dotted decoration-slate-300 underline-offset-4">
-                          {roundedCurrency(dayTotals.oilAmount)}
-                        </span>
-                      </AppTooltip>
+                    <td className="px-3 py-2">
+                      <div className="w-20">
+                        <Input type="number" step="any" min="0" value={auditRateOil} onChange={(e) => setAuditRateOil(e.target.value)} placeholder="0" />
+                      </div>
                     </td>
+                    <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditOilAmount)}</td>
                   </tr>
                 ) : null}
                 <tr className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold text-emerald-700">{t.colPocketCane}</td>
                   <td className="px-3 py-2 text-slate-400">—</td>
+                  <td className="px-3 py-2 text-slate-400">—</td>
                   <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(pocketAndServoOilAmount)}</td>
                 </tr>
                 <tr className="border-t border-slate-200 bg-slate-50">
-                  <td className="px-3 py-2 font-bold text-slate-800" colSpan={2}>{t.fieldSale}</td>
-                  <td className="px-3 py-2 text-right font-bold text-slate-800">{roundedCurrency(dayTotals.totalSaleAmount)}</td>
+                  <td className="px-3 py-2 font-bold text-slate-800" colSpan={3}>{t.fieldSale}</td>
+                  <td className="px-3 py-2 text-right font-bold text-slate-800">{roundedCurrency(auditTotalSaleAmount)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1010,6 +1131,17 @@ export default function AuditModal({
         <div>
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">{t.fuelStockTitle}</p>
           <p className="mb-2 text-xs text-slate-400">{t.stockHint}</p>
+          {openingStockSource ? (
+            <p className="mb-2 flex items-center gap-1 text-xs font-medium text-brand-600">
+              <CalendarDays size={11} className="shrink-0" />
+              {openingStockSource.mode === 'none'
+                ? t.openingStockNoneNote
+                : (openingStockSource.mode === 'saved' ? t.openingStockSavedNote : t.openingStockSourceNote)(
+                    formatDate(openingStockSource.logDate),
+                    openingStockSource.isShift3 ? t.scopeShift3Label : t.scopeDayLabel,
+                  )}
+            </p>
+          ) : null}
           <div className="overflow-x-auto rounded-lg border border-slate-200">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50">
@@ -1204,6 +1336,13 @@ export default function AuditModal({
             <SecondaryButton type="button" onClick={handleDownload} disabled={sending}>
               <Download size={15} /> {t.downloadButton}
             </SecondaryButton>
+            {/* PrimaryButton, not SecondaryButton — this is a real write to
+                the database (see saveFuelStockLog), not a passive display
+                action. */}
+            <PrimaryButton type="button" onClick={handleSaveStock} disabled={savingStock}>
+              {savingStock ? <Loader2 size={15} className="animate-spin" /> : null}
+              {t.saveStockButton}
+            </PrimaryButton>
             <PrimaryButton type="button" onClick={handleSendEmail} disabled={sending}>
               {sendingAction === 'email' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} {t.sendWhatsAppButton}
             </PrimaryButton>

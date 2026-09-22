@@ -1,17 +1,17 @@
 import { todayISO } from './format.js'
 
-// fuelRateHistory: [{ effectiveFrom: 'YYYY-MM-DD', petrol, diesel }] — the
-// entry whose effectiveFrom is the latest one on/before a given date is the
-// retail rate in force on that date. Same date-effective pattern as employee
-// salaryHistory / lubricant priceHistory — the pump price for petrol/diesel
-// is realistically revised almost daily, unlike 2T oil (machine) which stays
-// a flat figure (see FUEL_RATES in mockData.js).
+// fuelRateHistory: [{ effectiveFrom: 'YYYY-MM-DD', petrol, diesel, oil }] —
+// the entry whose effectiveFrom is the latest one on/before a given date is
+// the retail rate in force on that date. Same date-effective pattern as
+// employee salaryHistory / lubricant priceHistory — real, backend-persisted
+// history now (see DataContext's reviseFuelRate), covering 2T oil too, not
+// just petrol/diesel.
 
 export function sortedFuelRateHistory(history) {
   return [...(history || [])].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
 }
 
-const ZERO_RATE = { petrol: 0, diesel: 0 }
+const ZERO_RATE = { petrol: 0, diesel: 0, oil: 0 }
 
 export function fuelRatesOnDate(history, dateISO) {
   let rates = ZERO_RATE

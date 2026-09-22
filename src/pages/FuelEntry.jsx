@@ -41,11 +41,37 @@ import { FullPageLoader } from '../components/Loader.jsx'
 // OMC can revise pump price almost daily) that the manager needs to confirm
 // or revise it right here each day, rather than it living behind a settings
 // screen they'd rarely think to open.
-function TodayRateCard({ fuelRateHistory, onRevise }) {
+function TodayRateCard({ fuelRateHistory, onRevise, onDelete }) {
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language].todayRate
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(() => ({ ...currentFuelRates(fuelRateHistory), effectiveFrom: todayISO() }))
+  // onRevise is a real network call now (see DataContext's reviseFuelRate) —
+  // disables the form and shows a spinner for exactly that window, so a
+  // failed save (e.g. offline) doesn't quietly claim success the way it
+  // used to when this only ever wrote to local state.
+  const [saving, setSaving] = useState(false)
+  // Removing a past revision, same "confirm, then show which row is in
+  // flight" pattern as every other delete in this app (see Lubricants'
+  // purchase-history rows). Confirming can't accidentally submit the "Save
+  // Changes" form above it — this whole delete flow lives in its own
+  // ConfirmDialog, entirely separate from that form's own submit handler.
+  const [confirmDeleteEntry, setConfirmDeleteEntry] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+
+  async function confirmDelete() {
+    if (!confirmDeleteEntry) return
+    setDeletingId(confirmDeleteEntry.id)
+    try {
+      await onDelete(confirmDeleteEntry.id, confirmDeleteEntry.effectiveFrom)
+      toast.success(t.toastRateDeleted)
+      setConfirmDeleteEntry(null)
+    } catch (err) {
+      toast.error(err.message || t.toastRateUpdateFailed)
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const rates = currentFuelRates(fuelRateHistory)
   const confirmed = isTodayRateConfirmed(fuelRateHistory)
@@ -55,74 +81,99 @@ function TodayRateCard({ fuelRateHistory, onRevise }) {
     setModalOpen(true)
   }
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault()
-    onRevise({
-      petrol: Number(form.petrol) || 0,
-      diesel: Number(form.diesel) || 0,
-      effectiveFrom: form.effectiveFrom,
-    })
-    toast.success(t.toastRateUpdated)
-    setModalOpen(false)
+    setSaving(true)
+    try {
+      await onRevise({
+        petrol: Number(form.petrol) || 0,
+        diesel: Number(form.diesel) || 0,
+        oil: Number(form.oil) || 0,
+        effectiveFrom: form.effectiveFrom,
+      })
+      toast.success(t.toastRateUpdated)
+      setModalOpen(false)
+    } catch (err) {
+      toast.error(err.message || t.toastRateUpdateFailed)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <>
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35 }}
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 shadow-card ${
-          confirmed ? 'border-slate-200 bg-white' : 'border-amber-200 bg-amber-50'
-        }`}
-      >
-        <div className="flex items-center gap-3">
-          <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${confirmed ? 'bg-brand-50 text-brand-600' : 'bg-amber-100 text-amber-600'}`}>
-            <Tag size={16} />
-          </span>
-          <div>
-            <p className="text-sm font-bold text-slate-800">{t.sectionTitle}</p>
-            <p className="text-xs font-medium text-slate-500">
-              {t.fieldPetrolRate.replace(' (₹/L)', '')}: <span className="font-bold text-slate-700">{formatCurrency(rates.petrol)}</span>
-              <span className="mx-1.5 text-slate-300">·</span>
-              {t.fieldDieselRate.replace(' (₹/L)', '')}: <span className="font-bold text-slate-700">{formatCurrency(rates.diesel)}</span>
-            </p>
-            {!confirmed ? <p className="mt-0.5 text-xs font-semibold text-amber-600">{t.confirmPrompt}</p> : null}
-          </div>
-        </div>
+      {/* Collapsed from a full-width banner card into one compact toolbar
+          button (sits next to the history date filter) — same trigger,
+          same modal, same confirmed/unconfirmed states, just far less
+          vertical space now that it's not the first thing on the page. */}
+      <AppTooltip title={confirmed ? t.reviseButton : t.confirmPrompt}>
         <button
           type="button"
           onClick={openModal}
-          className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
-            confirmed ? 'bg-brand-50 text-brand-700 hover:bg-brand-100' : 'bg-amber-600 text-white hover:bg-amber-700'
+          className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+            confirmed
+              ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
           }`}
         >
-          {confirmed ? t.reviseButton : t.confirmButton}
+          <Tag size={13} className={confirmed ? 'text-brand-600' : 'text-amber-600'} />
+          <span className="whitespace-nowrap">
+            {t.fieldPetrolRate.replace(' (₹/L)', '')}: <strong>{formatCurrency(rates.petrol)}</strong>
+            <span className="mx-1 text-slate-300">·</span>
+            {t.fieldDieselRate.replace(' (₹/L)', '')}: <strong>{formatCurrency(rates.diesel)}</strong>
+            <span className="mx-1 text-slate-300">·</span>
+            {t.fieldOilRate.replace(' (₹/L)', '')}: <strong>{formatCurrency(rates.oil)}</strong>
+          </span>
+          {!confirmed ? <span className="ml-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> : null}
         </button>
-      </motion.div>
+      </AppTooltip>
 
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={t.sectionTitle}>
         <form onSubmit={submit} className="space-y-4">
           <p className="text-xs text-slate-500">{t.hint}</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label={t.fieldPetrolRate}>
-              <Input type="number" min="0" step="any" value={form.petrol} onChange={(e) => setForm({ ...form, petrol: e.target.value })} />
+              <Input type="number" min="0" step="any" value={form.petrol} onChange={(e) => setForm({ ...form, petrol: e.target.value })} disabled={saving} />
             </Field>
             <Field label={t.fieldDieselRate}>
-              <Input type="number" min="0" step="any" value={form.diesel} onChange={(e) => setForm({ ...form, diesel: e.target.value })} />
+              <Input type="number" min="0" step="any" value={form.diesel} onChange={(e) => setForm({ ...form, diesel: e.target.value })} disabled={saving} />
+            </Field>
+            <Field label={t.fieldOilRate}>
+              <Input type="number" min="0" step="any" value={form.oil} onChange={(e) => setForm({ ...form, oil: e.target.value })} disabled={saving} />
             </Field>
           </div>
           <Field label={t.fieldEffectiveFrom}>
-            <AppDatePicker value={form.effectiveFrom} onChange={(date) => setForm({ ...form, effectiveFrom: date })} className="w-full" />
+            <AppDatePicker
+              value={form.effectiveFrom}
+              onChange={(date) => setForm({ ...form, effectiveFrom: date })}
+              maxDate={todayISO()}
+              className="w-full"
+              disabled={saving}
+            />
           </Field>
           <div>
             <p className="mb-1.5 text-xs font-semibold text-slate-600">{t.rateHistoryTitle}</p>
+            {/* max-h + overflow-y-auto scrolls this list internally once it
+                outgrows its own box — a rate revised often (realistically
+                daily) would otherwise keep stretching the whole modal taller
+                without limit. */}
             <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
               {sortedFuelRateHistory(fuelRateHistory).length ? (
                 [...sortedFuelRateHistory(fuelRateHistory)].reverse().map((entry) => (
-                  <div key={entry.effectiveFrom} className="flex items-center gap-1.5 text-xs text-slate-500">
+                  <div key={entry.id} className="flex items-center gap-1.5 text-xs text-slate-500">
                     <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                    {t.rateHistoryEntry(entry, formatDate(entry.effectiveFrom))}
+                    <span className="flex-1">{t.rateHistoryEntry(entry, formatDate(entry.effectiveFrom))}</span>
+                    <IconButton
+                      type="button"
+                      onClick={() => setConfirmDeleteEntry(entry)}
+                      disabled={deletingId != null}
+                      aria-label={t.deleteRateEntry}
+                      title={t.deleteRateEntry}
+                      tone="delete"
+                      className="shrink-0 !p-1"
+                    >
+                      {deletingId === entry.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                    </IconButton>
                   </div>
                 ))
               ) : (
@@ -131,13 +182,25 @@ function TodayRateCard({ fuelRateHistory, onRevise }) {
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-1">
-            <SecondaryButton type="button" onClick={() => setModalOpen(false)}>
+            <SecondaryButton type="button" onClick={() => setModalOpen(false)} disabled={saving}>
               {FUEL_ENTRY_TEXT[language].cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit">{FUEL_ENTRY_TEXT[language].saveChanges}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={saving}>
+              {saving ? <Loader2 size={15} className="animate-spin" /> : null}
+              {FUEL_ENTRY_TEXT[language].saveChanges}
+            </PrimaryButton>
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={!!confirmDeleteEntry}
+        onClose={() => setConfirmDeleteEntry(null)}
+        onConfirm={confirmDelete}
+        title={t.confirmDeleteRateTitle}
+        description={confirmDeleteEntry ? t.confirmDeleteRateDesc(formatDate(confirmDeleteEntry.effectiveFrom)) : ''}
+        loading={deletingId != null}
+      />
     </>
   )
 }
@@ -168,7 +231,7 @@ function denominationTotal(denominations) {
 }
 
 export default function FuelEntry() {
-  const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, lubricants, creditCustomers } = useData()
+  const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, deleteFuelRateRevision, lubricants, creditCustomers } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
   // fuelEntries loads from the real API now — this used to be a fixed
@@ -625,8 +688,6 @@ export default function FuelEntry() {
       ) : exportingId != null ? (
         <FullPageLoader label={t.exporting} />
       ) : null}
-      {/* TodayRateCard removed for now — <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} /> */}
-
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -643,9 +704,12 @@ export default function FuelEntry() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">
-                  <Plus size={14} /> {t.newDayEntry}
-                </PrimaryButton>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} onDelete={deleteFuelRateRevision} />
+                  <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">
+                    <Plus size={14} /> {t.newDayEntry}
+                  </PrimaryButton>
+                </div>
               }
             />
           </div>
@@ -663,15 +727,18 @@ export default function FuelEntry() {
             dense
             onRowClick={busy ? undefined : (row) => navigate(`/fuel-entry/${row.id}/edit`)}
             trailingContent={
-              <AppTooltip title={t.filterByDateTooltip}>
-                {/* Wide enough for the date text plus MUI's own clear (x) and
-                    calendar-toggle icon buttons together without truncating
-                    once a date is picked — narrower widths (this started at
-                    168px) clipped the day/month digits right under the icons. */}
-                <div className="w-full shrink-0 sm:w-[200px]">
-                  <AppDatePicker value={dateFilter} onChange={setDateFilter} maxDate={todayISO()} clearable className="w-full" />
-                </div>
-              </AppTooltip>
+              <div className="flex flex-wrap items-center gap-2">
+                <AppTooltip title={t.filterByDateTooltip}>
+                  {/* Wide enough for the date text plus MUI's own clear (x) and
+                      calendar-toggle icon buttons together without truncating
+                      once a date is picked — narrower widths (this started at
+                      168px) clipped the day/month digits right under the icons. */}
+                  <div className="w-full shrink-0 sm:w-[200px]">
+                    <AppDatePicker value={dateFilter} onChange={setDateFilter} maxDate={todayISO()} clearable className="w-full" />
+                  </div>
+                </AppTooltip>
+                <TodayRateCard fuelRateHistory={fuelRateHistory} onRevise={reviseFuelRate} onDelete={deleteFuelRateRevision} />
+              </div>
             }
             toolbarActions={
               <PrimaryButton onClick={() => navigate('/fuel-entry/new')} disabled={busy} className="px-3.5 py-2 text-xs">

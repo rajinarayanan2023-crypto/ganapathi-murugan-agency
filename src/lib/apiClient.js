@@ -459,6 +459,34 @@ export function deleteCommissionRate(id) {
   return apiDelete(`/commission-rates/${id}`)
 }
 
+// ---------- Fuel Rates (retail petrol/diesel/2T oil) ----------
+// Same create-or-revise-by-date pattern as Commission Rates above — a real,
+// shared backend record now, replacing what used to live only in this
+// browser's localStorage (see DataContext.jsx's old usePersistedState).
+export function createOrReviseFuelRate(data) {
+  return apiAuthPost('/fuel-rates', data)
+}
+
+export function getFuelRateHistory() {
+  return apiGet('/fuel-rates')
+}
+
+export function deleteFuelRateRevision(id) {
+  return apiDelete(`/fuel-rates/${id}`)
+}
+
+// ---------- Fuel Stock Log (daily Opening Stock / Stock Received) ----------
+// One row per calendar date, same create-or-revise pattern — see
+// app/services/fuel_stock_log_service.py for why only these two figures per
+// fuel are ever stored (Sold/Current Stock are always computed live).
+export function createOrReviseFuelStockLog(data) {
+  return apiAuthPost('/fuel-stock-logs', data)
+}
+
+export function getFuelStockLogs() {
+  return apiGet('/fuel-stock-logs')
+}
+
 // ---------- Dashboard ----------
 // month is 'YYYY-MM'. Server-side aggregate (litres/commission/expenses/
 // profit) computed from historically-correct commission rates — see

@@ -579,6 +579,7 @@ export default function FuelEntryForm() {
         employees={employees}
         creditCustomers={creditCustomers}
         lubricants={lubricants}
+        hasShift3={dayBreakdown.hasShift3}
       />
 
       {dayBreakdown.hasShift3 ? (

@@ -1,7 +1,5 @@
 import React, { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import {
-  FUEL_RATES,
-  FUEL_RATE_HISTORY,
   COMMISSION_RATES,
   STATION,
 } from '../data/mockData.js'
@@ -60,6 +58,11 @@ import {
   createOrReviseCommissionRate as apiCreateOrReviseCommissionRate,
   getCommissionRateHistory as apiGetCommissionRateHistory,
   deleteCommissionRate as apiDeleteCommissionRate,
+  createOrReviseFuelRate as apiCreateOrReviseFuelRate,
+  getFuelRateHistory as apiGetFuelRateHistory,
+  deleteFuelRateRevision as apiDeleteFuelRateRevision,
+  createOrReviseFuelStockLog as apiCreateOrReviseFuelStockLog,
+  getFuelStockLogs as apiGetFuelStockLogs,
   getDashboardSummary as apiGetDashboardSummary,
 } from '../lib/apiClient.js'
 
@@ -146,7 +149,22 @@ export function DataProvider({ children }) {
   const [offerHistoryError, setOfferHistoryError] = useState(null)
   const [station, setStation] = usePersistedState('station', () => STATION)
   const [commissionRates, setCommissionRates] = usePersistedState('commissionRates', () => COMMISSION_RATES)
-  const [fuelRateHistory, setFuelRateHistory] = usePersistedState('fuelRateHistory', () => FUEL_RATE_HISTORY)
+  // Fuel Rate History (retail petrol/diesel/2T oil) now comes from the real
+  // API (see loadFuelRateHistory below) rather than this browser's own
+  // localStorage — a revision is now visible from any device/tablet and
+  // survives clearing browser storage, and 2T oil is now a real dated
+  // revision here too instead of the flat FUEL_RATES.oil constant it used
+  // to always read as (see fuelRates in the context value below).
+  const [fuelRateHistory, setFuelRateHistory] = useState([])
+  const [fuelRateHistoryLoading, setFuelRateHistoryLoading] = useState(false)
+  const [fuelRateHistoryError, setFuelRateHistoryError] = useState(null)
+  // Fuel Stock Log — one row per date, the two figures the Audit modal's
+  // Fuel Stock section can't get from anywhere else (Opening Stock, Stock
+  // Received). See app/models/fuel_stock_log.py for why Sold/Current Stock
+  // are never stored here.
+  const [fuelStockLogs, setFuelStockLogs] = useState([])
+  const [fuelStockLogsLoading, setFuelStockLogsLoading] = useState(false)
+  const [fuelStockLogsError, setFuelStockLogsError] = useState(null)
 
   // ---------- Auth ----------
   // The refresh token AND a snapshot of the logged-in user are the two
@@ -390,18 +408,134 @@ export function DataProvider({ children }) {
     invalidateDashboardSummariesFrom(effectiveFrom.slice(0, 7))
   }, [])
 
-  // Adds (or replaces, if effectiveFrom matches an existing entry) a
-  // petrol/diesel retail-rate revision — realistic to happen almost daily,
-  // so (unlike commission) this really does need day-by-day history.
-  const reviseFuelRate = useCallback((patch) => {
-    const { effectiveFrom, ...rates } = patch
-    setFuelRateHistory((prev) => {
-      const history = (prev || []).filter((h) => h.effectiveFrom !== effectiveFrom)
-      history.push({ effectiveFrom, ...rates })
-      history.sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
-      return history
-    })
+  // API <-> UI field names differ (snake_case) — normalized here once, same
+  // reasoning as every other normalize* helper in this file.
+  const normalizeFuelRate = useCallback(
+    (r) => ({ id: r.id, effectiveFrom: r.effective_from, petrol: Number(r.petrol), diesel: Number(r.diesel), oil: Number(r.oil) }),
+    [],
+  )
+
+  const loadFuelRateHistory = useCallback(async () => {
+    setFuelRateHistoryLoading(true)
+    setFuelRateHistoryError(null)
+    try {
+      const data = await apiGetFuelRateHistory()
+      setFuelRateHistory(data.map(normalizeFuelRate))
+    } catch (err) {
+      setFuelRateHistoryError(err.message)
+    } finally {
+      setFuelRateHistoryLoading(false)
+    }
+  }, [normalizeFuelRate])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setFuelRateHistory([])
+      return
+    }
+    loadFuelRateHistory()
+  }, [isAuthenticated, loadFuelRateHistory])
+
+  // Adds (or replaces, if effectiveFrom matches an existing entry — the API
+  // upserts by date server-side) a petrol/diesel/2T-oil retail-rate
+  // revision — realistic to happen almost daily, so (unlike commission)
+  // this really does need day-by-day history. A real backend record now
+  // (see app/models/fuel_rate.py) instead of this browser's own
+  // localStorage, so a revision is visible from any device and 2T oil can
+  // now be revised over time too instead of staying a flat constant.
+  const reviseFuelRate = useCallback(
+    async (patch) => {
+      const effectiveFrom = patch.effectiveFrom || todayISO()
+      const saved = await apiCreateOrReviseFuelRate({
+        effective_from: effectiveFrom,
+        petrol: Number(patch.petrol) || 0,
+        diesel: Number(patch.diesel) || 0,
+        oil: Number(patch.oil) || 0,
+      })
+      const rate = normalizeFuelRate(saved)
+      setFuelRateHistory((prev) => {
+        const history = prev.filter((h) => h.effectiveFrom !== rate.effectiveFrom)
+        history.push(rate)
+        history.sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+        return history
+      })
+      return rate
+    },
+    [normalizeFuelRate],
+  )
+
+  const deleteFuelRateRevision = useCallback(async (id, effectiveFrom) => {
+    await apiDeleteFuelRateRevision(id)
+    setFuelRateHistory((prev) => prev.filter((h) => h.effectiveFrom !== effectiveFrom))
   }, [])
+
+  // ---------- Fuel Stock Log ----------
+  // One row per date — Opening Stock / Stock Received for petrol/diesel,
+  // the two figures the Audit modal's Fuel Stock section can't derive from
+  // anywhere else (see app/models/fuel_stock_log.py). Sold Today/Current
+  // Stock are computed live from fuelEntries wherever they're shown, never
+  // stored here — so correcting a meter reading after the fact can never
+  // leave a stale stock figure behind.
+  const normalizeFuelStockLog = useCallback(
+    (l) => ({
+      id: l.id,
+      logDate: l.log_date,
+      isShift3: l.is_shift3,
+      petrolOpeningStock: Number(l.petrol_opening_stock),
+      petrolStockReceived: Number(l.petrol_stock_received),
+      dieselOpeningStock: Number(l.diesel_opening_stock),
+      dieselStockReceived: Number(l.diesel_stock_received),
+    }),
+    [],
+  )
+
+  const loadFuelStockLogs = useCallback(async () => {
+    setFuelStockLogsLoading(true)
+    setFuelStockLogsError(null)
+    try {
+      const data = await apiGetFuelStockLogs()
+      setFuelStockLogs(data.map(normalizeFuelStockLog))
+    } catch (err) {
+      setFuelStockLogsError(err.message)
+    } finally {
+      setFuelStockLogsLoading(false)
+    }
+  }, [normalizeFuelStockLog])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setFuelStockLogs([])
+      return
+    }
+    loadFuelStockLogs()
+  }, [isAuthenticated, loadFuelStockLogs])
+
+  // Saves (or replaces, if logDate matches a row already on record — the API
+  // upserts by date server-side) one date's Opening Stock/Stock Received
+  // figures — called from the Audit modal's own explicit "Save Stock"
+  // action, never automatically, so a manager always knows exactly when
+  // this was actually written to the database.
+  const saveFuelStockLog = useCallback(
+    async (logDate, { isShift3 = false, petrolOpeningStock, petrolStockReceived, dieselOpeningStock, dieselStockReceived }) => {
+      const saved = await apiCreateOrReviseFuelStockLog({
+        log_date: logDate,
+        is_shift3: isShift3,
+        petrol_opening_stock: Number(petrolOpeningStock) || 0,
+        petrol_stock_received: Number(petrolStockReceived) || 0,
+        diesel_opening_stock: Number(dieselOpeningStock) || 0,
+        diesel_stock_received: Number(dieselStockReceived) || 0,
+      })
+      const log = normalizeFuelStockLog(saved)
+      setFuelStockLogs((prev) => {
+        const logs = prev.filter((l) => !(l.logDate === log.logDate && l.isShift3 === log.isShift3))
+        logs.push(log)
+        logs.sort((a, b) => a.logDate.localeCompare(b.logDate))
+        return logs
+      })
+      return log
+    },
+    [normalizeFuelStockLog],
+  )
 
   // ---------- Employees & Attendance ----------
   // API <-> UI field names differ (snake_case, and history/credit rows keyed
@@ -1459,9 +1593,16 @@ export function DataProvider({ children }) {
     () => ({
       station,
       updateStation,
-      fuelRates: { ...currentFuelRates(fuelRateHistory), oil: FUEL_RATES.oil },
+      fuelRates: currentFuelRates(fuelRateHistory),
       fuelRateHistory,
+      fuelRateHistoryLoading,
+      fuelRateHistoryError,
       reviseFuelRate,
+      deleteFuelRateRevision,
+      fuelStockLogs,
+      fuelStockLogsLoading,
+      fuelStockLogsError,
+      saveFuelStockLog,
       commissionRates,
       updateCommissionRates,
       getCommissionRateHistory,
@@ -1542,7 +1683,14 @@ export function DataProvider({ children }) {
       station,
       updateStation,
       fuelRateHistory,
+      fuelRateHistoryLoading,
+      fuelRateHistoryError,
       reviseFuelRate,
+      deleteFuelRateRevision,
+      fuelStockLogs,
+      fuelStockLogsLoading,
+      fuelStockLogsError,
+      saveFuelStockLog,
       commissionRates,
       updateCommissionRates,
       getCommissionRateHistory,
