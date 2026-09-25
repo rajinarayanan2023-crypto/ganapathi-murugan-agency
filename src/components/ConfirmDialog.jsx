@@ -30,6 +30,18 @@ const CONFIRM_TONE_STYLES = {
     confirm:
       'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60',
   },
+  // For a real, consequential-but-not-destructive action (e.g. sending an
+  // actual WhatsApp message to a customer) — 'danger' reads as alarming for
+  // this ("delete"-red Send button), and 'leave' inverts the wrong pair
+  // (it's built for "stay vs. discard unsaved changes"). Confirm gets the
+  // same bold brand-gradient styling PrimaryButton uses everywhere else;
+  // Cancel stays the same plain outline as 'danger'.
+  brand: {
+    cancel:
+      'rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
+    confirm:
+      'inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60',
+  },
 }
 
 export default function ConfirmDialog({

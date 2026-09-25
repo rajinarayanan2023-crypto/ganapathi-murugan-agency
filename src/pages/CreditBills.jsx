@@ -83,6 +83,12 @@ export default function CreditBills() {
   // modal — keyed by ledger entry id, not customer id, since a customer-
   // level send and a specific-row send are two different requests.
   const [sendingTxReminderId, setSendingTxReminderId] = useState(null)
+  // Both WhatsApp buttons below open a confirmation instead of sending
+  // straight away — this is a real message to a real customer (and, with a
+  // bill attached, a real document send), not a reversible local edit, so an
+  // accidental click on the icon shouldn't fire it immediately.
+  const [confirmSendReminder, setConfirmSendReminder] = useState(null)
+  const [confirmSendTxReminder, setConfirmSendTxReminder] = useState(null)
 
   // One combined flag covering every kind of in-flight write this page can
   // make — while any of them is running, every OTHER action on this screen
@@ -282,6 +288,7 @@ export default function CreditBills() {
     try {
       await sendCreditReminder(c.id)
       toast.success(t.toastReminderSent(c.name))
+      setConfirmSendReminder(null)
     } catch (err) {
       toast.error(err.message || t.errorReminderFailed)
     } finally {
@@ -299,6 +306,7 @@ export default function CreditBills() {
     try {
       await sendLedgerEntryReminder(c.id, tx.id)
       toast.success(t.toastReminderSent(c.name))
+      setConfirmSendTxReminder(null)
     } catch (err) {
       toast.error(err.message || t.errorReminderFailed)
     } finally {
@@ -527,7 +535,7 @@ export default function CreditBills() {
       body: (c) => (
         <div className="flex items-center justify-end gap-1">
           <IconButton
-            onClick={() => handleSendReminder(c)}
+            onClick={() => setConfirmSendReminder(c)}
             disabled={busy || !c.phone}
             aria-label={t.tooltipSendReminder}
             title={c.phone ? t.tooltipSendReminder : t.tooltipPhone}
@@ -929,7 +937,7 @@ export default function CreditBills() {
                               <AppTooltip title={t.tooltipWhatsApp}>
                                 <button
                                   type="button"
-                                  onClick={() => sendTransactionReminder(ledgerCustomer, tx)}
+                                  onClick={() => setConfirmSendTxReminder({ customer: ledgerCustomer, tx })}
                                   disabled={busy}
                                   className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t.tooltipWhatsApp}
@@ -997,6 +1005,28 @@ export default function CreditBills() {
         title={t.removeAttachmentTitle}
         description={t.removeAttachmentDesc}
         confirmLabel={t.removeAttachment}
+      />
+
+      <ConfirmDialog
+        isOpen={!!confirmSendReminder}
+        onClose={() => setConfirmSendReminder(null)}
+        onConfirm={() => handleSendReminder(confirmSendReminder)}
+        title={t.confirmSendReminderTitle}
+        description={confirmSendReminder ? t.confirmSendReminderDesc(confirmSendReminder.name) : ''}
+        confirmLabel={t.confirmSendReminderButton}
+        confirmTone="brand"
+        loading={sendingReminderId != null}
+      />
+
+      <ConfirmDialog
+        isOpen={!!confirmSendTxReminder}
+        onClose={() => setConfirmSendTxReminder(null)}
+        onConfirm={() => sendTransactionReminder(confirmSendTxReminder.customer, confirmSendTxReminder.tx)}
+        title={t.confirmSendReminderTitle}
+        description={confirmSendTxReminder ? t.confirmSendTxReminderDesc(confirmSendTxReminder.customer.name) : ''}
+        confirmLabel={t.confirmSendReminderButton}
+        confirmTone="brand"
+        loading={sendingTxReminderId != null}
       />
     </div>
   )

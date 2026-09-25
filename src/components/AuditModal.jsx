@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { Send, Download, ClipboardCheck, X, Loader2, CalendarDays } from 'lucide-react'
 import Modal from './Modal.jsx'
+import ConfirmDialog from './ConfirmDialog.jsx'
 import { FullPageLoader } from './Loader.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
@@ -609,6 +610,11 @@ export default function AuditModal({
         dieselStockReceived: Number(stockReceivedDiesel) || 0,
       })
       toast.success(t.toastStockSaved)
+      // Flips the button straight to "Update Stock" without needing to
+      // close/reopen this modal — mirrors what reopening it would show
+      // anyway (see the isOpen/date effect above, which sets this same
+      // 'saved' mode from the freshly-written row).
+      setOpeningStockSource({ mode: 'saved', logDate: date, isShift3: !isDayAudit })
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -663,6 +669,11 @@ export default function AuditModal({
   // stays in the list (and could be removed again, or double-toasted) until
   // the request that's supposed to remove it has actually finished.
   const [removingCreditPaymentId, setRemovingCreditPaymentId] = useState(null)
+  // Clicking the X no longer removes immediately — it just opens this
+  // confirmation (holds the row itself, not just an id, so the dialog can
+  // show the customer name/amount) — a real network delete, so an
+  // accidental click shouldn't silently undo a real credit payment.
+  const [confirmRemoveCreditPayment, setConfirmRemoveCreditPayment] = useState(null)
 
   // Undo a mistaken entry — whether it was added here or on the Credit Bills
   // page, as long as it's a payment dated to this audit's day it shows up in
@@ -673,6 +684,7 @@ export default function AuditModal({
     try {
       await removeLedgerEntry(row.customerId, row.id)
       toast.success(t.toastCreditPaymentRemoved)
+      setConfirmRemoveCreditPayment(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -1263,7 +1275,7 @@ export default function AuditModal({
                       <span className="font-bold text-emerald-700">{roundedCurrency(row.amount)}</span>
                       <button
                         type="button"
-                        onClick={() => handleRemoveCreditPayment(row)}
+                        onClick={() => setConfirmRemoveCreditPayment(row)}
                         disabled={removingCreditPaymentId != null}
                         aria-label={t.removeCreditPayment}
                         title={t.removeCreditPayment}
@@ -1341,7 +1353,7 @@ export default function AuditModal({
                 action. */}
             <PrimaryButton type="button" onClick={handleSaveStock} disabled={savingStock}>
               {savingStock ? <Loader2 size={15} className="animate-spin" /> : null}
-              {t.saveStockButton}
+              {openingStockSource?.mode === 'saved' ? t.updateStockButton : t.saveStockButton}
             </PrimaryButton>
             <PrimaryButton type="button" onClick={handleSendEmail} disabled={sending}>
               {sendingAction === 'email' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />} {t.sendWhatsAppButton}
@@ -1349,6 +1361,19 @@ export default function AuditModal({
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={!!confirmRemoveCreditPayment}
+        onClose={() => setConfirmRemoveCreditPayment(null)}
+        onConfirm={() => handleRemoveCreditPayment(confirmRemoveCreditPayment)}
+        title={t.removeCreditPaymentTitle}
+        description={
+          confirmRemoveCreditPayment
+            ? t.removeCreditPaymentDesc(confirmRemoveCreditPayment.customerName, roundedCurrency(confirmRemoveCreditPayment.amount))
+            : ''
+        }
+        loading={removingCreditPaymentId != null}
+      />
     </Modal>
   )
 }
