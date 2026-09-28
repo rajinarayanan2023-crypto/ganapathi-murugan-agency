@@ -9,7 +9,7 @@ import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
 import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
 import { caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
-import { fuelRatesOnDate } from '../utils/fuelRate.js'
+import { fuelRatesForShiftScope } from '../utils/fuelRate.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
@@ -402,18 +402,43 @@ export default function AuditModal({
   // meant to persist as a station-level default across audits.
   useEffect(() => {
     if (!isOpen) return
-    setEditedSale(String(Math.round(dayTotals.totalSaleAmount)))
-    setEditedPayments(String(Math.round(dayTotals.totalPayments)))
-    setEditedVariance(String(Math.round(dayTotals.excessShortage)))
     setAuditorName('')
     setRemarks('')
     // Defaults to the real rate effective on this audit's date, same
     // date-effective lookup the Fuel Entry screen itself uses — not just
-    // "today's" rate, since an audit can be reopened for a past date.
-    const ratesOnDate = fuelRatesOnDate(fuelRateHistory, date)
+    // "today's" rate, since an audit can be reopened for a past date. Uses
+    // the same shift-scoped rule PumpDayEditor's new shift cards do: on the
+    // date a rate revision took effect, the MAIN audit (Shift 1/2's scope)
+    // keeps the rate from before that change, while the Shift 3 audit picks
+    // up the brand new one — see fuelRatesForShiftScope's own comment.
+    const ratesOnDate = fuelRatesForShiftScope(fuelRateHistory, date, !isDayAudit)
     setAuditRatePetrol(String(ratesOnDate.petrol || 0))
     setAuditRateDiesel(String(ratesOnDate.diesel || 0))
     setAuditRateOil(String(ratesOnDate.oil || 0))
+    // Total Sale Amount here must default to the SAME figure the Fuel Sold
+    // table below shows as its own bottom line (auditTotalSaleAmount,
+    // computed further down from these same litres × this audit's rate) —
+    // not dayTotals.totalSaleAmount, which prices litres at each shift's own
+    // saved rate and so can silently disagree with what's on screen right
+    // above this field. Recomputed inline with ratesOnDate (not the
+    // auditRatePetrol/auditRateDiesel/auditRateOil state above, which won't
+    // reflect this render's setAuditRate* calls until the next render) so
+    // this can never show one date's total priced at another date's
+    // leftover rate. roundedPetrolLtr/roundedDieselLtr/exactOilLtr/
+    // pocketAndServoOilAmount are declared further below in this component
+    // but already computed for THIS render by the time this effect actually
+    // runs (effects fire after the full render body has executed).
+    const freshAuditTotalSaleAmount =
+      roundedPetrolLtr * (ratesOnDate.petrol || 0) +
+      roundedDieselLtr * (ratesOnDate.diesel || 0) +
+      exactOilLtr * (ratesOnDate.oil || 0) +
+      pocketAndServoOilAmount
+    setEditedSale(String(Math.round(freshAuditTotalSaleAmount)))
+    setEditedPayments(String(Math.round(dayTotals.totalPayments)))
+    // Excess/Shortage default is simply Total Payments Collected minus this
+    // same audit-consistent Total Sale Amount — not dayTotals.excessShortage,
+    // which is derived from dayTotals.totalSaleAmount (see above).
+    setEditedVariance(String(Math.round(dayTotals.totalPayments - freshAuditTotalSaleAmount)))
     // Fuel Stock — real, saved DB records now (see app/models/fuel_stock_log.py
     // and DataContext's saveFuelStockLog), not re-derived guesses. Both the
     // day audit and the Shift 3 audit get their own checkpoint here
@@ -489,7 +514,7 @@ export default function AuditModal({
   // this is the very first checkpoint ever with nothing before it).
   const [openingStockSource, setOpeningStockSource] = useState(null)
   // Audit-only rate override — defaults to the real rate effective on this
-  // audit's date (see fuelRatesOnDate), but the auditor can revise it here to
+  // audit's date (see fuelRatesForShiftScope), but the auditor can revise it here to
   // see the Fuel Sold table recompute live. This never writes back to Fuel
   // Rate History or any fuel entry — it only changes what THIS report's
   // Amount column shows (Rounded Litres × this rate), independent of

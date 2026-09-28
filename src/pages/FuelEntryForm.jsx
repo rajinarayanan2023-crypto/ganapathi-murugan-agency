@@ -28,7 +28,7 @@ export default function FuelEntryForm() {
   const {
     fuelEntries,
     fuelEntriesLoading,
-    fuelRates,
+    fuelRateHistory,
     employees,
     creditCustomers,
     lubricants,
@@ -470,7 +470,7 @@ export default function FuelEntryForm() {
             tint="violet"
             date={date}
             employees={activeEmployees}
-            fuelRates={fuelRates}
+            fuelRateHistory={fuelRateHistory}
             creditCustomers={creditCustomers}
             onDirtyChange={setPump1Dirty}
           />
@@ -485,7 +485,7 @@ export default function FuelEntryForm() {
             tint="blue"
             date={date}
             employees={activeEmployees}
-            fuelRates={fuelRates}
+            fuelRateHistory={fuelRateHistory}
             creditCustomers={creditCustomers}
             lubricants={lubricants}
             onDirtyChange={setPump2Dirty}

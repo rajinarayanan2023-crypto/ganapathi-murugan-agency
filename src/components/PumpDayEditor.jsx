@@ -39,6 +39,7 @@ import {
   PAYMENT_METHOD_OPTIONS,
 } from '../utils/fuelCalc.js'
 import { formatCurrency, formatDate, formatDateTime, formatEmployeeName, todayISO } from '../utils/format.js'
+import { fuelRatesForShiftScope } from '../utils/fuelRate.js'
 import { purchaseBatchesByCost, lastPurchaseOf, stockAvailableAtCost, availableAtCostBreakdown, round3 } from '../utils/lubricants.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload } from '../lib/apiClient.js'
 import { prepareBillFile } from '../utils/fileValidation.js'
@@ -1935,7 +1936,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     tint,
     date,
     employees,
-    fuelRates,
+    fuelRateHistory,
     creditCustomers,
     lubricants,
     unavailableEmployeeIds,
@@ -1979,7 +1980,10 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
   }
 
   function blankShiftEntry(shiftNumber) {
-    const blank = emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)
+    // Shift 1/2 keep whatever rate was already in force before any change
+    // effective THIS date; only Shift 3 picks up a same-day revision — see
+    // fuelRatesForShiftScope's own comment for why.
+    const blank = emptyShiftEntry(pumpKey, date, shiftNumber, fuelRatesForShiftScope(fuelRateHistory, date, shiftNumber === 3))
     if (shiftNumber === 1) {
       const openings = shift1CarriedOpenings()
       for (const fuelKey of FUEL_KEYS_BY_PUMP[pumpKey]) {
@@ -2077,6 +2081,25 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     if (changed) setActiveShiftIndex(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fuelEntriesLoading])
+
+  // fuelRateHistory loads asynchronously too (same class of race as
+  // fuelEntries above) — the initial blank Shift 1 seed (blankShiftEntry(1)
+  // in the cards useState initializer) only ever runs ONCE, at mount, so a
+  // hard refresh (or just navigating here fast) landing before that fetch
+  // resolves permanently bakes in a blank/zero rate that never gets another
+  // chance to be right, even after the real rate data arrives moments
+  // later. Reacting to real data actually showing up (rather than a loading
+  // boolean, which can misleadingly read "not loading" both before the
+  // fetch starts and after it finishes) re-seeds JUST that one still-
+  // untouched, unsaved Shift 1 slot's rate — never a card the manager has
+  // actually started editing, or one that's already a real saved entry.
+  const rateHistoryResyncedRef = useRef(false)
+  useEffect(() => {
+    if (rateHistoryResyncedRef.current || !fuelRateHistory || fuelRateHistory.length === 0) return
+    rateHistoryResyncedRef.current = true
+    setCards((prev) => prev.map((card) => (card.shiftNumber === 1 && !card.id && !card._editGen ? blankShiftEntry(1) : card)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fuelRateHistory])
 
   const [confirmRemoveIndex, setConfirmRemoveIndex] = useState(null)
   const [removing, setRemoving] = useState(false)
@@ -2236,7 +2259,7 @@ const PumpDayEditor = forwardRef(function PumpDayEditor(
     // 0 after Shift 1 was deleted elsewhere, where `shiftNumber - 1` (1)
     // would activate a tab that doesn't exist.
     setActiveShiftIndex(cards.length)
-    setCards((prev) => [...prev, emptyShiftEntry(pumpKey, date, shiftNumber, fuelRates)])
+    setCards((prev) => [...prev, emptyShiftEntry(pumpKey, date, shiftNumber, fuelRatesForShiftScope(fuelRateHistory, date, shiftNumber === 3))])
   }
 
   // Resolves to the actual array position of the card with this shift
