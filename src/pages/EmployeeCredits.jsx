@@ -2,17 +2,18 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, HandCoins, Banknote, StickyNote, Lock, ArrowLeft } from 'lucide-react'
+import { Plus, Pencil, Trash2, HandCoins, Banknote, StickyNote, Lock, ArrowLeft, Info } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EMPLOYEE_CREDITS_TEXT } from '../i18n/employeeCredits.js'
 import { COMMON_TEXT } from '../i18n/common.js'
-import { formatCurrency, formatDate, formatEmployeeName, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatDateTime, formatEmployeeName, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
+import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
@@ -206,7 +207,12 @@ export default function EmployeeCredits() {
       exportable: false,
       body: (row) =>
         row.sourceFuelEntryId ? null : (
-          <div className="flex justify-end gap-1">
+          <div className="flex items-center justify-end gap-1">
+            {row.createdByName ? (
+              <AppTooltip title={t.creditCreatedByLabel(row.createdByName, formatDateTime(row.createdAt))}>
+                <Info size={11} className="shrink-0 cursor-help text-slate-300 hover:text-slate-400" />
+              </AppTooltip>
+            ) : null}
             <IconButton onClick={() => openEdit(row)} disabled={busy} aria-label={commonT.edit} title={commonT.edit} tone="edit">
               <Pencil size={15} />
             </IconButton>

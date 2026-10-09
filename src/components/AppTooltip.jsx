@@ -55,7 +55,16 @@ export default function AppTooltip({ title, children, ...props }) {
       }}
       {...props}
     >
-      <span className="inline-flex">{children}</span>
+      {/* min-w-0 — a flex item's default min-width is `auto` (its own
+          content's natural width), not 0, so without this a long truncating
+          child wrapped in here (e.g. a product name with `truncate`) could
+          never actually shrink below its full text width no matter how
+          tightly its own flex/grid parent tried to squeeze this span —
+          the overflow just spilled out instead of ellipsizing. Purely
+          permissive (only ever lets something shrink further when its
+          parent is already trying to shrink it); every other call site that
+          isn't inside a shrinking flex/grid context is unaffected. */}
+      <span className="inline-flex min-w-0">{children}</span>
     </Tooltip>
   )
 }

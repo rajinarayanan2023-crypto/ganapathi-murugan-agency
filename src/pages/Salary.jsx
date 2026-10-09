@@ -515,7 +515,12 @@ export default function Salary() {
       align: 'right',
       style: { width: '9%' },
       body: (row) => (
-        <div className="flex justify-end gap-1">
+        <div className="flex items-center justify-end gap-1">
+          {row.createdByName ? (
+            <AppTooltip title={t.employeeCreatedByLabel(row.createdByName, formatDateTime(row.createdAt))}>
+              <Info size={11} className="shrink-0 cursor-help text-slate-300 hover:text-slate-400" />
+            </AppTooltip>
+          ) : null}
           <IconButton onClick={() => openRevise(row)} disabled={busy} aria-label={t.reviseSalary} title={t.reviseSalary} tone="edit">
             <Pencil size={15} />
           </IconButton>

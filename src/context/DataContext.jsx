@@ -696,6 +696,14 @@ export function DataProvider({ children }) {
       joinDate: e.join_date,
       active: e.active,
       notes: e.notes || '',
+      // Employee-record-level audit (when this roster entry itself was
+      // added/last touched) — distinct from the per-entry audit info below
+      // (salaryHistory/credits/payments), which is about each individual
+      // ledger line instead.
+      createdByName: e.created_by_name || null,
+      updatedByName: e.updated_by_name || null,
+      createdAt: e.created_at,
+      updatedAt: e.updated_at,
       salaryHistory: (e.salary_history || []).map((h) => ({
         id: h.id,
         effectiveFrom: h.effective_from,
@@ -712,6 +720,10 @@ export function DataProvider({ children }) {
         type: c.type || 'credit',
         note: c.note || '',
         sourceFuelEntryId: c.source_fuel_entry_id,
+        createdByName: c.created_by_name || null,
+        updatedByName: c.updated_by_name || null,
+        createdAt: c.created_at,
+        updatedAt: c.updated_at,
       })),
       payments: (e.payments || []).map((p) => ({
         id: p.id,
@@ -1313,7 +1325,12 @@ export function DataProvider({ children }) {
       unit: p.unit,
       packaging: p.packaging,
       stock: Number(p.stock),
-      purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
+      // updatedAt carried through purely to break a same-date tie in
+      // utils/lubricants.js's lastPurchaseOf — see its own comment.
+      purchaseHistory: (p.purchase_history || []).map((h) => ({
+        id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost), updatedAt: h.updated_at,
+        createdAt: h.created_at, createdByName: h.created_by_name || null,
+      })),
       lastSoldDate: p.last_sold_date || null,
       totalSold: Number(p.total_sold) || 0,
       // Re-keyed through Number(rate) — the API sends Decimal keys as
@@ -1831,8 +1848,11 @@ export function DataProvider({ children }) {
 
   // ---------- Expenses ----------
   // One record per day, holding however many line items ({id, label, amount})
-  // the manager logged that day — API shape already matches the UI's exactly
-  // (no snake_case fields here), so no normalization is needed.
+  // the manager logged that day — the UI reads this shape directly, no
+  // normalization step. The day record's own audit fields (created_at,
+  // created_by_name, etc.) do come through from the API same as any other
+  // entity's — just still snake_case here, unlike the camelCase every other
+  // normalize* function above produces, since nothing needed them until now.
   const loadExpenses = useCallback(async () => {
     setExpensesLoading(true)
     setExpensesError(null)

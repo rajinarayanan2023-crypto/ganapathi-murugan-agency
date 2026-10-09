@@ -12,10 +12,19 @@ body,
    browser applies to the whole page at the scroll boundary (visible as a
    white gap opening above the app's own header, then snapping shut) that's
    independent of anything in this app's layout; it happens on any page
-   unless explicitly opted out. */
-html,
-body {
-  overscroll-behavior: none;
+   unless explicitly opted out. Scoped to pointer:fine devices (a mouse,
+   not a finger) — this is the exact same browser mechanism Chrome on
+   Android uses to offer pull-to-refresh, so applying it unconditionally
+   silently broke that gesture on every phone, not just the desktop bounce
+   it was meant for. Desktops/laptops (what actually shows the bounce) are
+   reliably pointer:fine; phones/tablets are pointer:coarse, so this still
+   fully fixes the thing it was added for while leaving touch devices with
+   the browser's own default (pull-to-refresh included) intact. */
+@media (pointer: fine) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
 }
 
 body {

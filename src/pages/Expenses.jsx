@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, Receipt, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, Receipt, X, Info } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EXPENSES_TEXT } from '../i18n/expenses.js'
 import { COMMON_TEXT } from '../i18n/common.js'
-import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatDateTime, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -209,7 +209,12 @@ export default function Expenses() {
       align: 'right',
       style: { width: '16%' },
       body: (d) => (
-        <div className="flex justify-end gap-1">
+        <div className="flex items-center justify-end gap-1">
+          {d.created_by_name ? (
+            <AppTooltip title={t.expenseCreatedByLabel(d.created_by_name, formatDateTime(d.created_at))}>
+              <Info size={11} className="shrink-0 cursor-help text-slate-300 hover:text-slate-400" />
+            </AppTooltip>
+          ) : null}
           <AppTooltip title={isManagerOrAdmin ? commonT.edit : t.staffOnlyHint}>
             <span>
               <IconButton onClick={() => openEdit(d)} disabled={writeBlocked} aria-label={commonT.edit} tone="edit">

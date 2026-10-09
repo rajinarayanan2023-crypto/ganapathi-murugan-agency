@@ -1,12 +1,12 @@
 import { memo, useCallback, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, Droplet, PackageSearch, PackagePlus, Tag, Boxes, Search, CalendarDays, Package, Cylinder, History, X, Check, AlertTriangle } from 'lucide-react'
+import { Plus, Pencil, Trash2, Droplet, PackageSearch, PackagePlus, Tag, Boxes, Search, CalendarDays, Package, Cylinder, History, X, Check, AlertTriangle, Info } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LUBRICANTS_TEXT } from '../i18n/lubricants.js'
 import { COMMON_TEXT } from '../i18n/common.js'
-import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
+import { formatCurrency, formatDate, formatDateTime, todayISO } from '../utils/format.js'
 import { latestPurchaseCost, round3, lastPurchaseOf } from '../utils/lubricants.js'
 import { getLubricantSalesHistory } from '../lib/apiClient.js'
 import Modal from '../components/Modal.jsx'
@@ -138,7 +138,7 @@ const ProductGrid = memo(function ProductGrid({
             transition={{ duration: 0.3, delay: Math.min(i * 0.04, 0.4) }}
             whileHover={{ y: -6, scale: 1.02, transition: { type: 'spring', stiffness: 300, damping: 18 } }}
             whileTap={{ scale: 0.985 }}
-            className={`group flex cursor-pointer flex-col rounded-xl border bg-white p-4 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.border} ${theme.ring}`}
+            className={`group flex cursor-pointer flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.border} ${theme.ring}`}
           >
             {/* Name and action icons are two separate rows now, not one
                 flex row split with justify-between — a long product name
@@ -949,6 +949,19 @@ export default function Lubricants() {
                       <div key={entry.id} className="flex items-center gap-1.5 text-xs text-slate-500">
                         <CalendarDays size={11} className="shrink-0 text-slate-400" />
                         <span className="flex-1">{t.historyEntry(entry.qty, livePurchaseTarget.unit, entry.cost, formatDate(entry.date))}</span>
+                        {/* Exact time + who recorded it, on hover — same DB
+                            columns (created_at/created_by) Fuel Entry's own
+                            "Created by X on <date, time>" line already reads
+                            (see PumpDayEditor.jsx), just surfaced here as a
+                            tooltip instead of its own row, to keep this list
+                            dense. createdByName is only null if that user's
+                            account has since been deleted — nothing to show
+                            then, so the icon is skipped entirely. */}
+                        {entry.createdByName ? (
+                          <AppTooltip title={t.purchaseCreatedByLabel(entry.createdByName, formatDateTime(entry.createdAt))}>
+                            <Info size={11} className="shrink-0 cursor-help text-slate-300 hover:text-slate-400" />
+                          </AppTooltip>
+                        ) : null}
                         {SHOW_EDIT_PURCHASE ? (
                           <IconButton
                             type="button"

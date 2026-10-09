@@ -22,13 +22,29 @@ export function purchaseBatchesByCost(product) {
     .sort((a, b) => b.cost - a.cost)
 }
 
-// Most recent purchase on record (by date), or null if the product has
-// never had one logged — e.g. to pre-fill a form with "whatever we last
-// paid for this", same helper Lubricants' own "Record Purchase" form uses.
+// Most recent purchase on record (by date, falling back to updatedAt to
+// break a same-date tie), or null if the product has never had one logged
+// — e.g. to pre-fill a form with "whatever we last paid for this", same
+// helper Lubricants' own "Record Purchase" form uses.
+//
+// The updatedAt tie-break matters because every product now always has a
+// purchase_history row dated the day it was created (even a qty-0 one, if
+// no opening stock was entered — see LubricantService.create_product), so
+// a REAL purchase recorded later that same day at a different cost ties on
+// date with that original row. Sorting by date string alone left that tie
+// resolved by array order (effectively random/insertion order), which could
+// show the Cost as the original (possibly stale) rate instead of the
+// purchase someone just actually saved. updatedAt (DB-computed, always
+// strictly newer for whichever row was actually touched last) resolves the
+// tie correctly every time.
 export function lastPurchaseOf(product) {
   const history = product?.purchaseHistory || []
   if (!history.length) return null
-  return [...history].sort((a, b) => b.date.localeCompare(a.date))[0]
+  return [...history].sort((a, b) => {
+    const byDate = b.date.localeCompare(a.date)
+    if (byDate !== 0) return byDate
+    return (b.updatedAt || '').localeCompare(a.updatedAt || '')
+  })[0]
 }
 
 // How much stock is available at a specific PURCHASE cost — Fuel Entry's
