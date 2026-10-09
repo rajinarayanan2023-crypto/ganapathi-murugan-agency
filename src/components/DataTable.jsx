@@ -62,6 +62,14 @@ export default function DataTable({
   // this self-adjusts instead, so the table can never be responsible for
   // the page needing to scroll.
   fillHeight = false,
+  // Opt-in — the toolbar normally wraps (search/trailingContent/Export) onto
+  // as many lines as a narrow container needs, which is the right default
+  // for a crowded trailingContent (e.g. Attendance's several "Mark All"
+  // buttons). A caller whose toolbar is short enough to always fit — and
+  // who'd rather the whole strip scroll horizontally than ever break onto a
+  // second line (e.g. Login Attempts' search + count + date range +
+  // Export) — sets this instead.
+  toolbarNowrap = false,
 }) {
   const { language } = useLanguage()
   const dt = DATA_TABLE_TEXT[language]
@@ -94,14 +102,31 @@ export default function DataTable({
     <div className={fillHeight ? 'flex min-h-0 flex-1 flex-col overflow-x-auto' : 'overflow-x-auto'}>
       {showToolbar ? (
         <div
-          className={`flex flex-col gap-3 border-b border-slate-100 sm:flex-row sm:items-center sm:justify-between ${
-            dense ? 'p-2' : 'p-3'
+          className={`flex border-b border-slate-100 ${dense ? 'p-2' : 'p-3'} ${
+            toolbarNowrap
+              ? // Horizontal scroll here is a rare-narrow-window fallback, not
+                // something meant to be seen in normal use — hidden the same
+                // way the mobile bottom nav hides its own (see Layout.jsx),
+                // so it can still be scrolled (trackpad/shift-scroll) without
+                // a visible track appearing even when content is just a
+                // couple of px wider than the card.
+                'flex-nowrap items-center justify-between gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+              : 'flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
           }`}
         >
-          <div className="flex flex-wrap items-center gap-3">
+          <div
+            className={`flex items-center ${toolbarNowrap ? 'min-w-0 flex-1 flex-nowrap gap-2' : 'flex-wrap gap-3'}`}
+          >
             {leadingContent}
             {globalFilterFields ? (
-              <div className="relative w-full sm:w-auto sm:max-w-xs">
+              // flex-1 here (not a fixed/max width) — any free space in the
+              // row now goes into actually widening the one field where
+              // more room is useful (more of a typed search query visible)
+              // instead of sitting as dead gaps between fields that are
+              // already their natural size. min-w-0 lets it shrink back
+              // below its own text content's width when the row is tight,
+              // same reason the whole group needs it on a flex-nowrap row.
+              <div className={`relative w-full sm:w-auto ${toolbarNowrap ? 'min-w-[90px] flex-1' : 'sm:max-w-xs'}`}>
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <Input
                   value={globalFilter}
@@ -114,7 +139,8 @@ export default function DataTable({
             {/* Placed after the search box (not grouped with leadingContent)
                 so a crowded toolbar wraps THIS to a second line before it
                 ever pushes the search box itself down — search stays usable
-                on the first row even when the row runs out of width. */}
+                on the first row even when the row runs out of width. Not
+                relevant with toolbarNowrap — nothing wraps there either way. */}
             {trailingContent}
           </div>
           <div className="flex shrink-0 items-center gap-2 self-start">
@@ -133,6 +159,15 @@ export default function DataTable({
 
       <div className={fillHeight ? 'min-h-0 flex-1' : undefined}>
       <PrimeTable
+        // Some of PrimeReact's own internal subcomponents (e.g. the
+        // paginator's rows-per-page dropdown) compute their aria-label once
+        // at first render from the global PrimeReact.locale and are wrapped
+        // in React.memo with no prop tying them to it — so toggling the
+        // language after the table has already mounted leaves those few
+        // strings stuck in whatever language was active on first paint.
+        // Remounting the whole table on a language switch (rare, deliberate
+        // user action) is the simplest reliable fix.
+        key={language}
         ref={tableRef}
         value={data}
         dataKey={rowKey}

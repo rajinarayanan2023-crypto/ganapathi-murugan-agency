@@ -6,6 +6,7 @@ import { Plus, Pencil, UserX, UserCheck, Users, Phone, CalendarPlus, StickyNote,
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { ROLES, EMPLOYEES_TEXT } from '../i18n/employees.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import { currentSalary } from '../utils/salary.js'
 import Modal from '../components/Modal.jsx'
@@ -13,9 +14,12 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
+import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
+
+const _EARLIEST_SANE_JOIN_DATE = '1970-01-01'
 
 const emptyForm = {
   name: '',
@@ -28,10 +32,16 @@ const emptyForm = {
 }
 
 export default function Employees() {
-  const { employees, employeesLoading, employeesError, addEmployee, updateEmployee } = useData()
+  const { employees, employeesLoading, employeesError, addEmployee, updateEmployee, currentUser } = useData()
   const { language } = useLanguage()
   const t = EMPLOYEES_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const loading = employeesLoading
+  // Add/edit/deactivate/reactivate all hit backend routes gated to
+  // require_manager_or_admin (see employee_controller.py) — a staff user
+  // saw every one of these controls fully enabled and only found out they
+  // weren't allowed after the request came back 403.
+  const isManagerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager'
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -58,7 +68,17 @@ export default function Employees() {
           nameExport: [emp.name, emp.fatherName ? `${t.sonOf} ${emp.fatherName}` : '', t.roleLabels[emp.role] || emp.role]
             .filter(Boolean)
             .join(' - '),
+          // Searched (not shown) — lets a search in Tamil find a role by its
+          // Tamil label, since the raw `role` field is always the English
+          // value underneath (see globalFilterFields below).
+          roleLabel: t.roleLabels[emp.role] || emp.role,
           joinDateExport: formatDate(emp.joinDate),
+          // A genuine numeric field for the column below to sort on — the
+          // column used to sort on the bare `monthlySalary` field, which no
+          // employee record actually has (the real figure only exists
+          // derived, via currentSalary(emp)), so every click silently sorted
+          // by `undefined` on every row and did nothing.
+          monthlySalarySort: salary || 0,
           monthlySalaryExport: salary ? formatCurrency(salary) : '',
           activeExport: emp.active ? t.active : t.inactive,
         }
@@ -71,6 +91,10 @@ export default function Employees() {
   // a second, possibly conflicting write (e.g. deactivating the same
   // employee they're mid-edit on) before the first one has actually landed.
   const busy = saving || deactivating || activatingId != null
+  // Separate from `busy` (which drives the full-page loading overlay) — a
+  // staff user should still be able to just VIEW this screen, only writes
+  // need to be blocked for them.
+  const writeBlocked = busy || !isManagerOrAdmin
 
   function openAdd() {
     setEditingId(null)
@@ -82,12 +106,15 @@ export default function Employees() {
   function openEdit(emp) {
     setEditingId(emp.id)
     setForm({
-      name: emp.name,
-      fatherName: emp.fatherName || '',
+      // .trim() here too, not just on save — a record saved before this fix
+      // existed can already carry stray leading/trailing whitespace, and
+      // reopening it to edit shouldn't keep echoing that back.
+      name: emp.name.trim(),
+      fatherName: (emp.fatherName || '').trim(),
       role: emp.role,
       phone: emp.phone,
       joinDate: emp.joinDate,
-      notes: emp.notes || '',
+      notes: (emp.notes || '').trim(),
       monthlySalary: '',
     })
     setErrors({})
@@ -139,15 +166,22 @@ export default function Employees() {
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!validate()) return
+    if (saving || !validate()) return
     setSaving(true)
+    // validate() above already checks the TRIMMED name/father's-name/phone
+    // (for required/duplicate checks) but was never what actually got
+    // saved — the raw, possibly space-padded form fields were. Trimmed here,
+    // once, right before the save itself: typing a trailing space mid-word
+    // while composing a name still works fine, only the final saved value
+    // is cleaned up.
+    const cleanedForm = { ...form, name: form.name.trim(), fatherName: form.fatherName.trim(), notes: form.notes.trim() }
     try {
       if (editingId) {
-        const { monthlySalary, ...rest } = form
+        const { monthlySalary, ...rest } = cleanedForm
         await updateEmployee(editingId, rest)
         toast.success(t.toastUpdated)
       } else {
-        await addEmployee({ ...form, active: true })
+        await addEmployee({ ...cleanedForm, active: true })
         toast.success(t.toastAdded)
       }
       setModalOpen(false)
@@ -163,6 +197,7 @@ export default function Employees() {
   }
 
   async function confirmDeactivate() {
+    if (deactivating) return
     const emp = deactivateTarget
     setDeactivating(true)
     try {
@@ -177,6 +212,7 @@ export default function Employees() {
   }
 
   async function reactivate(emp) {
+    if (activatingId != null) return
     setActivatingId(emp.id)
     try {
       await updateEmployee(emp.id, { active: true })
@@ -233,7 +269,7 @@ export default function Employees() {
       ),
     },
     {
-      field: 'monthlySalary',
+      field: 'monthlySalarySort',
       header: t.colMonthlySalary,
       sortable: true,
       style: { width: '12%' },
@@ -280,23 +316,29 @@ export default function Employees() {
       style: { width: '10%' },
       body: (emp) => (
         <div className="flex justify-end gap-1">
-          <IconButton onClick={() => openEdit(emp)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
-            <Pencil size={15} />
-          </IconButton>
+          <AppTooltip title={isManagerOrAdmin ? commonT.edit : t.staffOnlyHint}>
+            <span>
+              <IconButton onClick={() => openEdit(emp)} disabled={writeBlocked} aria-label={commonT.edit} tone="edit">
+                <Pencil size={15} />
+              </IconButton>
+            </span>
+          </AppTooltip>
           {emp.active ? (
-            <IconButton onClick={() => openDeactivate(emp)} disabled={busy} aria-label="Deactivate" title="Deactivate" tone="delete">
-              <UserX size={15} />
-            </IconButton>
+            <AppTooltip title={isManagerOrAdmin ? t.deactivateConfirm : t.staffOnlyHint}>
+              <span>
+                <IconButton onClick={() => openDeactivate(emp)} disabled={writeBlocked} aria-label={t.deactivateConfirm} tone="delete">
+                  <UserX size={15} />
+                </IconButton>
+              </span>
+            </AppTooltip>
           ) : (
-            <IconButton
-              onClick={() => reactivate(emp)}
-              disabled={busy}
-              aria-label="Activate"
-              title={activatingId === emp.id ? t.activating : 'Activate'}
-              tone="success"
-            >
-              <UserCheck size={15} />
-            </IconButton>
+            <AppTooltip title={isManagerOrAdmin ? (activatingId === emp.id ? t.activating : t.activateAction) : t.staffOnlyHint}>
+              <span>
+                <IconButton onClick={() => reactivate(emp)} disabled={writeBlocked} aria-label={t.activateAction} tone="success">
+                  <UserCheck size={15} />
+                </IconButton>
+              </span>
+            </AppTooltip>
           )}
         </div>
       ),
@@ -334,9 +376,13 @@ export default function Employees() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={openAdd} disabled={busy}>
-                  <Plus size={16} /> {t.addEmployee}
-                </PrimaryButton>
+                <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                  <span>
+                    <PrimaryButton onClick={openAdd} disabled={writeBlocked}>
+                      <Plus size={16} /> {t.addEmployee}
+                    </PrimaryButton>
+                  </span>
+                </AppTooltip>
               }
             />
           </div>
@@ -345,7 +391,7 @@ export default function Employees() {
             columns={columns}
             data={exportRows}
             rowKey="id"
-            globalFilterFields={['name', 'phone', 'role', 'fatherName']}
+            globalFilterFields={['name', 'phone', 'role', 'roleLabel', 'fatherName', 'joinDateExport', 'monthlySalarySort', 'activeExport', 'notes']}
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="name"
             fillHeight
@@ -353,9 +399,13 @@ export default function Employees() {
             exportFilename="employees"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
-                <Plus size={14} /> {t.addEmployee}
-              </PrimaryButton>
+              <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                <span>
+                  <PrimaryButton onClick={openAdd} disabled={writeBlocked} className="px-3.5 py-2 text-xs">
+                    <Plus size={14} /> {t.addEmployee}
+                  </PrimaryButton>
+                </span>
+              </AppTooltip>
             }
           />
         )}
@@ -375,7 +425,7 @@ export default function Employees() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder={t.placeholderName}
                 error={errors.name}
-                disabled={saving}
+                disabled={saving || !isManagerOrAdmin}
               />
             </Field>
             <Field label={t.fieldFatherName} required error={errors.fatherName}>
@@ -384,11 +434,11 @@ export default function Employees() {
                 onChange={(e) => setForm({ ...form, fatherName: e.target.value })}
                 placeholder={t.placeholderFatherName}
                 error={errors.fatherName}
-                disabled={saving}
+                disabled={saving || !isManagerOrAdmin}
               />
             </Field>
             <Field label={t.fieldRole} required>
-              <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} disabled={saving}>
+              <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} disabled={saving || !isManagerOrAdmin}>
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
                     {t.roleLabels[r] || r}
@@ -403,11 +453,18 @@ export default function Employees() {
                 placeholder={t.placeholderPhone}
                 inputMode="numeric"
                 error={errors.phone}
-                disabled={saving}
+                disabled={saving || !isManagerOrAdmin}
               />
             </Field>
             <Field label={t.fieldJoiningDate}>
-              <AppDatePicker value={form.joinDate} onChange={(joinDate) => setForm({ ...form, joinDate })} className="w-full" disabled={saving} />
+              <AppDatePicker
+                value={form.joinDate}
+                onChange={(joinDate) => setForm({ ...form, joinDate })}
+                className="w-full"
+                disabled={saving || !isManagerOrAdmin}
+                minDate={_EARLIEST_SANE_JOIN_DATE}
+                maxDate={todayISO()}
+              />
             </Field>
             {editingId ? (
               <Field label={t.fieldMonthlySalary}>
@@ -432,7 +489,7 @@ export default function Employees() {
                   onChange={(e) => setForm({ ...form, monthlySalary: e.target.value })}
                   placeholder={t.placeholderMonthlySalary}
                   error={errors.monthlySalary}
-                  disabled={saving}
+                  disabled={saving || !isManagerOrAdmin}
                 />
               </Field>
             )}
@@ -443,16 +500,20 @@ export default function Employees() {
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
               placeholder={t.placeholderNotes}
-              disabled={saving}
+              disabled={saving || !isManagerOrAdmin}
             />
           </Field>
           <div className="flex justify-end gap-2 pt-1">
             <SecondaryButton type="button" onClick={() => setModalOpen(false)} disabled={saving}>
               {t.cancel}
             </SecondaryButton>
-            <PrimaryButton type="submit" disabled={saving}>
-              {editingId ? t.saveChanges : t.addEmployee}
-            </PrimaryButton>
+            <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+              <span>
+                <PrimaryButton type="submit" disabled={saving || !isManagerOrAdmin}>
+                  {editingId ? t.saveChanges : t.addEmployee}
+                </PrimaryButton>
+              </span>
+            </AppTooltip>
           </div>
         </form>
       </Modal>

@@ -390,7 +390,7 @@ export default function CalculatorModal({ isOpen, onClose }) {
           <button type="button" onClick={() => append(')')} className={`${utilButtonClass} py-3`}>
             )
           </button>
-          <button type="button" onClick={backspace} aria-label="Backspace" className={`${utilButtonClass} flex items-center justify-center py-3`}>
+          <button type="button" onClick={backspace} aria-label={t.backspace} className={`${utilButtonClass} flex items-center justify-center py-3`}>
             <Delete size={18} />
           </button>
 

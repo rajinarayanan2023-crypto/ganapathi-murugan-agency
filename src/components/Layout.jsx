@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, CalendarCheck, Fuel, Droplet, Wallet, IndianRupee, Megaphone, Receipt, LogOut, Languages, KeyRound, ChevronLeft, ChevronRight, Calculator } from 'lucide-react'
+import { LayoutDashboard, Users, CalendarCheck, Fuel, Droplet, Wallet, IndianRupee, Megaphone, Receipt, LogOut, Languages, KeyRound, ChevronLeft, ChevronRight, Calculator, ShieldAlert } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LAYOUT_TEXT } from '../i18n/layout.js'
@@ -35,16 +35,21 @@ const NAV_ITEMS = [
   { to: '/offers', key: 'offers', icon: Megaphone },
 ]
 
-// Reachable only via the button on the Salary page, not the sidebar/bottom
-// nav (see NAV_ITEMS above) — kept separate so it doesn't render as its own
-// tab there, but still needs an entry here so the header title below
-// resolves to "Employee Credits" instead of falling back to "Dashboard".
-const EXTRA_TITLE_ROUTES = [{ to: '/employee-credits', key: 'employeeCredits' }]
+// Reachable only via a button elsewhere (the Salary page, and — for Login
+// Attempts — the top bar's own admin-only icon below), not the sidebar/
+// bottom nav (see NAV_ITEMS above) — kept separate so neither renders as
+// its own tab there, but both still need an entry here so the header title
+// below resolves correctly instead of falling back to "Dashboard".
+const EXTRA_TITLE_ROUTES = [
+  { to: '/employee-credits', key: 'employeeCredits' },
+  { to: '/login-attempts', key: 'loginAttempts' },
+]
 
 export default function Layout() {
   const { station, logout, changePassword, currentUser, hasUnsavedChanges, saveUnsavedChangesHandler } = useData()
   const { language, toggleLanguage } = useLanguage()
   const t = LAYOUT_TEXT[language]
+  const visibleNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || currentUser?.role === 'admin')
   const calculatorT = CALCULATOR_TEXT[language]
   const [calculatorOpen, setCalculatorOpen] = useState(false)
   const navigate = useNavigate()
@@ -196,12 +201,20 @@ export default function Layout() {
   const currentLabel = t.nav[currentKey]
 
   return (
-    <div className="min-h-screen lg:flex lg:h-screen lg:overflow-hidden">
+    // `svh` ("small" viewport height), not `vh`/h-screen — some browsers
+    // (Edge's own auto-hiding toolbar while scrolling is one) resize the
+    // actual viewport live as chrome slides away/back, and `vh` tracks that
+    // live value, so an `h-screen` shell visibly grows/shrinks (the whole
+    // app "jumps") every time the toolbar does. `svh` is pinned to the
+    // viewport's smallest possible size (toolbar always assumed visible),
+    // so this shell's own height never moves — only the browser's chrome
+    // does, invisibly to the page.
+    <div className="min-h-svh lg:flex lg:h-svh lg:overflow-hidden">
       {/* Desktop sidebar — collapsible icon rail on lg+; phones and tablets
           get the bottom tab bar below instead, so this never needs its own
           mobile/tablet layout. */}
       <aside
-        className={`relative hidden shrink-0 border-r border-brand-100 bg-brand-50 shadow-card-hover transition-[width] duration-300 lg:sticky lg:top-0 lg:z-20 lg:flex lg:h-screen lg:flex-col ${
+        className={`relative hidden shrink-0 border-r border-brand-100 bg-brand-50 shadow-card-hover transition-[width] duration-300 lg:sticky lg:top-0 lg:z-20 lg:flex lg:h-svh lg:flex-col ${
           collapsed ? 'w-[76px]' : 'w-64'
         }`}
       >
@@ -228,7 +241,7 @@ export default function Layout() {
         </div>
 
         <nav className={`flex-1 overflow-y-auto overflow-x-hidden ${collapsed ? 'space-y-2 px-4 py-3' : 'space-y-1 px-3 py-3'}`}>
-          {NAV_ITEMS.map((item) => (
+          {visibleNavItems.map((item) => (
             <AppTooltip key={item.to} title={collapsed ? t.nav[item.key] : ''} placement="right">
               {/* MUI Tooltip clones its child to attach hover/ref handlers, which
                   can't merge with NavLink's function-style `className` prop (it
@@ -286,14 +299,19 @@ export default function Layout() {
         </div>
       </aside>
 
-      <div className="flex min-h-screen flex-1 flex-col lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      <div className="flex min-h-svh flex-1 flex-col lg:h-svh lg:min-h-0 lg:overflow-hidden">
         {/* Top bar */}
         <header className="sticky top-0 z-30 flex items-center justify-between border-b border-brand-100 bg-brand-50 px-4 py-3.5 shadow-card-hover backdrop-blur sm:px-6 lg:px-8">
           <div className="flex items-center gap-2 lg:hidden">
             <div className="flex h-8 w-12 shrink-0 items-center justify-center">
               <img src={station.logo} alt={station.name} className="h-full w-full object-contain" />
             </div>
-            <span className="text-sm font-bold text-slate-900">{station.name}</span>
+            {/* Hidden below sm — on a narrow phone, the logo plus the full
+                icon cluster on the right (language, calculator, login
+                attempts, avatar, logout) has no room left for this text
+                too; truncated from sm up as a safety net for a longer
+                station name on a wider phone/tablet. */}
+            <span className="hidden max-w-[160px] truncate text-sm font-bold text-slate-900 sm:inline">{station.name}</span>
           </div>
           <h1 className="hidden text-base font-semibold text-slate-800 lg:block">{currentLabel}</h1>
           <div className="flex items-center gap-3">
@@ -318,6 +336,37 @@ export default function Layout() {
                 <Calculator size={19} strokeWidth={2.3} />
               </button>
             </AppTooltip>
+            {/* Moved here from the sidebar/bottom-nav tab list (see
+                EXTRA_TITLE_ROUTES above) — the top bar renders identically
+                at every width, so one icon here reaches every device
+                instead of needing a desktop sidebar entry AND a separate
+                mobile bottom-nav tab. adminOnly for the same reason the nav
+                item itself used to be — see require_admin on
+                login_attempt_controller.py. Same filled-circle treatment as
+                Calculator (so it reads as a real header action, not a faint
+                afterthought) but its own color — amber for "security/alert",
+                distinct from Calculator's money-green and Logout's rose.
+                Wrapped in a plain span for AppTooltip to clone — see the
+                sidebar NavLink's own comment above on why a function-style
+                className silently loses all its classes without it. */}
+            {currentUser?.role === 'admin' ? (
+              <AppTooltip title={t.nav.loginAttempts}>
+                <span className="block">
+                  <NavLink
+                    to="/login-attempts"
+                    onClick={(e) => handleNavClick(e, '/login-attempts')}
+                    aria-label={t.nav.loginAttempts}
+                    className={({ isActive }) =>
+                      `flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-white shadow-md shadow-amber-600/40 transition-transform active:scale-95 ${
+                        isActive ? 'scale-105 ring-2 ring-amber-300 ring-offset-2 ring-offset-brand-50' : 'hover:scale-110 hover:shadow-lg'
+                      }`
+                    }
+                  >
+                    <ShieldAlert size={18} strokeWidth={2.3} />
+                  </NavLink>
+                </span>
+              </AppTooltip>
+            ) : null}
             {/* Name is the prominent line (up to ~10 characters comfortably,
                 on one line via whitespace-nowrap — this sits in a flexible
                 trailing group, not a fixed-width box, so it can't clip a
@@ -383,7 +432,7 @@ export default function Layout() {
         ref={mobileNavRef}
         className="fixed inset-x-0 bottom-0 z-30 flex overflow-x-auto border-t border-slate-200 bg-white/95 backdrop-blur [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:hidden"
       >
-        {NAV_ITEMS.map((item) => (
+        {visibleNavItems.map((item) => (
           <NavLink
             key={item.to}
             data-active={location.pathname.startsWith(item.to) || undefined}

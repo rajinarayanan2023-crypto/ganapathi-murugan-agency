@@ -12,7 +12,6 @@ export const EMPLOYEES_TEXT = {
     searchPlaceholder: 'Search employees...',
     colEmployee: 'Employee',
     colPhone: 'Phone',
-    colRole: 'Role',
     colJoined: 'Joined',
     colActive: 'Active',
     colInformation: 'Information',
@@ -48,9 +47,12 @@ export const EMPLOYEES_TEXT = {
     toastReactivated: (name) => `${name} reactivated`,
     loadError: 'Could not load employees',
     deactivateTitle: 'Deactivate employee?',
-    deactivateDesc: (name) => `${name} will be marked inactive and kept on record.`,
+    deactivateDesc: (name) =>
+      `${name} will be marked inactive and kept on record, but will also disappear from the Attendance and Salary screens until reactivated.`,
     deactivateConfirm: 'Deactivate',
+    activateAction: 'Activate',
     activating: 'Activating…',
+    staffOnlyHint: 'Only a manager or admin can make changes here',
     roleLabels: {
       'Pump Operator': 'Pump Operator',
       Cashier: 'Cashier',
@@ -71,7 +73,6 @@ export const EMPLOYEES_TEXT = {
     searchPlaceholder: 'ஊழியர்களைத் தேடு...',
     colEmployee: 'ஊழியர்',
     colPhone: 'தொலைபேசி',
-    colRole: 'பணி',
     colJoined: 'சேர்ந்த தேதி',
     colActive: 'செயலில்',
     colInformation: 'தகவல்',
@@ -107,9 +108,12 @@ export const EMPLOYEES_TEXT = {
     toastReactivated: (name) => `${name} மீண்டும் செயல்படுத்தப்பட்டார்`,
     loadError: 'ஊழியர்களை ஏற்ற முடியவில்லை',
     deactivateTitle: 'ஊழியரை செயலிழக்கச் செய்யவா?',
-    deactivateDesc: (name) => `${name} செயலற்றவராகக் குறிக்கப்பட்டு பதிவில் வைக்கப்படுவார்.`,
+    deactivateDesc: (name) =>
+      `${name} செயலற்றவராகக் குறிக்கப்பட்டு பதிவில் வைக்கப்படுவார், ஆனால் மீண்டும் செயல்படுத்தும் வரை வருகை மற்றும் சம்பளத் திரைகளிலிருந்தும் மறைந்துவிடுவார்.`,
     deactivateConfirm: 'செயலிழக்கச் செய்',
+    activateAction: 'செயல்படுத்து',
     activating: 'செயல்படுத்துகிறது…',
+    staffOnlyHint: 'மேலாளர் அல்லது நிர்வாகி மட்டுமே இங்கு மாற்றங்களைச் செய்ய முடியும்',
     roleLabels: {
       'Pump Operator': 'பம்ப் ஆபரேட்டர்',
       Cashier: 'காசாளர்',

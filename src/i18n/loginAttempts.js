@@ -1,0 +1,68 @@
+const ACTION_LABEL_EN = { login: 'Login', verify_otp: 'OTP Verify', change_password: 'Change Password' }
+const ACTION_LABEL_TA = { login: 'உள்நுழைவு', verify_otp: 'OTP சரிபார்ப்பு', change_password: 'கடவுச்சொல் மாற்றம்' }
+
+const REASON_LABEL_EN = {
+  no_such_user: 'No such account',
+  account_deactivated: 'Account deactivated',
+  wrong_password: 'Wrong password',
+  wrong_otp: 'Wrong OTP',
+  wrong_current_password: 'Wrong current password',
+  locked_out: 'Locked out (too many failures)',
+}
+const REASON_LABEL_TA = {
+  no_such_user: 'அத்தகைய கணக்கு இல்லை',
+  account_deactivated: 'கணக்கு முடக்கப்பட்டது',
+  wrong_password: 'தவறான கடவுச்சொல்',
+  wrong_otp: 'தவறான OTP',
+  wrong_current_password: 'தவறான தற்போதைய கடவுச்சொல்',
+  locked_out: 'பூட்டப்பட்டது (அதிக தோல்விகள்)',
+}
+
+export const LOGIN_ATTEMPTS_TEXT = {
+  en: {
+    title: 'Login Attempts',
+    subtitle: 'All login, OTP & password-change activity',
+    colTime: 'Time',
+    colIdentifier: 'Identifier',
+    colAction: 'Action',
+    colStatus: 'Status',
+    colReason: 'Reason',
+    colIp: 'IP Address',
+    actionLabel: ACTION_LABEL_EN,
+    reasonLabel: (reason) => REASON_LABEL_EN[reason] || reason,
+    statusSuccess: 'Success',
+    statusFailed: 'Failed',
+    searchPlaceholder: 'Identifier, reason, or IP address...',
+    dateFrom: 'From',
+    dateTo: 'To',
+    clearFilters: 'Clear',
+    showingCount: (shown, total) => (shown === total ? `${total} attempts` : `${shown} of ${total} attempts`),
+    loading: 'Loading login attempts…',
+    noData: 'No login attempts recorded yet.',
+    noMatch: 'No attempts match these filters.',
+    notAdmin: "You don't have permission to view this page.",
+  },
+  ta: {
+    title: 'உள்நுழைவு முயற்சிகள்',
+    subtitle: 'உள்நுழைவு, OTP & கடவுச்சொல் மாற்ற செயல்பாடு',
+    colTime: 'நேரம்',
+    colIdentifier: 'அடையாளம்',
+    colAction: 'செயல்',
+    colStatus: 'நிலை',
+    colReason: 'காரணம்',
+    colIp: 'IP முகவரி',
+    actionLabel: ACTION_LABEL_TA,
+    reasonLabel: (reason) => REASON_LABEL_TA[reason] || reason,
+    statusSuccess: 'வெற்றி',
+    statusFailed: 'தோல்வி',
+    searchPlaceholder: 'அடையாளம், காரணம், அல்லது IP முகவரி...',
+    dateFrom: 'முதல்',
+    dateTo: 'வரை',
+    clearFilters: 'அழி',
+    showingCount: (shown, total) => (shown === total ? `${total} முயற்சிகள்` : `${total}-இல் ${shown} முயற்சிகள்`),
+    loading: 'உள்நுழைவு முயற்சிகள் ஏற்றப்படுகின்றன…',
+    noData: 'இதுவரை உள்நுழைவு முயற்சிகள் எதுவும் பதிவு செய்யப்படவில்லை.',
+    noMatch: 'இந்த வடிகட்டிகளுக்குப் பொருந்தும் முயற்சிகள் இல்லை.',
+    notAdmin: 'இந்தப் பக்கத்தைப் பார்க்க உங்களுக்கு அனுமதி இல்லை.',
+  },
+}

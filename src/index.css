@@ -8,6 +8,16 @@ body,
   height: 100%;
 }
 
+/* Stops Windows Chromium's "elastic overscroll" — a rubber-band bounce the
+   browser applies to the whole page at the scroll boundary (visible as a
+   white gap opening above the app's own header, then snapping shut) that's
+   independent of anything in this app's layout; it happens on any page
+   unless explicitly opted out. */
+html,
+body {
+  overscroll-behavior: none;
+}
+
 body {
   font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -46,6 +56,23 @@ body {
 .skeleton {
   background: linear-gradient(90deg, #eef1f2 25%, #e4e9ea 37%, #eef1f2 63%);
   background-size: 1000px 100%;
+}
+
+/* Draws attention to the "month is closed for salary changes" banner
+   (Salary.jsx) wherever it appears — a steady opacity pulse rather than a
+   hard on/off blink, so the warning text stays readable through the whole
+   cycle instead of vanishing every other beat. */
+@keyframes banner-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-banner-blink {
+  animation: banner-blink 3.2s ease-in-out infinite;
 }
 
 input[type='number']::-webkit-inner-spin-button,

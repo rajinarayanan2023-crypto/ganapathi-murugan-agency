@@ -6,8 +6,9 @@ import { AlertTriangle, CalendarDays, Pencil, Trash2, Fuel, Droplets, Gauge, Pac
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { DASHBOARD_TEXT } from '../i18n/dashboard.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { trailingMonths } from '../utils/monthlyProfit.js'
-import { formatCurrency, formatCompactCurrency, formatLiters, formatDate, todayISO } from '../utils/format.js'
+import { formatCurrency, formatCompactCurrency, formatLiters, formatDate, todayISO, toISODate } from '../utils/format.js'
 import PageHeader from '../components/PageHeader.jsx'
 import StatCard from '../components/StatCard.jsx'
 import CountUp from '../components/CountUp.jsx'
@@ -21,6 +22,38 @@ import { FullPageLoader } from '../components/Loader.jsx'
 // DataContext's session cache is keyed by.
 function monthKey(year, monthIdx) {
   return `${year}-${String(monthIdx + 1).padStart(2, '0')}`
+}
+
+// Sanity bounds, not business rules — mirrors
+// CommissionRateService._validate_rate_sanity's own bounds exactly, checked
+// here too so a fat-fingered year/rate is caught instantly instead of only
+// after a round trip to the backend. See that function's own comment for
+// why these specific numbers (a real fuel-station commission is nowhere
+// near ₹1000/unit; a real effective date is nowhere near year 2015 or 2+
+// years out — both only ever get hit by a typo like "2524" for "2026").
+const EARLIEST_EFFECTIVE_FROM = '2015-01-01'
+const MAX_SANE_RATE = 1000
+
+function ratesSanityError(form, t) {
+  const furthestFuture = new Date()
+  furthestFuture.setFullYear(furthestFuture.getFullYear() + 2)
+  const furthestFutureISO = toISODate(furthestFuture)
+  if (form.effectiveFrom < EARLIEST_EFFECTIVE_FROM || form.effectiveFrom > furthestFutureISO) {
+    return t.errorEffectiveFromRange(formatDate(EARLIEST_EFFECTIVE_FROM), formatDate(furthestFutureISO))
+  }
+  const fields = [
+    [t.fieldPetrolRate, form.petrol],
+    [t.fieldDieselRate, form.diesel],
+    [t.fieldOilRate, form.oil],
+    [t.fieldOilPacketRate, form.oilPacket],
+    [t.fieldOilCaneRate, form.oilCane],
+  ]
+  for (const [label, value] of fields) {
+    if ((Number(value) || 0) > MAX_SANE_RATE) {
+      return t.errorRateTooHigh(label, value)
+    }
+  }
+  return null
 }
 
 const EMPTY_SUMMARY = {
@@ -102,6 +135,7 @@ export default function Dashboard() {
   const { updateCommissionRates, getCommissionRateHistory, deleteCommissionRate, getDashboardSummaryCached } = useData()
   const { language } = useLanguage()
   const t = DASHBOARD_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const now = new Date()
 
   const [viewYear, setViewYear] = useState(now.getFullYear())
@@ -113,6 +147,16 @@ export default function Dashboard() {
   const [rateHistoryLoading, setRateHistoryLoading] = useState(false)
   const [deletingRateId, setDeletingRateId] = useState(null)
   const [confirmDeleteRate, setConfirmDeleteRate] = useState(null)
+  // Which history row's pencil icon populated the form, if any — null means
+  // "composing a fresh revision" (the default on open: today's date,
+  // prefilled from whatever's currently in force). Shown as a banner above
+  // the form and a highlight on that row below, since saving always upserts
+  // by effective_from — with no indicator, saving while unknowingly still in
+  // "editing row X" state silently overwrites that row instead of adding a
+  // new one. Cleared whenever the date field itself is changed by hand (see
+  // its onChange below), since at that point a save would no longer target
+  // this same row anyway.
+  const [editingRateId, setEditingRateId] = useState(null)
 
   const [summary, setSummary] = useState(EMPTY_SUMMARY)
   const [summaryLoading, setSummaryLoading] = useState(true)
@@ -238,23 +282,12 @@ export default function Dashboard() {
   // to today, since opening this normally means entering a NEW revision.
   async function openRatesModal() {
     setRatesModalOpen(true)
+    setEditingRateId(null)
     setRateHistoryLoading(true)
     try {
       const history = await getCommissionRateHistory()
       setRateHistory(history)
-      const latest = history[history.length - 1]
-      setRatesForm(
-        latest
-          ? {
-              petrol: String(latest.petrol),
-              diesel: String(latest.diesel),
-              oil: String(latest.oil),
-              oilPacket: String(latest.oil_packet),
-              oilCane: String(latest.oil_cane),
-              effectiveFrom: todayISO(),
-            }
-          : { petrol: '', diesel: '', oil: '', oilPacket: '', oilCane: '', effectiveFrom: todayISO() },
-      )
+      setRatesForm(defaultRatesForm(history))
     } catch {
       setRateHistory([])
     } finally {
@@ -262,10 +295,30 @@ export default function Dashboard() {
     }
   }
 
+  // Shared by openRatesModal (on open) and cancelEditingRate (backing out of
+  // an edit) — "compose a fresh revision" always means today's date,
+  // prefilled from whatever's currently in force so an unrelated field isn't
+  // accidentally blanked out.
+  function defaultRatesForm(history) {
+    const latest = history[history.length - 1]
+    return latest
+      ? {
+          petrol: String(latest.petrol),
+          diesel: String(latest.diesel),
+          oil: String(latest.oil),
+          oilPacket: String(latest.oil_packet),
+          oilCane: String(latest.oil_cane),
+          effectiveFrom: todayISO(),
+        }
+      : { petrol: '', diesel: '', oil: '', oilPacket: '', oilCane: '', effectiveFrom: todayISO() }
+  }
+
   // Loads a past revision back into the form (same effective_from) so
   // correcting a typo is just: pick the row, fix the number, Save — the
   // backend replaces that exact date's row instead of adding a duplicate.
+  // editingRateId drives the "you're editing X" banner/highlight below.
   function editHistoryRow(row) {
+    setEditingRateId(row.id)
     setRatesForm({
       petrol: String(row.petrol),
       diesel: String(row.diesel),
@@ -274,6 +327,13 @@ export default function Dashboard() {
       oilCane: String(row.oil_cane),
       effectiveFrom: row.effective_from,
     })
+  }
+
+  // Backs out of editing a past row without closing the whole modal — back
+  // to composing a fresh revision, same as a freshly-opened modal would show.
+  function cancelEditingRate() {
+    setEditingRateId(null)
+    setRatesForm(defaultRatesForm(rateHistory))
   }
 
   // Re-fetches whatever's currently on screen (the viewed month's stats and
@@ -292,6 +352,11 @@ export default function Dashboard() {
 
   async function submitRates(e) {
     e.preventDefault()
+    const sanityError = ratesSanityError(ratesForm, t)
+    if (sanityError) {
+      toast.error(sanityError)
+      return
+    }
     setSavingRates(true)
     try {
       await updateCommissionRates({
@@ -343,7 +408,7 @@ export default function Dashboard() {
       <div className="flex items-center gap-2">
         <button
           onClick={goPrevMonth}
-          aria-label="Previous month"
+          aria-label={commonT.previousMonth}
           className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50"
         >
           <ChevronLeft size={16} />
@@ -352,7 +417,7 @@ export default function Dashboard() {
         <button
           onClick={goNextMonth}
           disabled={isCurrentMonth}
-          aria-label="Next month"
+          aria-label={commonT.nextMonth}
           className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <ChevronRight size={16} />
@@ -387,7 +452,9 @@ export default function Dashboard() {
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-600">{summaryErrorMessage}</div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      <div
+        className={`grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 transition-opacity duration-150 ${summaryLoading ? 'opacity-40' : 'opacity-100'}`}
+      >
         <StatCard icon={Fuel} label={t.statPetrol} value={Number(summary.petrol_litres) || 0} formatter={formatLiters} index={0} accent="orange" dense />
         <StatCard icon={Droplets} label={t.statDiesel} value={Number(summary.diesel_litres) || 0} formatter={formatLiters} index={1} accent="blue" dense />
         <StatCard icon={Gauge} label={t.statOilMachine} value={Number(summary.oil_machine_litres) || 0} formatter={formatLiters} index={2} accent="green" dense />
@@ -409,7 +476,7 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35, delay: 0.2 }}
         whileHover={{ y: -2 }}
-        className={`relative overflow-hidden rounded-xl p-4 shadow-card ${profit >= 0 ? 'bg-gradient-to-r from-emerald-600 to-emerald-800' : 'bg-gradient-to-r from-rose-600 to-rose-800'}`}
+        className={`relative overflow-hidden rounded-xl p-4 shadow-card transition-opacity duration-150 ${summaryLoading ? 'opacity-40' : 'opacity-100'} ${profit >= 0 ? 'bg-gradient-to-r from-emerald-600 to-emerald-800' : 'bg-gradient-to-r from-rose-600 to-rose-800'}`}
       >
         <motion.div
           aria-hidden
@@ -435,10 +502,35 @@ export default function Dashboard() {
       <Modal isOpen={ratesModalOpen} onClose={savingRates ? () => {} : () => setRatesModalOpen(false)} title={t.editRatesTitle}>
         <form onSubmit={submitRates} className="space-y-4">
           <p className="text-xs text-slate-500">{t.editRatesHint}</p>
+
+          {editingRateId ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+              <span className="flex items-center gap-1.5">
+                <Pencil size={12} className="shrink-0" />
+                {t.editingRateBanner(formatDate(ratesForm.effectiveFrom))}
+              </span>
+              <button
+                type="button"
+                onClick={cancelEditingRate}
+                disabled={savingRates}
+                className="shrink-0 font-semibold underline decoration-dotted underline-offset-2 hover:text-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t.editingRateCancel}
+              </button>
+            </div>
+          ) : null}
+
           <Field label={t.fieldEffectiveFrom}>
             <AppDatePicker
               value={ratesForm.effectiveFrom}
-              onChange={(date) => setRatesForm({ ...ratesForm, effectiveFrom: date })}
+              onChange={(date) => {
+                // Once the date itself is changed by hand, a save no longer
+                // targets the row editingRateId refers to (it upserts by
+                // date — see submitRates) — the "editing X" banner would be
+                // actively misleading past this point.
+                setEditingRateId(null)
+                setRatesForm({ ...ratesForm, effectiveFrom: date })
+              }}
               className="w-full"
               disabled={savingRates}
             />
@@ -503,7 +595,12 @@ export default function Dashboard() {
                 <p className="text-xs text-slate-400">…</p>
               ) : rateHistory.length ? (
                 rateHistory.map((row) => (
-                  <div key={row.id} className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                  <div
+                    key={row.id}
+                    className={`flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-xs text-slate-500 ${
+                      row.id === editingRateId ? 'bg-amber-100/70 ring-1 ring-amber-300' : ''
+                    }`}
+                  >
                     <span className="flex min-w-0 items-center gap-1.5">
                       <CalendarDays size={11} className="shrink-0 text-slate-400" />
                       <span className="shrink-0 font-semibold text-slate-700">{formatDate(row.effective_from)}</span>
@@ -546,7 +643,7 @@ export default function Dashboard() {
               {t.cancel}
             </SecondaryButton>
             <PrimaryButton type="submit" disabled={savingRates}>
-              {t.saveChanges}
+              {editingRateId ? t.updateRevision : t.saveChanges}
             </PrimaryButton>
           </div>
         </form>

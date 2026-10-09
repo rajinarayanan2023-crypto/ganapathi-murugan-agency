@@ -1,12 +1,13 @@
-import { useMemo, useState } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { Plus, Pencil, Trash2, Droplet, PackageSearch, PackagePlus, Tag, Boxes, Search, CalendarDays, Package, Cylinder, History, X, Check, AlertTriangle } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { LUBRICANTS_TEXT } from '../i18n/lubricants.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
-import { currentRate, sortedPriceHistory, round3 } from '../utils/lubricants.js'
+import { latestPurchaseCost, round3, lastPurchaseOf } from '../utils/lubricants.js'
 import { getLubricantSalesHistory } from '../lib/apiClient.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -30,12 +31,12 @@ const emptyForm = { name: '', unit: 'Pcs', rate: '', stock: '', packaging: 'cane
 // Entry's Pump 2 oil section uses this to keep the two product pickers apart.
 const PACKAGING_ICONS = { packet: Package, cane: Cylinder }
 const emptyPurchaseForm = { qty: '', cost: '', date: todayISO() }
+// A plausibility floor, not a real business rule — same reasoning as
+// Expenses'/Credit Bills' own _EARLIEST_SANE_*_DATE, just here to catch an
+// obvious typo (e.g. 1920 instead of 2020) at entry time. Mirrored
+// server-side in app/schemas/lubricant.py.
+const _EARLIEST_SANE_LUBRICANT_DATE = '1970-01-01'
 
-function lastPurchaseOf(product) {
-  const history = product.purchaseHistory || []
-  if (!history.length) return null
-  return [...history].sort((a, b) => b.date.localeCompare(a.date))[0]
-}
 
 const CARD_THEMES = [
   { border: 'border-orange-200', ring: 'ring-orange-100', icon: 'bg-orange-100 text-orange-600' },
@@ -47,8 +48,6 @@ const CARD_THEMES = [
   { border: 'border-cyan-200', ring: 'ring-cyan-100', icon: 'bg-cyan-100 text-cyan-600' },
   { border: 'border-indigo-200', ring: 'ring-indigo-100', icon: 'bg-indigo-100 text-indigo-600' },
 ]
-
-const emptyPriceForm = { rate: '', effectiveFrom: todayISO() }
 
 const INLINE_STAT_THEMES = {
   brand: { card: 'bg-brand-50/70 ring-brand-100', icon: 'bg-brand-100 text-brand-700' },
@@ -104,6 +103,132 @@ function InlineStat({ icon: Icon, label, value, accent, onClick }) {
   )
 }
 
+// Memoized so typing in the Add/Edit/Purchase/Price modals (all of which
+// live in the SAME Lubricants component, re-rendering it on every keystroke)
+// doesn't force a re-render of every one of these cards — each one is a
+// framer-motion element doing its own theme/lastPurchaseOf work, and with a
+// full catalog (100+ products) that re-render was exactly what made typing
+// in, e.g., the Add Product modal's Product Name field feel laggy. The
+// callback props below MUST stay referentially stable (useCallback at the
+// call site) or this memoization does nothing — a new function reference
+// every render fails React.memo's shallow prop comparison just as badly as
+// not memoizing at all.
+const ProductGrid = memo(function ProductGrid({
+  products,
+  writeBlocked,
+  isManagerOrAdmin,
+  busy,
+  t,
+  commonT,
+  onPurchase,
+  onSoldHistory,
+  onEdit,
+  onDeleteRequest,
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {products.map((product, i) => {
+        const theme = CARD_THEMES[i % CARD_THEMES.length]
+        const lastPurchase = lastPurchaseOf(product)
+        return (
+          <motion.div
+            key={product.id}
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: Math.min(i * 0.04, 0.4) }}
+            whileHover={{ y: -6, scale: 1.02, transition: { type: 'spring', stiffness: 300, damping: 18 } }}
+            whileTap={{ scale: 0.985 }}
+            className={`group flex cursor-pointer flex-col rounded-xl border bg-white p-4 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.border} ${theme.ring}`}
+          >
+            {/* Name and action icons are two separate rows now, not one
+                flex row split with justify-between — a long product name
+                used to wrap onto a second line right underneath the
+                icons, squeezing them and pushing the last one or two
+                outside the card. The name instead truncates to a single
+                line (full name still available on hover via the
+                tooltip), so the icon row below it always keeps its own
+                full width. */}
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6 ${theme.icon}`}>
+                <Droplet size={15} />
+              </div>
+              <AppTooltip title={product.name}>
+                <p className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug text-slate-800">{product.name}</p>
+              </AppTooltip>
+            </div>
+            <div className="mt-2 flex flex-wrap justify-center gap-1">
+              <IconButton
+                onClick={() => onPurchase(product)}
+                disabled={writeBlocked}
+                aria-label={t.purchaseAction}
+                title={isManagerOrAdmin ? t.purchaseAction : t.staffOnlyHint}
+                tone="success"
+              >
+                <PackagePlus size={14} />
+              </IconButton>
+              <IconButton
+                onClick={() => onSoldHistory(product)}
+                disabled={busy}
+                aria-label={t.soldHistoryAction}
+                title={t.soldHistoryAction}
+                tone="brand"
+              >
+                <History size={14} />
+              </IconButton>
+              <IconButton
+                onClick={() => onEdit(product)}
+                disabled={writeBlocked}
+                aria-label={commonT.edit}
+                title={isManagerOrAdmin ? commonT.edit : t.staffOnlyHint}
+                tone="edit"
+              >
+                <Pencil size={14} />
+              </IconButton>
+              <IconButton
+                onClick={() => onDeleteRequest(product.id)}
+                disabled={writeBlocked}
+                aria-label={commonT.delete}
+                title={isManagerOrAdmin ? commonT.delete : t.staffOnlyHint}
+                tone="delete"
+              >
+                <Trash2 size={14} />
+              </IconButton>
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <p className="text-xs text-slate-500">
+                {t.costLabel} <span className="font-semibold text-slate-700">{formatCurrency(latestPurchaseCost(product))} / {product.unit}</span>
+              </p>
+              {(() => {
+                const PackagingIcon = PACKAGING_ICONS[product.packaging] || PACKAGING_ICONS.packet
+                return (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                    <PackagingIcon size={11} />
+                    {t.packagingLabel[product.packaging] || t.packagingLabel.packet}
+                  </span>
+                )
+              })()}
+            </div>
+            <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
+              <span className="text-xs text-slate-500">{t.stockLabel}</span>
+              <span className={`text-sm font-bold ${theme.icon.split(' ')[1]}`}>
+                {round3(product.stock ?? 0)} {product.unit}
+              </span>
+            </div>
+            <div className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400">
+              <CalendarDays size={11} className="shrink-0" />
+              {t.lastPurchased}: {lastPurchase ? formatDate(lastPurchase.date) : t.noPurchases}
+            </div>
+            <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-400">
+              <History size={11} className="shrink-0" />
+              {t.lastSold}: {product.lastSoldDate ? formatDate(product.lastSoldDate) : t.notSoldYet}
+            </div>
+          </motion.div>
+        )
+      })}
+    </div>
+  )
+})
+
 export default function Lubricants() {
   const {
     lubricants,
@@ -112,17 +237,16 @@ export default function Lubricants() {
     addLubricant,
     updateLubricant,
     deleteLubricant,
-    reviseLubricantPrice,
-    deletePriceRevision,
     addPurchase,
     updatePurchase,
     deletePurchase,
+    currentUser,
   } = useData()
   const { language } = useLanguage()
   const t = LUBRICANTS_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const loading = lubricantsLoading
   const [saving, setSaving] = useState(false)
-  const [savingPrice, setSavingPrice] = useState(false)
   const [savingPurchase, setSavingPurchase] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
 
@@ -148,36 +272,54 @@ export default function Lubricants() {
   const [savingEditPurchase, setSavingEditPurchase] = useState(false)
   const [confirmDeletePurchaseId, setConfirmDeletePurchaseId] = useState(null)
   const [deletingPurchaseId, setDeletingPurchaseId] = useState(null)
-  const [confirmDeletePriceId, setConfirmDeletePriceId] = useState(null)
-  const [deletingPriceId, setDeletingPriceId] = useState(null)
   // One combined flag covering every kind of in-flight write this page can
-  // make (add/edit, price revision, purchase, delete) — while any of them is
-  // running, every OTHER action on this screen is blocked too.
+  // make (add/edit, purchase, delete) — while any of them is running, every
+  // OTHER action on this screen is blocked too.
   const busy =
     saving ||
-    savingPrice ||
     savingPurchase ||
     deletingId != null ||
     savingEditPurchase ||
-    deletingPurchaseId != null ||
-    deletingPriceId != null
-  const [priceTarget, setPriceTarget] = useState(null)
-  const [priceForm, setPriceForm] = useState(emptyPriceForm)
-  const [priceErrors, setPriceErrors] = useState({})
+    deletingPurchaseId != null
+  // Every write on this screen (add/edit/delete product, record/edit/delete
+  // a purchase) requires manager/admin on the backend (see
+  // lubricant_controller.py's require_manager_or_admin) — kept apart from
+  // `busy` so a staff account still keeps read-only access (Sold History,
+  // the catalog grid itself) instead of the whole page looking disabled.
+  const isManagerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager'
+  const writeBlocked = busy || !isManagerOrAdmin
   const [soldHistoryTarget, setSoldHistoryTarget] = useState(null)
   const [soldHistoryEntries, setSoldHistoryEntries] = useState([])
   const [soldHistoryLoading, setSoldHistoryLoading] = useState(false)
   const [soldHistoryErrorMsg, setSoldHistoryErrorMsg] = useState(null)
+  // Client-side only — the whole (capped, newest-first) list is already
+  // fetched in one go when the modal opens, so narrowing it further here
+  // needs no extra request, same as Offers' own Recently Sent filter.
+  const [soldHistorySearch, setSoldHistorySearch] = useState('')
+  const [soldHistoryDateFrom, setSoldHistoryDateFrom] = useState('')
+  const [soldHistoryDateTo, setSoldHistoryDateTo] = useState('')
   const editingProduct = lubricants.find((p) => p.id === editingId)
 
   const filteredLubricants = useMemo(() => {
     const q = search.trim().toLowerCase()
     return lubricants.filter((l) => {
       if (packagingFilter !== 'all' && (l.packaging || 'packet') !== packagingFilter) return false
-      if (q && !l.name.toLowerCase().includes(q)) return false
+      if (q) {
+        // Name, unit, packaging label (translated, so "கேன்" finds a
+        // cane-packaged product in Tamil too), and stock figure — not the
+        // cost. Searching a catalog by cost isn't a real-world use case
+        // anyway; the other fields are plain property reads, effectively
+        // free even across a full catalog on every keystroke (search is a
+        // dependency below).
+        const haystack = [l.name, l.unit, t.packagingLabel[l.packaging] || t.packagingLabel.packet, round3(l.stock ?? 0)]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        if (!haystack.includes(q)) return false
+      }
       return true
     })
-  }, [lubricants, search, packagingFilter])
+  }, [lubricants, search, packagingFilter, t])
 
   const totalStock = useMemo(() => round3(lubricants.reduce((sum, l) => sum + (Number(l.stock) || 0), 0)), [lubricants])
 
@@ -206,10 +348,6 @@ export default function Lubricants() {
   // history list) immediately, without needing to close and reopen this
   // modal to see it.
   const livePurchaseTarget = purchaseTarget ? lubricants.find((l) => l.id === purchaseTarget.id) || purchaseTarget : null
-  // Same live-reread pattern as livePurchaseTarget above, for the Revise
-  // Price modal's own history list — so deleting a price entry (below)
-  // updates that list immediately without closing the modal.
-  const livePriceTarget = priceTarget ? lubricants.find((l) => l.id === priceTarget.id) || priceTarget : null
 
   function openAdd() {
     setEditingId(null)
@@ -218,12 +356,16 @@ export default function Lubricants() {
     setModalOpen(true)
   }
 
-  function openEdit(product) {
+  // useCallback (empty deps — only calls stable setState setters) so this
+  // stays referentially stable across renders: it's passed down to the
+  // memoized ProductGrid below, and a new function reference every render
+  // would defeat that memoization just as badly as not memoizing at all.
+  const openEdit = useCallback((product) => {
     setEditingId(product.id)
-    setForm({ name: product.name, unit: product.unit, rate: '', stock: '', packaging: product.packaging || 'packet' })
+    setForm({ name: product.name.trim(), unit: product.unit.trim(), rate: '', stock: '', packaging: product.packaging || 'packet' })
     setErrors({})
     setModalOpen(true)
-  }
+  }, [])
 
   function validate() {
     const e = {}
@@ -234,6 +376,19 @@ export default function Lubricants() {
       e.name = t.errorNameDuplicate
     }
     if (!editingId && (form.rate === '' || Number(form.rate) <= 0)) e.rate = t.errorRateInvalid
+    // Opening Stock only exists on the Add form (never shown while editing)
+    // — blank is fine (defaults to 0, see handleSubmit), but anything typed
+    // in must be a non-negative whole number, same rule the backend's
+    // `opening_stock: int = Field(ge=0)` enforces. Without this, the only
+    // thing catching a bad value here was the <input>'s own native
+    // min/step validation — which works, but as a browser-native popup
+    // (untranslated, differently styled from every other error on this
+    // form) rather than this form's own app-styled, i18n'd error text.
+    if (!editingId && form.stock !== '') {
+      const stockNum = Number(form.stock)
+      if (Number.isNaN(stockNum) || stockNum < 0) e.stock = t.errorStockInvalid
+      else if (!Number.isInteger(stockNum)) e.stock = t.errorStockInteger
+    }
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -244,12 +399,12 @@ export default function Lubricants() {
     setSaving(true)
     try {
       if (editingId) {
-        await updateLubricant(editingId, { name: form.name, unit: form.unit, packaging: form.packaging })
+        await updateLubricant(editingId, { name: form.name.trim(), unit: form.unit.trim(), packaging: form.packaging })
         toast.success(t.toastUpdated)
       } else {
         await addLubricant({
-          name: form.name,
-          unit: form.unit,
+          name: form.name.trim(),
+          unit: form.unit.trim(),
           packaging: form.packaging,
           rate: Number(form.rate),
           stock: Number(form.stock) || 0,
@@ -278,34 +433,30 @@ export default function Lubricants() {
     }
   }
 
-  function openPurchase(product) {
+  // useCallback — same reasoning as openEdit above (passed to the memoized
+  // ProductGrid; stable setState setters + module-level utils only, so an
+  // empty dependency array is safe).
+  const openPurchase = useCallback((product) => {
     // Defaults to the LAST PURCHASE's cost (what was actually paid to a
-    // supplier), not currentRate() — that's the customer-facing SELLING
-    // price, a completely different figure (normally higher, for margin).
-    // Pre-filling "Cost per Unit" with the selling rate silently overstated
-    // every new restock's cost by default unless the manager remembered to
-    // correct it. Left blank (forcing an explicit entry) when there's no
-    // purchase history yet to go by, rather than guessing with the rate.
+    // supplier last time) — left blank (forcing an explicit entry) when
+    // there's no purchase history yet to go by.
     const lastPurchase = lastPurchaseOf(product)
     setPurchaseTarget(product)
     setPurchaseForm({ qty: '', cost: lastPurchase ? String(lastPurchase.cost) : '', date: todayISO() })
     setPurchaseErrors({})
-  }
-
-  function openRevisePrice(product) {
-    setPriceTarget(product)
-    setPriceForm({ rate: String(currentRate(product) || ''), effectiveFrom: todayISO() })
-    setPriceErrors({})
-  }
+  }, [])
 
   // Fetched on demand (not preloaded with the catalog list) — a fresh
   // request every time this opens so it can never show stale sales after a
   // fuel entry elsewhere is finalized, edited, or deleted.
-  async function openSoldHistory(product) {
+  const openSoldHistory = useCallback(async (product) => {
     setSoldHistoryTarget(product)
     setSoldHistoryEntries([])
     setSoldHistoryErrorMsg(null)
     setSoldHistoryLoading(true)
+    setSoldHistorySearch('')
+    setSoldHistoryDateFrom('')
+    setSoldHistoryDateTo('')
     try {
       const rows = await getLubricantSalesHistory(product.id)
       setSoldHistoryEntries(rows)
@@ -319,28 +470,34 @@ export default function Lubricants() {
     } finally {
       setSoldHistoryLoading(false)
     }
-  }
+  }, [])
 
-  function validatePrice() {
-    const e = {}
-    if (priceForm.rate === '' || Number(priceForm.rate) <= 0) e.rate = t.errorRateInvalid
-    setPriceErrors(e)
-    return Object.keys(e).length === 0
-  }
+  // Narrows the already-fetched (capped, newest-first) sold-history list —
+  // no extra request, same client-side pattern as Offers' Recently Sent
+  // filter. Matches by pump/shift label and the formatted date text (typing
+  // "28/08" or "Pump 1" should hit, same reasoning as Fuel Entry's own
+  // dateDisplay/pumpLabel search fields), not raw qty/rate numbers — nobody
+  // free-text searches a sales list by exact amount.
+  const filteredSoldHistoryEntries = useMemo(() => {
+    const q = soldHistorySearch.trim().toLowerCase()
+    return soldHistoryEntries.filter((entry) => {
+      if (soldHistoryDateFrom && entry.date < soldHistoryDateFrom) return false
+      if (soldHistoryDateTo && entry.date > soldHistoryDateTo) return false
+      if (q) {
+        const pumpShiftLabel = t.soldHistoryPumpShift(entry.pump_key === 'pump1' ? 1 : 2, entry.shift_number)
+        const haystack = `${pumpShiftLabel} ${formatDate(entry.date)}`.toLowerCase()
+        if (!haystack.includes(q)) return false
+      }
+      return true
+    })
+  }, [soldHistoryEntries, soldHistorySearch, soldHistoryDateFrom, soldHistoryDateTo, t])
 
-  async function handlePriceSubmit(ev) {
-    ev.preventDefault()
-    if (!validatePrice()) return
-    setSavingPrice(true)
-    try {
-      await reviseLubricantPrice(priceTarget.id, { rate: Number(priceForm.rate), effectiveFrom: priceForm.effectiveFrom })
-      toast.success(t.toastPriceRevised(priceTarget.name))
-      setPriceTarget(null)
-    } catch (err) {
-      toast.error(err.message || t.toastSaveFailed)
-    } finally {
-      setSavingPrice(false)
-    }
+  const soldHistoryFilterActive = !!(soldHistorySearch.trim() || soldHistoryDateFrom || soldHistoryDateTo)
+
+  function clearSoldHistoryFilters() {
+    setSoldHistorySearch('')
+    setSoldHistoryDateFrom('')
+    setSoldHistoryDateTo('')
   }
 
   function validatePurchase() {
@@ -438,22 +595,6 @@ export default function Lubricants() {
     }
   }
 
-  // The API rejects (409) removing a product's last remaining price — that
-  // specific message comes straight through via err.message, same as
-  // handleDeletePurchase's stock-negative guard above.
-  async function handleDeletePrice(productId, revisionId) {
-    setDeletingPriceId(revisionId)
-    try {
-      await deletePriceRevision(productId, revisionId)
-      toast.success(t.toastPriceRemoved)
-      setConfirmDeletePriceId(null)
-    } catch (err) {
-      toast.error(err.message || t.toastSaveFailed)
-    } finally {
-      setDeletingPriceId(null)
-    }
-  }
-
   if (loading) {
     return (
       <div className="space-y-6">
@@ -469,17 +610,15 @@ export default function Lubricants() {
 
   const busyLabel = saving
     ? t.saving
-    : savingPrice
-      ? t.revisingPrice
-      : savingPurchase
-        ? t.purchasing
-        : deletingId != null
-          ? t.deleting
-          : savingEditPurchase
-            ? t.updatingPurchase
-            : deletingPurchaseId != null
-              ? t.removingPurchase
-              : ''
+    : savingPurchase
+      ? t.purchasing
+      : deletingId != null
+        ? t.deleting
+        : savingEditPurchase
+          ? t.updatingPurchase
+          : deletingPurchaseId != null
+            ? t.removingPurchase
+            : ''
 
   return (
     // Same fillHeight idea as the table pages (Employees/Attendance/Credit
@@ -490,12 +629,16 @@ export default function Lubricants() {
     <div className="flex h-full min-h-0 flex-col gap-6">
       {busy ? <FullPageLoader label={busyLabel} /> : null}
       <div className="flex items-center gap-3">
-        {/* This row scrolls horizontally on its own (min-w-0 lets it actually
-            shrink instead of forcing the whole flex row wider) — Add Product
-            stays a sibling outside it, so it can never end up scrolled out of
-            view the way it did when it lived inside this same overflow-x-auto
-            row with just an ml-auto push. */}
-        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-3 overflow-x-auto pb-1">
+        {/* Wraps onto as many lines as a narrow screen needs (min-w-0 lets it
+            actually shrink instead of forcing the whole flex row wider) —
+            Add Product stays a sibling outside it, so it can never end up
+            pushed out of view by however many lines this wraps to. Used to
+            scroll horizontally on one line instead (flex-nowrap +
+            overflow-x-auto), which hid the packaging filter and all three
+            stat badges — including the actionable Low Stock one — off the
+            right edge of a real phone screen with no visible scrollbar or
+            other hint there was more to see. */}
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
           <div className="relative w-40 shrink-0 sm:w-56">
             <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
@@ -534,9 +677,11 @@ export default function Lubricants() {
             onClick={() => setLowStockOpen(true)}
           />
         </div>
-        <PrimaryButton onClick={openAdd} disabled={busy} className="shrink-0">
-          <Plus size={16} /> {t.addProduct}
-        </PrimaryButton>
+        <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+          <PrimaryButton onClick={openAdd} disabled={writeBlocked} className="shrink-0">
+            <Plus size={16} /> {t.addProduct}
+          </PrimaryButton>
+        </AppTooltip>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
@@ -546,9 +691,11 @@ export default function Lubricants() {
           title={t.emptyTitle}
           description={t.emptyDesc}
           action={
-            <PrimaryButton onClick={openAdd} disabled={busy}>
-              <Plus size={16} /> {t.addProduct}
-            </PrimaryButton>
+            <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+              <PrimaryButton onClick={openAdd} disabled={writeBlocked}>
+                <Plus size={16} /> {t.addProduct}
+              </PrimaryButton>
+            </AppTooltip>
           }
         />
       ) : filteredLubricants.length === 0 ? (
@@ -558,112 +705,18 @@ export default function Lubricants() {
           description={search.trim() ? t.noMatchDesc(search) : t.noMatchDescFilter}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {filteredLubricants.map((product, i) => {
-            const theme = CARD_THEMES[i % CARD_THEMES.length]
-            const lastPurchase = lastPurchaseOf(product)
-            return (
-              <motion.div
-                key={product.id}
-                initial={{ opacity: 0, y: 14 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: Math.min(i * 0.04, 0.4) }}
-                whileHover={{ y: -6, scale: 1.02, transition: { type: 'spring', stiffness: 300, damping: 18 } }}
-                whileTap={{ scale: 0.985 }}
-                className={`group flex cursor-pointer flex-col rounded-xl border bg-white p-4 shadow-card ring-1 transition-shadow duration-300 hover:shadow-card-hover ${theme.border} ${theme.ring}`}
-              >
-                {/* Name and action icons are two separate rows now, not one
-                    flex row split with justify-between — a long product name
-                    used to wrap onto a second line right underneath the
-                    icons, squeezing them and pushing the last one or two
-                    outside the card. The name instead truncates to a single
-                    line (full name still available on hover via the
-                    tooltip), so the icon row below it always keeps its own
-                    full width. */}
-                <div className="flex min-w-0 items-center gap-2.5">
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6 ${theme.icon}`}>
-                    <Droplet size={15} />
-                  </div>
-                  <AppTooltip title={product.name}>
-                    <p className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug text-slate-800">{product.name}</p>
-                  </AppTooltip>
-                </div>
-                <div className="mt-2 flex flex-wrap justify-center gap-1">
-                  {/* Revise Price temporarily hidden from the card — kept here, not
-                      deleted, for whenever it comes back.
-                  <IconButton
-                    onClick={() => openRevisePrice(product)}
-                    disabled={busy}
-                    aria-label={t.revisePriceAction}
-                    title={t.revisePriceAction}
-                    tone="brand"
-                  >
-                    <Tag size={14} />
-                  </IconButton>
-                  */}
-                  <IconButton
-                    onClick={() => openPurchase(product)}
-                    disabled={busy}
-                    aria-label={t.purchaseAction}
-                    title={t.purchaseAction}
-                    tone="success"
-                  >
-                    <PackagePlus size={14} />
-                  </IconButton>
-                  <IconButton
-                    onClick={() => openSoldHistory(product)}
-                    disabled={busy}
-                    aria-label={t.soldHistoryAction}
-                    title={t.soldHistoryAction}
-                    tone="brand"
-                  >
-                    <History size={14} />
-                  </IconButton>
-                  <IconButton onClick={() => openEdit(product)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
-                    <Pencil size={14} />
-                  </IconButton>
-                  <IconButton
-                    onClick={() => setConfirmDeleteId(product.id)}
-                    disabled={busy}
-                    aria-label="Delete"
-                    title="Delete"
-                    tone="delete"
-                  >
-                    <Trash2 size={14} />
-                  </IconButton>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <p className="text-xs text-slate-500">
-                    {t.rate} <span className="font-semibold text-slate-700">{formatCurrency(currentRate(product))} / {product.unit}</span>
-                  </p>
-                  {(() => {
-                    const PackagingIcon = PACKAGING_ICONS[product.packaging] || PACKAGING_ICONS.packet
-                    return (
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                        <PackagingIcon size={11} />
-                        {t.packagingLabel[product.packaging] || t.packagingLabel.packet}
-                      </span>
-                    )
-                  })()}
-                </div>
-                <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-                  <span className="text-xs text-slate-500">{t.stockLabel}</span>
-                  <span className={`text-sm font-bold ${theme.icon.split(' ')[1]}`}>
-                    {round3(product.stock ?? 0)} {product.unit}
-                  </span>
-                </div>
-                <div className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400">
-                  <CalendarDays size={11} className="shrink-0" />
-                  {t.lastPurchased}: {lastPurchase ? formatDate(lastPurchase.date) : t.noPurchases}
-                </div>
-                <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-400">
-                  <History size={11} className="shrink-0" />
-                  {t.lastSold}: {product.lastSoldDate ? formatDate(product.lastSoldDate) : t.notSoldYet}
-                </div>
-              </motion.div>
-            )
-          })}
-        </div>
+        <ProductGrid
+          products={filteredLubricants}
+          writeBlocked={writeBlocked}
+          isManagerOrAdmin={isManagerOrAdmin}
+          busy={busy}
+          t={t}
+          commonT={commonT}
+          onPurchase={openPurchase}
+          onSoldHistory={openSoldHistory}
+          onEdit={openEdit}
+          onDeleteRequest={setConfirmDeleteId}
+        />
       )}
       </div>
 
@@ -672,7 +725,7 @@ export default function Lubricants() {
         onClose={saving ? () => {} : () => setModalOpen(false)}
         title={editingId ? t.editProduct : t.addProduct}
       >
-        <form onSubmit={handleSubmit} onKeyDown={submitOnEnter} className="space-y-4">
+        <form onSubmit={handleSubmit} onKeyDown={submitOnEnter} noValidate className="space-y-4">
           <Field label={t.fieldProductName} required error={errors.name}>
             <Input
               value={form.name}
@@ -692,21 +745,10 @@ export default function Lubricants() {
               />
             </Field>
             {editingId ? (
-              <Field label={t.fieldRate}>
+              <Field label={t.costLabel}>
                 <div className="flex h-[38px] items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600">
                   <Tag size={14} className="shrink-0 text-slate-400" />
-                  <span className="font-semibold text-slate-800">{formatCurrency(currentRate(editingProduct || {}))}</span>
-                  {/* <button
-                    type="button"
-                    onClick={() => {
-                      setModalOpen(false)
-                      openRevisePrice(editingProduct)
-                    }}
-                    disabled={saving}
-                    className="ml-auto text-xs font-semibold text-brand-600 hover:underline disabled:pointer-events-none disabled:opacity-50"
-                  >
-                    {t.revisePriceLink}
-                  </button> */}
+                  <span className="font-semibold text-slate-800">{formatCurrency(latestPurchaseCost(editingProduct || {}))}</span>
                 </div>
               </Field>
             ) : (
@@ -740,13 +782,15 @@ export default function Lubricants() {
             </Select>
           </Field>
           {!editingId ? (
-            <Field label={t.fieldOpeningStock}>
+            <Field label={t.fieldOpeningStock} error={errors.stock}>
               <Input
                 type="number"
                 min="0"
+                step="1"
                 value={form.stock}
                 onChange={(e) => setForm({ ...form, stock: e.target.value })}
                 placeholder={t.placeholderOpeningStock}
+                error={errors.stock}
                 disabled={saving}
               />
             </Field>
@@ -775,7 +819,7 @@ export default function Lubricants() {
         title={purchaseTarget ? t.purchaseTitle(purchaseTarget.name) : ''}
       >
         {livePurchaseTarget ? (
-          <form onSubmit={handlePurchaseSubmit} onKeyDown={submitOnEnter} className="space-y-4">
+          <form onSubmit={handlePurchaseSubmit} onKeyDown={submitOnEnter} noValidate className="space-y-4">
             <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
               <Boxes size={14} className="text-slate-400" />
               {t.stockLabel}: <span className="font-semibold text-slate-800">{round3(livePurchaseTarget.stock ?? 0)} {livePurchaseTarget.unit}</span>
@@ -811,6 +855,7 @@ export default function Lubricants() {
                 <AppDatePicker
                   value={purchaseForm.date}
                   onChange={(date) => setPurchaseForm({ ...purchaseForm, date })}
+                  minDate={_EARLIEST_SANE_LUBRICANT_DATE}
                   maxDate={todayISO()}
                   className="w-full"
                   disabled={savingPurchase}
@@ -869,6 +914,7 @@ export default function Lubricants() {
                           <AppDatePicker
                             value={editPurchaseForm.date}
                             onChange={(date) => setEditPurchaseForm({ ...editPurchaseForm, date })}
+                            minDate={_EARLIEST_SANE_LUBRICANT_DATE}
                             maxDate={todayISO()}
                             className="w-full !py-1 text-xs"
                             disabled={savingEditPurchase}
@@ -907,9 +953,9 @@ export default function Lubricants() {
                           <IconButton
                             type="button"
                             onClick={() => openEditPurchase(entry)}
-                            disabled={busy}
+                            disabled={writeBlocked}
                             aria-label={t.editPurchaseTooltip}
-                            title={t.editPurchaseTooltip}
+                            title={isManagerOrAdmin ? t.editPurchaseTooltip : t.staffOnlyHint}
                             tone="edit"
                             className="shrink-0"
                           >
@@ -919,9 +965,9 @@ export default function Lubricants() {
                         <IconButton
                           type="button"
                           onClick={() => setConfirmDeletePurchaseId(entry.id)}
-                          disabled={busy}
+                          disabled={writeBlocked}
                           aria-label={t.removePurchaseTooltip}
-                          title={t.removePurchaseTooltip}
+                          title={isManagerOrAdmin ? t.removePurchaseTooltip : t.staffOnlyHint}
                           tone="delete"
                           className="shrink-0"
                         >
@@ -964,100 +1010,11 @@ export default function Lubricants() {
         loading={deletingPurchaseId != null}
       />
 
-      <ConfirmDialog
-        isOpen={!!confirmDeletePriceId}
-        onClose={() => setConfirmDeletePriceId(null)}
-        onConfirm={() => handleDeletePrice(livePriceTarget?.id, confirmDeletePriceId)}
-        title={t.removePriceTitle}
-        description={t.removePriceDesc}
-        loading={deletingPriceId != null}
-      />
-
-      <Modal
-        isOpen={!!priceTarget}
-        onClose={savingPrice ? () => {} : () => setPriceTarget(null)}
-        title={priceTarget ? t.revisePriceTitle(priceTarget.name) : ''}
-      >
-        {priceTarget ? (
-          <form onSubmit={handlePriceSubmit} onKeyDown={submitOnEnter} className="space-y-4">
-            <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              <Tag size={14} className="text-slate-400" />
-              {t.fieldCurrentRate}: <span className="font-semibold text-slate-800">{formatCurrency(currentRate(livePriceTarget))}</span>
-            </div>
-
-            <Field label={t.fieldNewRate} error={priceErrors.rate}>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                autoFocus
-                value={priceForm.rate}
-                onChange={(e) => setPriceForm({ ...priceForm, rate: e.target.value })}
-                placeholder="0.00"
-                error={priceErrors.rate}
-                disabled={savingPrice}
-              />
-            </Field>
-
-            <Field label={t.fieldEffectiveFrom}>
-              <AppDatePicker
-                value={priceForm.effectiveFrom}
-                onChange={(date) => setPriceForm({ ...priceForm, effectiveFrom: date })}
-                className="w-full"
-                disabled={savingPrice}
-              />
-            </Field>
-
-            <div>
-              <p className="mb-1.5 text-xs font-semibold text-slate-600">{t.priceHistoryTitle}</p>
-              <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
-                {sortedPriceHistory(livePriceTarget).length ? (
-                  [...sortedPriceHistory(livePriceTarget)].reverse().map((entry) => {
-                    // The API rejects removing a product's last remaining
-                    // price (see LubricantService.delete_price_revision) —
-                    // disabled here too, rather than letting the click go
-                    // through only to bounce back as an error toast.
-                    const isOnlyOne = sortedPriceHistory(livePriceTarget).length <= 1
-                    return (
-                      <div key={entry.id} className="flex items-center gap-1.5 text-xs text-slate-500">
-                        <CalendarDays size={11} className="shrink-0 text-slate-400" />
-                        <span className="flex-1">{t.priceHistoryEntry(entry.rate, formatDate(entry.effectiveFrom))}</span>
-                        <IconButton
-                          type="button"
-                          onClick={() => setConfirmDeletePriceId(entry.id)}
-                          disabled={busy || isOnlyOne}
-                          aria-label={t.removePriceTooltip}
-                          title={isOnlyOne ? t.removePriceOnlyOneHint : t.removePriceTooltip}
-                          tone="delete"
-                          className="shrink-0"
-                        >
-                          <Trash2 size={11} />
-                        </IconButton>
-                      </div>
-                    )
-                  })
-                ) : (
-                  <p className="text-xs text-slate-400">{t.priceHistoryEmpty}</p>
-                )}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-1">
-              <SecondaryButton type="button" onClick={() => setPriceTarget(null)} disabled={savingPrice}>
-                {t.cancel}
-              </SecondaryButton>
-              <PrimaryButton type="submit" disabled={savingPrice}>
-                {t.saveRevision}
-              </PrimaryButton>
-            </div>
-          </form>
-        ) : null}
-      </Modal>
-
       <Modal
         isOpen={!!soldHistoryTarget}
         onClose={() => setSoldHistoryTarget(null)}
         title={soldHistoryTarget ? t.soldHistoryTitle(soldHistoryTarget.name) : ''}
+        maxWidth="max-w-2xl"
       >
         {soldHistoryTarget ? (
           <div className="space-y-3">
@@ -1065,6 +1022,42 @@ export default function Lubricants() {
               <Boxes size={14} className="text-slate-400" />
               {t.stockLabel}: <span className="font-semibold text-slate-800">{round3(soldHistoryTarget.stock ?? 0)} {soldHistoryTarget.unit}</span>
             </div>
+            {!soldHistoryLoading && !soldHistoryErrorMsg && soldHistoryEntries.length > 0 ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-[140px] flex-1">
+                  <Field label={t.soldHistorySearchLabel}>
+                    <div className="relative">
+                      <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        value={soldHistorySearch}
+                        onChange={(e) => setSoldHistorySearch(e.target.value)}
+                        placeholder={t.soldHistorySearchPlaceholder}
+                        className="py-1.5 pl-7 text-xs"
+                      />
+                    </div>
+                  </Field>
+                </div>
+                <div className="w-[128px]">
+                  <Field label={t.soldHistoryDateFrom}>
+                    <AppDatePicker value={soldHistoryDateFrom} onChange={setSoldHistoryDateFrom} maxDate={soldHistoryDateTo || undefined} clearable />
+                  </Field>
+                </div>
+                <div className="w-[128px]">
+                  <Field label={t.soldHistoryDateTo}>
+                    <AppDatePicker value={soldHistoryDateTo} onChange={setSoldHistoryDateTo} minDate={soldHistoryDateFrom || undefined} clearable />
+                  </Field>
+                </div>
+                {soldHistoryFilterActive ? (
+                  <button
+                    type="button"
+                    onClick={clearSoldHistoryFilters}
+                    className="mb-0.5 inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-50"
+                  >
+                    <X size={13} /> {t.clearFilters}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <div className="max-h-72 space-y-1.5 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
               {soldHistoryLoading ? (
                 <p className="text-xs text-slate-400">{t.soldHistoryLoading}</p>
@@ -1072,8 +1065,8 @@ export default function Lubricants() {
                 <p className="text-xs text-rose-500">
                   {soldHistoryErrorMsg === true ? t.soldHistoryLoadFailed : soldHistoryErrorMsg}
                 </p>
-              ) : soldHistoryEntries.length ? (
-                soldHistoryEntries.map((entry) => (
+              ) : filteredSoldHistoryEntries.length ? (
+                filteredSoldHistoryEntries.map((entry) => (
                   <div key={entry.fuel_entry_id + entry.row_type} className="flex items-center justify-between gap-2 text-xs text-slate-500">
                     <span className="flex items-center gap-1.5">
                       <CalendarDays size={11} className="shrink-0 text-slate-400" />
@@ -1089,6 +1082,8 @@ export default function Lubricants() {
                     </span>
                   </div>
                 ))
+              ) : soldHistoryEntries.length ? (
+                <p className="text-xs text-slate-400">{t.soldHistoryNoMatch}</p>
               ) : (
                 <p className="text-xs text-slate-400">{t.soldHistoryEmpty}</p>
               )}
@@ -1118,16 +1113,19 @@ export default function Lubricants() {
                       {t.stockLabel}: <span className="font-bold text-rose-600">{round3(product.stock ?? 0)} {product.unit}</span>
                     </p>
                   </div>
-                  <SecondaryButton
-                    type="button"
-                    onClick={() => {
-                      setLowStockOpen(false)
-                      openPurchase(product)
-                    }}
-                    className="shrink-0"
-                  >
-                    <PackagePlus size={14} /> {t.purchaseAction}
-                  </SecondaryButton>
+                  <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                    <SecondaryButton
+                      type="button"
+                      onClick={() => {
+                        setLowStockOpen(false)
+                        openPurchase(product)
+                      }}
+                      disabled={writeBlocked}
+                      className="shrink-0"
+                    >
+                      <PackagePlus size={14} /> {t.purchaseAction}
+                    </SecondaryButton>
+                  </AppTooltip>
                 </div>
               ))
             ) : (

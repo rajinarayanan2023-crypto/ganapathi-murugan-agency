@@ -464,6 +464,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
       ? [{ label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` }]
       : [
           { label: t.purchasedInPeriodLabel, value: `${availableBreakdown.purchasedAtCost} ${selectedProduct.unit}` },
+          { label: t.soldAtRateLabel, value: `${availableBreakdown.soldAtCost} ${selectedProduct.unit}` },
           { label: t.currentStockLabel, value: `${availableBreakdown.totalStock} ${selectedProduct.unit}` },
         ]
     : []
@@ -472,7 +473,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
       ? `${t.currentStockLabel} (${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
       : availableBreakdown.costNotFound
         ? t.rateNotInHistoryNote
-        : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedAtCost}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
+        : `min(${t.purchasedInPeriodLabel} ${availableBreakdown.purchasedAtCost} − ${t.soldAtRateLabel} ${availableBreakdown.soldAtCost}, ${t.currentStockLabel} ${availableBreakdown.totalStock}) = ${t.availableLabel} (${available} ${selectedProduct.unit})`
     : ''
   const availableTooltipNote = availableBreakdown && !availableBreakdown.singleBatch && !availableBreakdown.costNotFound ? t.availableApproxNote : undefined
   const isOverStock = isOilCountOverStock(count, effectiveAvailable)
@@ -645,6 +646,31 @@ const ShiftCard = forwardRef(function ShiftCard(
   const oilRowRefs = useRef(new Map())
   const readingRowRefs = useRef(new Map())
   const employeeFieldRef = useRef(null)
+  // R2 keys of bills uploaded THIS session that haven't been through a
+  // successful Save Entry yet — a bill goes straight to R2 the moment it's
+  // picked (see handleBillFileChange), well before the shift itself is ever
+  // persisted. If this card is discarded without saving (date changed, this
+  // shift removed before ever being saved, or the whole page left — all of
+  // which unmount this card for real; switching pump/shift tabs does not),
+  // those files would otherwise sit in R2 forever with nothing in the
+  // database ever pointing at them. Cleared on a successful save (the entry
+  // now genuinely references them) and on the manual per-bill remove (which
+  // already deletes the object directly, right there).
+  const pendingUnsavedBillKeysRef = useRef(new Set())
+  // Empty deps — this must only fire on the real unmount (date changed,
+  // this shift removed before ever being saved, or the page left entirely),
+  // never on an ordinary re-render in between. Fire-and-forget: there's
+  // nothing left mounted to await the result on, but the requests still go
+  // out and land same as any other background fetch.
+  useEffect(
+    () => () => {
+      for (const key of pendingUnsavedBillKeysRef.current) {
+        deleteUpload(key).catch(() => {})
+      }
+      pendingUnsavedBillKeysRef.current.clear()
+    },
+    [],
+  )
   // Snapshot of this shift's oil/cane-oil rows as they were the moment this
   // card first mounted — i.e., for an already-final shift, exactly how much
   // of each row's own count is already subtracted from the product's live
@@ -797,6 +823,7 @@ const ShiftCard = forwardRef(function ShiftCard(
       // it in S3 or Postgres.
       const { name, key } = await uploadBillFile(preparedFile, 'fuel-entry-bills')
       const newBill = { id: makeBillId(), name, url: key, date: todayISO() }
+      pendingUnsavedBillKeysRef.current.add(key)
       updateBills((bills) => [...bills, newBill])
       toast.success(tRoot.toastBillAttached(file.name))
     } catch (err) {
@@ -806,16 +833,34 @@ const ShiftCard = forwardRef(function ShiftCard(
     }
   }
   // Local-only splice — the shift itself isn't saved here, so nothing tells
-  // the backend a bill disappeared until the next autosave/save. A bill
-  // attached and removed again within that same window (before any save
-  // ever included it) would otherwise leak in S3 forever with no DB row
-  // left to ever clean it up from — so this deletes the S3 object directly,
-  // right away, rather than waiting on a save that might not come.
+  // the backend a bill disappeared until the next autosave/save.
+  //
+  // A bill uploaded and removed again THIS SAME SESSION, before any save
+  // ever included it (tracked in pendingUnsavedBillKeysRef), would otherwise
+  // leak in S3 forever with no DB row left to ever clean it up from — so
+  // that case deletes the S3 object directly, right away.
+  //
+  // A bill that was ALREADY SAVED before this edit started is the opposite
+  // case, and used to be deleted from S3 just as immediately — which is
+  // exactly backwards: if the manager removes it here and then abandons
+  // this edit without clicking Save Entry (closes the tab, changes the
+  // date, picks "Leave Anyway"), the database row for this bill is
+  // untouched and still there, but the file it points to has already been
+  // deleted for real. The entry would keep listing a bill that silently
+  // fails to open from that point on. An already-saved bill is only ever
+  // removed from S3 the moment a save that actually drops it succeeds —
+  // fuel_entry_service.py's own diff-on-save already does exactly this
+  // (removed_bill_keys, queued via queue_file_deletion) for precisely this
+  // reason; this just stops jumping ahead of it.
   async function removeBill(billId) {
     const bill = (value.bills || []).find((b) => b.id === billId)
+    const wasUnsaved = bill?.url && pendingUnsavedBillKeysRef.current.has(bill.url)
     updateBills((bills) => bills.filter((b) => b.id !== billId))
     toast.success(tRoot.toastBillRemoved)
-    if (bill?.url) {
+    if (wasUnsaved) {
+      // Already being cleaned up directly below — the unmount-time sweep
+      // (pendingUnsavedBillKeysRef) must not also try to delete it.
+      pendingUnsavedBillKeysRef.current.delete(bill.url)
       try {
         await deleteUpload(bill.url)
       } catch {
@@ -895,10 +940,6 @@ const ShiftCard = forwardRef(function ShiftCard(
     shiftTotalBreakdownRows.push({ label: t.caneOilLabel, value: formatCurrency(caneOilStockAmount) })
   }
   const shiftTotalFormula = `${shiftTotalBreakdownRows.map((r) => `${r.label} (${r.value})`).join(' + ')} = ${t.shiftTotalLabel} (${formatCurrency(shiftTotal)})`
-  // Bill-upload requirement temporarily disabled — restore the commented
-  // condition below (and in handleSaveFinalClick, and the backend's
-  // create()/update() in fuel_entry_service.py) to bring it back.
-  const shiftBillsMissing = false // attemptedSubmit && (!value.bills || value.bills.length === 0)
   const shiftEmployeeMissing = attemptedSubmit && !value.employeeId
   // Same product at the same rate should only ever be one row — checked
   // separately per section (a pocket-oil duplicate never flags a cane-oil row).
@@ -1060,19 +1101,37 @@ const ShiftCard = forwardRef(function ShiftCard(
       if (duplicateLine) focusPaymentLine(duplicateLine.id)
       return false
     }
-    // Bill-upload requirement temporarily disabled — see shiftBillsMissing above.
-    if (!value.employeeId /* || !value.bills || value.bills.length === 0 */) {
+    if (!value.employeeId) {
       setAttemptedSubmit(true)
       setShakeKey((k) => k + 1)
       // No toast here — the rose-colored hint under the field (driven by
       // shiftEmployeeMissing) plus the shake and the focus jump below are
       // the error; a toast on top just repeated the same message a beat
       // later, since it has to wait for its own mount/animate-in.
-      if (!value.employeeId) focusEmployeeField()
+      focusEmployeeField()
       return false
     }
     setAttemptedSubmit(true)
-    return (await onSaveFinal(value)) !== false
+    // Trimmed once, here, right before the actual save — not on every
+    // keystroke in the fields below, so typing a trailing space mid-word
+    // still works fine while composing an expense label or a credit note.
+    const cleanedValue = {
+      ...value,
+      notes: typeof value.notes === 'string' ? value.notes.trim() : value.notes,
+      payments: (value.payments || []).map((p) => ({
+        ...p,
+        label: typeof p.label === 'string' ? p.label.trim() : p.label,
+        note: typeof p.note === 'string' ? p.note.trim() : p.note,
+      })),
+    }
+    const saved = (await onSaveFinal(cleanedValue)) !== false
+    if (saved) {
+      // Every bill currently on this shift (including whatever was just
+      // uploaded this session) is now genuinely referenced by a saved
+      // entry — nothing left for the unmount-time sweep to worry about.
+      pendingUnsavedBillKeysRef.current.clear()
+    }
+    return saved
   }
 
   // Exposed via ref as-is (no navigation) — this is what the shift/pump/date
@@ -1678,7 +1737,7 @@ const ShiftCard = forwardRef(function ShiftCard(
                       <Coins size={16} />
                     </IconButton>
                   ) : null}
-                  <IconButton onClick={() => removePaymentLine(p.id)} aria-label="Remove" title="Remove" tone="delete">
+                  <IconButton onClick={() => removePaymentLine(p.id)} aria-label={t.removeAction} title={t.removeAction} tone="delete">
                     <X size={15} />
                   </IconButton>
                 </div>
@@ -1778,19 +1837,10 @@ const ShiftCard = forwardRef(function ShiftCard(
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <motion.div
-          key={`${shakeKey}`}
-          animate={shiftBillsMissing ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
-          transition={{ duration: 0.45, ease: 'easeInOut' }}
-          className={`rounded-xl border p-3 ${shiftBillsMissing ? 'border-rose-400 bg-rose-50 ring-2 ring-rose-100' : 'border-violet-300 bg-violet-100'}`}
-        >
+        <div className="rounded-xl border border-violet-300 bg-violet-100 p-3">
           <div className="mb-2 flex items-center gap-1.5">
-            <Paperclip size={14} className={shiftBillsMissing ? 'text-rose-500' : 'text-violet-600'} />
-            <h4 className="text-sm font-bold text-slate-800">
-              {tRoot.billsAndDocuments}
-              {/* Required-asterisk hidden while the bill-upload requirement is disabled — see shiftBillsMissing above. */}
-              {/* <span className="text-rose-500"> *</span> */}
-            </h4>
+            <Paperclip size={14} className="text-violet-600" />
+            <h4 className="text-sm font-bold text-slate-800">{tRoot.billsAndDocuments}</h4>
           </div>
           {value.bills?.length > 0 ? (
             <ul className="mb-2 max-h-40 space-y-1.5 overflow-y-auto pr-1">
@@ -1823,8 +1873,7 @@ const ShiftCard = forwardRef(function ShiftCard(
             {uploadingBill ? tRoot.uploadingBillPrompt : tRoot.uploadBillPrompt}
             <input type="file" accept="image/*,.pdf" className="hidden" disabled={uploadingBill} onChange={handleBillFileChange} />
           </label>
-          {shiftBillsMissing ? <span className="mt-1.5 block text-xs font-medium text-rose-500">{tRoot.errorBillsRequired}</span> : null}
-        </motion.div>
+        </div>
 
         <div className="rounded-xl border border-amber-300 bg-amber-100 p-3">
           <div className="mb-2 flex items-center gap-1.5">
@@ -1906,7 +1955,7 @@ const ShiftCard = forwardRef(function ShiftCard(
         </div>
         <div className="flex items-center gap-2">
           <PrimaryButton type="button" onClick={handleSaveFinalAndReturn} disabled={savingFinal || uploadingBill}>
-            <Save size={15} /> {savingFinal ? tRoot.savingChanges : value.id ? tRoot.saveChanges : tRoot.saveEntry}
+            <Save size={15} /> {savingFinal ? tRoot.savingChanges : value.id ? tRoot.updateChanges : tRoot.saveEntry}
           </PrimaryButton>
         </div>
       </motion.div>

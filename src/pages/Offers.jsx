@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, Trash2, Eye, AlertTriangle } from 'lucide-react'
+import { Plus, Send, Users, Megaphone, Phone, CheckSquare, Square, History, Trash2, Eye, AlertTriangle, Search, X } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { OFFERS_TEXT } from '../i18n/offers.js'
-import { formatDateTime } from '../utils/format.js'
+import { formatDateTime, toISODate } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -14,6 +14,7 @@ import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { WhatsAppIcon } from '../components/BrandIcons.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
+import AppDatePicker from '../components/AppDatePicker.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
 const customerEmptyForm = { name: '', phone: '' }
@@ -33,7 +34,9 @@ const OFFER_TEMPLATES = [
 ]
 
 const STATUS_STYLES = {
-  sent: 'bg-emerald-50 text-emerald-600',
+  sent: 'bg-sky-50 text-sky-600',
+  delivered: 'bg-emerald-50 text-emerald-600',
+  read: 'bg-violet-50 text-violet-600',
   failed: 'bg-rose-50 text-rose-600',
   blocked: 'bg-slate-100 text-slate-500',
   pending: 'bg-amber-50 text-amber-600',
@@ -122,10 +125,50 @@ export default function Offers() {
   // gray out every other row too.
   const [deletingId, setDeletingId] = useState(null)
   const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState(null)
+  // Every other write on this page (delete customer, send a reminder
+  // elsewhere in the app) confirms first — a bulk WhatsApp send to
+  // potentially dozens of real customers shouldn't be the one exception
+  // that fires immediately on click.
+  const [confirmSend, setConfirmSend] = useState(false)
   // One combined flag covering every kind of in-flight write this page can
   // make (add customer, remove customer, send offer) — while any of them is
   // running, every OTHER action on this screen is blocked too.
   const busy = sending || savingCustomer || deletingId != null
+
+  // "Recently Sent" filters — client-side over the (up to 200) rows already
+  // loaded (see getOfferHistory), not a separate request per keystroke/date
+  // change. Search matches the message preview, any recipient's name/phone,
+  // or the status label — whatever the manager is most likely scanning for
+  // when double-checking "did offer X actually go out".
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyDateFrom, setHistoryDateFrom] = useState('')
+  const [historyDateTo, setHistoryDateTo] = useState('')
+  const historyFilterActive = !!(historySearch.trim() || historyDateFrom || historyDateTo)
+
+  const filteredHistory = useMemo(() => {
+    const query = historySearch.trim().toLowerCase()
+    return offerHistory.filter((send) => {
+      if (historyDateFrom || historyDateTo) {
+        const sentDate = toISODate(send.sentAt)
+        if (historyDateFrom && sentDate < historyDateFrom) return false
+        if (historyDateTo && sentDate > historyDateTo) return false
+      }
+      if (query) {
+        const haystack = [send.message, ...send.recipients.flatMap((r) => [r.customerName, r.customerPhone])]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        if (!haystack.includes(query)) return false
+      }
+      return true
+    })
+  }, [offerHistory, historySearch, historyDateFrom, historyDateTo])
+
+  function clearHistoryFilters() {
+    setHistorySearch('')
+    setHistoryDateFrom('')
+    setHistoryDateTo('')
+  }
 
   function openAdd() {
     setForm(customerEmptyForm)
@@ -147,7 +190,7 @@ export default function Offers() {
     if (!validate()) return
     setSavingCustomer(true)
     try {
-      await addOfferCustomer({ name: form.name, phone: form.phone })
+      await addOfferCustomer({ name: form.name.trim(), phone: form.phone })
       toast.success(t.toastCustomerAdded)
       setModalOpen(false)
     } catch (err) {
@@ -182,7 +225,9 @@ export default function Offers() {
     setSelectedCustomers([])
   }
 
-  async function handleSendOffer() {
+  // Validates and opens the confirmation — the actual send (handleSendOffer
+  // below) only ever fires from the dialog's own Confirm button now.
+  function handleSendClick() {
     if (!templateUsed) {
       toast.error(t.errorTemplateRequired)
       return
@@ -192,7 +237,10 @@ export default function Offers() {
       return
     }
     if (selectedCustomers.length === 0) return
+    setConfirmSend(true)
+  }
 
+  async function handleSendOffer() {
     setSending(true)
     try {
       const send = await sendOffer({
@@ -208,6 +256,7 @@ export default function Offers() {
       setSelectedCustomers([])
       setTemplateUsed(null)
       setOfferVariable('')
+      setConfirmSend(false)
     } catch (err) {
       toast.error(err.message || t.errorSendFailed)
     } finally {
@@ -306,7 +355,7 @@ export default function Offers() {
               globalFilterFields={['name', 'phone']}
               searchPlaceholder={t.searchPlaceholder}
               defaultSortField="name"
-              scrollHeight="calc(100vh - 390px)"
+              scrollHeight="calc(100svh - 390px)"
               selectable
               selection={selectedCustomers}
               onSelectionChange={setSelectedCustomers}
@@ -402,7 +451,7 @@ export default function Offers() {
           </p>
 
           <AppTooltip title={sendDisabled && !sending ? t.sendDisabledHint : undefined}>
-            <PrimaryButton onClick={handleSendOffer} disabled={sendDisabled} className="mt-2 w-full">
+            <PrimaryButton onClick={handleSendClick} disabled={sendDisabled} className="mt-2 w-full">
               <Send size={16} /> {sending ? t.sending : t.sendOfferTo(selectedCustomers.length || 0)}
             </PrimaryButton>
           </AppTooltip>
@@ -415,16 +464,61 @@ export default function Offers() {
         transition={{ duration: 0.35, delay: 0.15 }}
         className="rounded-xl border border-slate-200 bg-white p-5 shadow-card"
       >
-        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-800">
-          <History size={15} className="text-slate-400" /> {t.recentlySent}
-        </h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+            <History size={15} className="text-slate-400" /> {t.recentlySent}
+          </h3>
+          {!offerHistoryLoading && offerHistory.length > 0 ? (
+            <p className="text-xs text-slate-400">{t.historyShowingCount(filteredHistory.length, offerHistory.length)}</p>
+          ) : null}
+        </div>
+
+        {!offerHistoryLoading && offerHistory.length > 0 ? (
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <div className="min-w-[180px] flex-1">
+              <Field label={t.historySearchLabel}>
+                <div className="relative">
+                  <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder={t.historySearchPlaceholder}
+                    className="pl-7"
+                  />
+                </div>
+              </Field>
+            </div>
+            <div className="w-[140px]">
+              <Field label={t.historyDateFrom}>
+                <AppDatePicker value={historyDateFrom} onChange={setHistoryDateFrom} maxDate={historyDateTo || undefined} clearable />
+              </Field>
+            </div>
+            <div className="w-[140px]">
+              <Field label={t.historyDateTo}>
+                <AppDatePicker value={historyDateTo} onChange={setHistoryDateTo} minDate={historyDateFrom || undefined} clearable />
+              </Field>
+            </div>
+            {historyFilterActive ? (
+              <button
+                type="button"
+                onClick={clearHistoryFilters}
+                className="mb-0.5 inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-50"
+              >
+                <X size={13} /> {t.clearFilters}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
         {offerHistoryLoading ? (
           <p className="text-xs text-slate-400">{t.loadingHistory}</p>
         ) : offerHistory.length === 0 ? (
           <p className="text-xs text-slate-400">{t.noHistory}</p>
+        ) : filteredHistory.length === 0 ? (
+          <p className="text-xs text-slate-400">{t.noHistoryMatch}</p>
         ) : (
           <ul className="max-h-96 space-y-2 overflow-y-auto pr-1">
-            {offerHistory.map((send) => (
+            {filteredHistory.map((send) => (
               <li key={send.id} className="rounded-lg bg-slate-50 px-3 py-2.5 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-medium text-slate-700">
@@ -504,6 +598,20 @@ export default function Offers() {
         title={t.removeCustomerTitle}
         description={confirmDeleteCustomer ? t.removeCustomerDesc(confirmDeleteCustomer.name) : ''}
         loading={deletingId != null}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmSend}
+        onClose={() => setConfirmSend(false)}
+        onConfirm={handleSendOffer}
+        title={t.confirmSendTitle}
+        description={t.confirmSendDesc(
+          selectedCustomers.length,
+          OFFER_TEMPLATES.find((tpl) => tpl.id === templateUsed)?.label || templateUsed,
+        )}
+        confirmLabel={t.confirmSendButton}
+        confirmTone="brand"
+        loading={sending}
       />
     </div>
   )

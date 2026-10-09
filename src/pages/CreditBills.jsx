@@ -5,6 +5,7 @@ import { Plus, Pencil, Trash2, Wallet, ReceiptText, BadgeIndianRupee, Upload, Pa
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { CREDIT_BILLS_TEXT } from '../i18n/creditBills.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { closingBalance, closingBalanceBreakdown } from '../data/mockData.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import { uploadBillFile, getDownloadUrl, deleteUpload, sendCreditReminder, sendLedgerEntryReminder } from '../lib/apiClient.js'
@@ -13,6 +14,7 @@ import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
+import AppDatePicker from '../components/AppDatePicker.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import { WhatsAppIcon } from '../components/BrandIcons.jsx'
@@ -21,8 +23,9 @@ import CalcBreakdown from '../components/CalcBreakdown.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
 const customerEmptyForm = { name: '', phone: '', notes: '' }
-const creditEmptyForm = { fuelType: 'Diesel', ltr: '', rate: '100.45' }
-const paymentEmptyForm = { amount: '', mode: 'Cash' }
+const creditEmptyForm = { fuelType: 'Diesel', ltr: '', rate: '100.45', amount: '', date: todayISO(), note: '' }
+const paymentEmptyForm = { amount: '', mode: 'Cash', date: todayISO(), note: '' }
+const _EARLIEST_SANE_LEDGER_DATE = '1970-01-01'
 
 export default function CreditBills() {
   const {
@@ -36,10 +39,18 @@ export default function CreditBills() {
     updateLedgerEntryBill,
     removeLedgerEntry,
     fuelRates,
+    currentUser,
   } = useData()
   const { language } = useLanguage()
   const t = CREDIT_BILLS_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const loading = creditCustomersLoading
+  // Every write here (customer add/edit/delete, credit/payment entries, bill
+  // upload/remove, both WhatsApp reminder sends) hits a backend route gated
+  // to require_manager_or_admin (see credit_customer_controller.py) — a
+  // staff user saw every one of these controls fully enabled and only found
+  // out they weren't allowed after the request came back 403.
+  const isManagerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager'
 
   const [customerModalOpen, setCustomerModalOpen] = useState(false)
   const [editingCustomerId, setEditingCustomerId] = useState(null)
@@ -74,6 +85,13 @@ export default function CreditBills() {
   // (not-yet-submitted) credit bill just below.
   const [confirmRemoveTxBill, setConfirmRemoveTxBill] = useState(null)
   const [confirmRemoveStagedCreditBill, setConfirmRemoveStagedCreditBill] = useState(false)
+  // Closing the ledger modal while a bill is uploaded-but-not-yet-saved
+  // would otherwise leave that file sitting in R2 with nothing in the
+  // database ever pointing at it — asks first, same as the manual "remove
+  // attachment" confirm just above, but triggered by the close attempt
+  // itself rather than the staged file's own X button.
+  const [confirmDiscardStagedBillOnClose, setConfirmDiscardStagedBillOnClose] = useState(false)
+  const [discardingStagedBillOnClose, setDiscardingStagedBillOnClose] = useState(false)
   const [txSort, setTxSort] = useState({ field: 'date', dir: 'desc' })
   const [txSearch, setTxSearch] = useState('')
   // id of whichever customer has a reminder send in flight — same
@@ -115,6 +133,10 @@ export default function CreditBills() {
           : sendingReminderId != null || sendingTxReminderId != null
             ? t.sendingReminder
             : t.saving
+  // Separate from `busy` (which drives the full-page loading overlay) — a
+  // staff user should still be able to just VIEW this screen (list, search,
+  // open a ledger to read it), only writes need to be blocked for them.
+  const writeBlocked = busy || !isManagerOrAdmin
 
   const rows = useMemo(
     () => creditCustomers.map((c) => ({ ...c, balance: closingBalance(c), billsCount: (c.bills?.length || 0) + (c.ledger || []).filter((e) => e.billUrl).length })),
@@ -151,11 +173,14 @@ export default function CreditBills() {
   // search below can never match against wording the manager doesn't
   // actually see on screen.
   function txDetailsText(tx) {
-    return tx.type === 'credit'
-      ? tx.ltr != null && tx.rate != null
-        ? `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
-        : t.fromFuelEntry
-      : t.modeLabel[tx.mode] || tx.mode
+    if (tx.type !== 'credit') return t.modeLabel[tx.mode] || tx.mode
+    if (tx.ltr != null && tx.rate != null) return `${t.fuelTypeLabel[tx.fuelType] || tx.fuelType} · ${tx.ltr} L @ ${tx.rate}`
+    // No litres/rate on a credit row means either a real Fuel Entry credit
+    // that (unusually) carries neither, or — far more commonly now — a
+    // manually-recorded In Hand credit, which was never fuel-quantified in
+    // the first place. Checking sourceFuelEntryId directly (not just
+    // "no ltr/rate") is what tells these two apart correctly.
+    return tx.sourceFuelEntryId ? t.fromFuelEntry : t.fuelTypeLabel.InHand
   }
 
   // Free-text search across every column actually shown in the table below
@@ -193,7 +218,7 @@ export default function CreditBills() {
 
   function openEditCustomer(c) {
     setEditingCustomerId(c.id)
-    setCustomerForm({ name: c.name, phone: c.phone, notes: c.notes || '' })
+    setCustomerForm({ name: c.name.trim(), phone: c.phone, notes: (c.notes || '').trim() })
     setErrors({})
     setCustomerModalOpen(true)
   }
@@ -230,11 +255,11 @@ export default function CreditBills() {
 
   async function handleCustomerSubmit(ev) {
     ev.preventDefault()
-    if (!validateCustomer()) return
+    if (savingCustomer || !validateCustomer()) return
     const payload = {
-      name: customerForm.name,
+      name: customerForm.name.trim(),
       phone: customerForm.phone,
-      notes: customerForm.notes,
+      notes: customerForm.notes.trim(),
     }
     setSavingCustomer(true)
     try {
@@ -254,6 +279,7 @@ export default function CreditBills() {
   }
 
   async function handleDeleteCustomer() {
+    if (deletingCustomer) return
     const id = confirmDeleteId
     setDeletingCustomer(true)
     try {
@@ -354,7 +380,7 @@ export default function CreditBills() {
 
   function openLedger(id) {
     setLedgerCustomerId(id)
-    setCreditForm({ fuelType: 'Diesel', ltr: '', rate: String(fuelRates.diesel) })
+    setCreditForm({ fuelType: 'Diesel', ltr: '', rate: String(fuelRates.diesel), amount: '', date: todayISO(), note: '' })
     setPaymentForm(paymentEmptyForm)
     setCreditBillFile(null)
     setTxSearch('')
@@ -398,29 +424,74 @@ export default function CreditBills() {
     }
   }
 
+  // Called from every way the ledger modal can close (X, Escape, backdrop
+  // click) — a bill sitting in creditBillFile at that moment was uploaded
+  // for a credit line that's about to be abandoned, so closing silently
+  // would leave it as a real file in R2 with nothing in the database ever
+  // referencing it. Only interrupts the close when that's actually true;
+  // with nothing staged, this is the exact same immediate close as before.
+  function attemptCloseLedger() {
+    if (creditBillFile) {
+      setConfirmDiscardStagedBillOnClose(true)
+      return
+    }
+    setLedgerCustomerId(null)
+  }
+
+  async function confirmDiscardStagedBillAndClose() {
+    setDiscardingStagedBillOnClose(true)
+    try {
+      await removeStagedCreditBill()
+      setConfirmDiscardStagedBillOnClose(false)
+      setLedgerCustomerId(null)
+    } finally {
+      setDiscardingStagedBillOnClose(false)
+    }
+  }
+
   async function handleAddCredit(ev) {
     ev.preventDefault()
-    const ltr = Number(creditForm.ltr)
-    const rate = Number(creditForm.rate)
-    if (!ltr || !rate) {
-      toast.error(t.errorQtyRate)
-      return
+    if (savingCredit) return
+    // "In Hand" is a plain cash credit, not tied to any fuel sale — no
+    // litres/rate to multiply, just the amount typed directly (same shape
+    // the Record Payment form already uses).
+    const isInHand = creditForm.fuelType === 'InHand'
+    let ltr = null
+    let rate = null
+    let fuelType = creditForm.fuelType
+    let amount
+    if (isInHand) {
+      amount = Number(creditForm.amount)
+      fuelType = null
+      if (!amount) {
+        toast.error(t.errorAmount)
+        return
+      }
+    } else {
+      ltr = Number(creditForm.ltr)
+      rate = Number(creditForm.rate)
+      if (!ltr || !rate) {
+        toast.error(t.errorQtyRate)
+        return
+      }
+      amount = Math.round(ltr * rate * 100) / 100
     }
     setSavingCredit(true)
     try {
       await addLedgerEntry(ledgerCustomerId, {
-        date: todayISO(),
+        date: creditForm.date,
         type: 'credit',
-        fuelType: creditForm.fuelType,
+        fuelType,
         ltr,
         rate,
-        amount: Math.round(ltr * rate * 100) / 100,
+        amount,
         mode: null,
+        note: creditForm.note.trim() || null,
         billUrl: creditBillFile?.url || null,
         billName: creditBillFile?.name || null,
       })
       toast.success(creditBillFile ? t.toastCreditWithBill : t.toastCreditRecorded)
-      setCreditForm({ fuelType: creditForm.fuelType, ltr: '', rate: creditForm.rate })
+      setCreditForm({ fuelType: creditForm.fuelType, ltr: '', rate: creditForm.rate, amount: '', date: todayISO(), note: '' })
       setCreditBillFile(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
@@ -431,6 +502,7 @@ export default function CreditBills() {
 
   async function handleAddPayment(ev) {
     ev.preventDefault()
+    if (savingPayment) return
     const amount = Number(paymentForm.amount)
     if (!amount) {
       toast.error(t.errorAmount)
@@ -439,16 +511,17 @@ export default function CreditBills() {
     setSavingPayment(true)
     try {
       await addLedgerEntry(ledgerCustomerId, {
-        date: todayISO(),
+        date: paymentForm.date,
         type: 'payment',
         fuelType: null,
         ltr: null,
         rate: null,
         amount,
         mode: paymentForm.mode,
+        note: paymentForm.note.trim() || null,
       })
       toast.success(t.toastPaymentRecorded)
-      setPaymentForm({ amount: '', mode: paymentForm.mode })
+      setPaymentForm({ amount: '', mode: paymentForm.mode, date: todayISO(), note: '' })
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -457,7 +530,7 @@ export default function CreditBills() {
   }
 
   async function handleRemoveLedgerEntry() {
-    if (!confirmDeleteTx) return
+    if (!confirmDeleteTx || deletingTx) return
     setDeletingTx(true)
     try {
       await removeLedgerEntry(confirmDeleteTx.customerId, confirmDeleteTx.entryId)
@@ -534,24 +607,33 @@ export default function CreditBills() {
       style: { width: '17%' },
       body: (c) => (
         <div className="flex items-center justify-end gap-1">
-          <IconButton
-            onClick={() => setConfirmSendReminder(c)}
-            disabled={busy || !c.phone}
-            aria-label={t.tooltipSendReminder}
-            title={c.phone ? t.tooltipSendReminder : t.tooltipPhone}
-            tone="success"
-          >
-            {sendingReminderId === c.id ? <Loader2 size={15} className="animate-spin" /> : <WhatsAppIcon size={15} />}
-          </IconButton>
-          <IconButton onClick={() => openLedger(c.id)} disabled={busy} aria-label="View ledger" title="View ledger" tone="info">
+          <AppTooltip title={!isManagerOrAdmin ? t.staffOnlyHint : c.phone ? t.tooltipSendReminder : t.tooltipPhone}>
+            <span>
+              <IconButton onClick={() => setConfirmSendReminder(c)} disabled={writeBlocked || !c.phone} aria-label={t.tooltipSendReminder} tone="success">
+                {sendingReminderId === c.id ? <Loader2 size={15} className="animate-spin" /> : <WhatsAppIcon size={15} />}
+              </IconButton>
+            </span>
+          </AppTooltip>
+          {/* View ledger is read-only server-side (GET is open to any
+              logged-in user) — not gated behind isManagerOrAdmin, same
+              reasoning as Employees letting staff open a row to view it. */}
+          <IconButton onClick={() => openLedger(c.id)} disabled={busy} aria-label={t.viewLedgerAction} title={t.viewLedgerAction} tone="info">
             <ReceiptText size={15} />
           </IconButton>
-          <IconButton onClick={() => openEditCustomer(c)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
-            <Pencil size={15} />
-          </IconButton>
-          <IconButton onClick={() => setConfirmDeleteId(c.id)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
-            <Trash2 size={15} />
-          </IconButton>
+          <AppTooltip title={isManagerOrAdmin ? commonT.edit : t.staffOnlyHint}>
+            <span>
+              <IconButton onClick={() => openEditCustomer(c)} disabled={writeBlocked} aria-label={commonT.edit} tone="edit">
+                <Pencil size={15} />
+              </IconButton>
+            </span>
+          </AppTooltip>
+          <AppTooltip title={isManagerOrAdmin ? commonT.delete : t.staffOnlyHint}>
+            <span>
+              <IconButton onClick={() => setConfirmDeleteId(c.id)} disabled={writeBlocked} aria-label={commonT.delete} tone="delete">
+                <Trash2 size={15} />
+              </IconButton>
+            </span>
+          </AppTooltip>
         </div>
       ),
     },
@@ -584,9 +666,13 @@ export default function CreditBills() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={openAddCustomer} disabled={busy}>
-                  <Plus size={16} /> {t.addCustomer}
-                </PrimaryButton>
+                <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                  <span>
+                    <PrimaryButton onClick={openAddCustomer} disabled={writeBlocked}>
+                      <Plus size={16} /> {t.addCustomer}
+                    </PrimaryButton>
+                  </span>
+                </AppTooltip>
               }
             />
           </div>
@@ -595,7 +681,7 @@ export default function CreditBills() {
             columns={columns}
             data={rows}
             rowKey="id"
-            globalFilterFields={['name', 'phone']}
+            globalFilterFields={['name', 'phone', 'balance', 'notes']}
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="balance"
             defaultSortOrder={-1}
@@ -603,9 +689,13 @@ export default function CreditBills() {
             exportFilename="credit-customers"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAddCustomer} disabled={busy} className="px-3.5 py-2 text-xs">
-                <Plus size={14} /> {t.addCustomer}
-              </PrimaryButton>
+              <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                <span>
+                  <PrimaryButton onClick={openAddCustomer} disabled={writeBlocked} className="px-3.5 py-2 text-xs">
+                    <Plus size={14} /> {t.addCustomer}
+                  </PrimaryButton>
+                </span>
+              </AppTooltip>
             }
           />
         )}
@@ -660,7 +750,7 @@ export default function CreditBills() {
       {/* Ledger detail */}
       <Modal
         isOpen={!!ledgerCustomerId}
-        onClose={busy ? () => {} : () => setLedgerCustomerId(null)}
+        onClose={busy ? () => {} : attemptCloseLedger}
         title={ledgerCustomer?.name || ''}
         maxWidth="max-w-6xl"
         headerExtra={
@@ -704,37 +794,76 @@ export default function CreditBills() {
                     >
                       <option value="Diesel">{t.fuelTypeLabel.Diesel}</option>
                       <option value="Petrol">{t.fuelTypeLabel.Petrol}</option>
+                      <option value="InHand">{t.fuelTypeLabel.InHand}</option>
                     </Select>
                   </Field>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Field label={t.fieldLtr}>
+                  {creditForm.fuelType === 'InHand' ? (
+                    // Plain cash credit, not tied to any fuel sale — just the
+                    // amount directly, same shape as the Record Payment form.
+                    <Field label={t.fieldAmount}>
                       <Input
                         type="number"
                         min="0"
                         step="any"
-                        value={creditForm.ltr}
-                        onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })}
+                        value={creditForm.amount}
+                        onChange={(e) => setCreditForm({ ...creditForm, amount: e.target.value })}
                         placeholder="0"
                         disabled={savingCredit || uploadingCreditBill}
                       />
                     </Field>
-                    <Field label={t.fieldRate}>
-                      <Input
-                        type="number"
-                        min="0"
-                        step="any"
-                        value={creditForm.rate}
-                        onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })}
-                        disabled={savingCredit || uploadingCreditBill}
-                      />
-                    </Field>
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    {t.amountLabel}{' '}
-                    <span className="font-semibold text-slate-700">
-                      {formatCurrency((Number(creditForm.ltr) || 0) * (Number(creditForm.rate) || 0))}
-                    </span>
-                  </p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Field label={t.fieldLtr}>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={creditForm.ltr}
+                            onChange={(e) => setCreditForm({ ...creditForm, ltr: e.target.value })}
+                            placeholder="0"
+                            disabled={savingCredit || uploadingCreditBill}
+                          />
+                        </Field>
+                        <Field label={t.fieldRate}>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={creditForm.rate}
+                            onChange={(e) => setCreditForm({ ...creditForm, rate: e.target.value })}
+                            disabled={savingCredit || uploadingCreditBill}
+                          />
+                        </Field>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {t.amountLabel}{' '}
+                        <span className="font-semibold text-slate-700">
+                          {formatCurrency((Number(creditForm.ltr) || 0) * (Number(creditForm.rate) || 0))}
+                        </span>
+                      </p>
+                    </>
+                  )}
+
+                  <Field label={t.fieldTxDate}>
+                    <AppDatePicker
+                      value={creditForm.date}
+                      onChange={(date) => setCreditForm({ ...creditForm, date })}
+                      className="w-full"
+                      disabled={savingCredit || uploadingCreditBill}
+                      minDate={_EARLIEST_SANE_LEDGER_DATE}
+                      maxDate={todayISO()}
+                    />
+                  </Field>
+
+                  <Field label={t.fieldReason}>
+                    <Input
+                      value={creditForm.note}
+                      onChange={(e) => setCreditForm({ ...creditForm, note: e.target.value })}
+                      placeholder={t.placeholderCreditReason}
+                      disabled={savingCredit || uploadingCreditBill}
+                    />
+                  </Field>
 
                   <Field label={t.fieldUploadBill}>
                     {creditBillFile ? (
@@ -774,9 +903,13 @@ export default function CreditBills() {
                     )}
                   </Field>
 
-                  <PrimaryButton type="submit" className="w-full" disabled={savingCredit || uploadingCreditBill}>
-                    {t.addCredit}
-                  </PrimaryButton>
+                  <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                    <span className="block">
+                      <PrimaryButton type="submit" className="w-full" disabled={savingCredit || uploadingCreditBill || !isManagerOrAdmin}>
+                        {t.addCredit}
+                      </PrimaryButton>
+                    </span>
+                  </AppTooltip>
                 </div>
               </form>
 
@@ -803,9 +936,31 @@ export default function CreditBills() {
                       <option value="Online">{t.modeLabel.Online}</option>
                     </Select>
                   </Field>
-                  <PrimaryButton type="submit" className="w-full" disabled={savingPayment}>
-                    {t.recordPaymentBtn}
-                  </PrimaryButton>
+                  <Field label={t.fieldTxDate}>
+                    <AppDatePicker
+                      value={paymentForm.date}
+                      onChange={(date) => setPaymentForm({ ...paymentForm, date })}
+                      className="w-full"
+                      disabled={savingPayment}
+                      minDate={_EARLIEST_SANE_LEDGER_DATE}
+                      maxDate={todayISO()}
+                    />
+                  </Field>
+                  <Field label={t.fieldReason}>
+                    <Input
+                      value={paymentForm.note}
+                      onChange={(e) => setPaymentForm({ ...paymentForm, note: e.target.value })}
+                      placeholder={t.placeholderPaymentReason}
+                      disabled={savingPayment}
+                    />
+                  </Field>
+                  <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                    <span className="block">
+                      <PrimaryButton type="submit" className="w-full" disabled={savingPayment || !isManagerOrAdmin}>
+                        {t.recordPaymentBtn}
+                      </PrimaryButton>
+                    </span>
+                  </AppTooltip>
                 </div>
               </form>
             </div>
@@ -899,11 +1054,11 @@ export default function CreditBills() {
                                   <Paperclip size={12} className="shrink-0" />
                                   <span className="max-w-[100px] truncate">{tx.billName || t.view}</span>
                                 </button>
-                                <AppTooltip title={t.removeBill}>
+                                <AppTooltip title={isManagerOrAdmin ? t.removeBill : t.staffOnlyHint}>
                                   <button
                                     type="button"
                                     onClick={() => setConfirmRemoveTxBill(tx)}
-                                    disabled={busy}
+                                    disabled={writeBlocked}
                                     className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50"
                                     aria-label={t.removeBill}
                                   >
@@ -934,11 +1089,11 @@ export default function CreditBills() {
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex items-center justify-end gap-0.5">
-                              <AppTooltip title={t.tooltipWhatsApp}>
+                              <AppTooltip title={isManagerOrAdmin ? t.tooltipWhatsApp : t.staffOnlyHint}>
                                 <button
                                   type="button"
                                   onClick={() => setConfirmSendTxReminder({ customer: ledgerCustomer, tx })}
-                                  disabled={busy}
+                                  disabled={writeBlocked}
                                   className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                   aria-label={t.tooltipWhatsApp}
                                 >
@@ -946,11 +1101,11 @@ export default function CreditBills() {
                                 </button>
                               </AppTooltip>
                               {!tx.sourceFuelEntryId ? (
-                                <AppTooltip title={t.removeTransaction}>
+                                <AppTooltip title={isManagerOrAdmin ? t.removeTransaction : t.staffOnlyHint}>
                                   <button
                                     type="button"
                                     onClick={() => setConfirmDeleteTx({ customerId: ledgerCustomer.id, entryId: tx.id })}
-                                    disabled={busy}
+                                    disabled={writeBlocked}
                                     className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
                                     aria-label={t.removeTransaction}
                                   >
@@ -1005,6 +1160,16 @@ export default function CreditBills() {
         title={t.removeAttachmentTitle}
         description={t.removeAttachmentDesc}
         confirmLabel={t.removeAttachment}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmDiscardStagedBillOnClose}
+        onClose={() => setConfirmDiscardStagedBillOnClose(false)}
+        onConfirm={confirmDiscardStagedBillAndClose}
+        title={t.discardBillOnCloseTitle}
+        description={t.discardBillOnCloseDesc}
+        confirmLabel={t.discardBillOnCloseConfirm}
+        loading={discardingStagedBillOnClose}
       />
 
       <ConfirmDialog

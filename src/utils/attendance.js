@@ -32,3 +32,7 @@ export function isPresentRecord(record) {
 export function nextDateISO(dateISO) {
   return toISODate(new Date(new Date(dateISO).getTime() + 86400000))
 }
+
+export function previousDateISO(dateISO) {
+  return toISODate(new Date(new Date(dateISO).getTime() - 86400000))
+}

@@ -1,5 +1,19 @@
-const STATUS_LABEL_EN = { sent: 'sent', failed: 'failed', blocked: 'blocked', pending: 'pending' }
-const STATUS_LABEL_TA = { sent: 'அனுப்பப்பட்டது', failed: 'தோல்வி', blocked: 'தடுக்கப்பட்டது', pending: 'நிலுவையில்' }
+const STATUS_LABEL_EN = {
+  sent: 'sent',
+  delivered: 'delivered',
+  read: 'read',
+  failed: 'failed',
+  blocked: 'blocked',
+  pending: 'pending',
+}
+const STATUS_LABEL_TA = {
+  sent: 'அனுப்பப்பட்டது',
+  delivered: 'சேர்ந்தது',
+  read: 'படிக்கப்பட்டது',
+  failed: 'தோல்வி',
+  blocked: 'தடுக்கப்பட்டது',
+  pending: 'நிலுவையில்',
+}
 
 export const OFFERS_TEXT = {
   en: {
@@ -35,6 +49,10 @@ export const OFFERS_TEXT = {
     previewStatusPending: 'Pending Meta review — sending may fail until approved',
     previewStatusRejected: 'Rejected by Meta — this template cannot be sent',
     previewStatusUnknown: (status) => `Meta status: ${status}`,
+    confirmSendTitle: 'Send this offer?',
+    confirmSendDesc: (count, templateLabel) =>
+      `This will send a real WhatsApp message ("${templateLabel}") to ${count} customer${count === 1 ? '' : 's'} right now.`,
+    confirmSendButton: 'Send Offer',
     // channelSms/channelWhatsApp are still used to label historical sends in
     // "Recently Sent" below (old rows can be either) — WhatsApp is the only
     // channel a NEW send can use, so there's no selector for these anymore.
@@ -46,6 +64,13 @@ export const OFFERS_TEXT = {
     recentlySent: 'Recently Sent',
     loadingHistory: 'Loading history…',
     noHistory: 'No offers sent yet.',
+    noHistoryMatch: 'No sends match these filters.',
+    historySearchLabel: 'Search',
+    historySearchPlaceholder: 'Customer name, phone, or message...',
+    historyDateFrom: 'From',
+    historyDateTo: 'To',
+    clearFilters: 'Clear',
+    historyShowingCount: (shown, total) => (shown === total ? `${total} sends` : `${shown} of ${total} sends`),
     statusCount: (n, status) => `${n} ${STATUS_LABEL_EN[status] || status}`,
     editCustomerTitle: 'Add Customer',
     fieldCustomerName: 'Customer / Party Name',
@@ -91,6 +116,10 @@ export const OFFERS_TEXT = {
     previewStatusPending: 'Meta மதிப்பாய்வில் உள்ளது — அங்கீகரிக்கும் வரை அனுப்புதல் தோல்வியடையக்கூடும்',
     previewStatusRejected: 'Meta ஆல் நிராகரிக்கப்பட்டது — இந்த வார்ப்புருவை அனுப்ப முடியாது',
     previewStatusUnknown: (status) => `Meta நிலை: ${status}`,
+    confirmSendTitle: 'இந்த சலுகையை அனுப்பவா?',
+    confirmSendDesc: (count, templateLabel) =>
+      `இது "${templateLabel}" என்ற உண்மையான WhatsApp செய்தியை இப்போதே ${count} வாடிக்கையாளர்(கள்)-க்கு அனுப்பும்.`,
+    confirmSendButton: 'சலுகையை அனுப்பு',
     channelSms: 'SMS',
     channelWhatsApp: 'WhatsApp',
     sendDisabledHint: 'குறைந்தது ஒரு வாடிக்கையாளரைத் தேர்ந்தெடுத்து, ஒரு சலுகையைத் தேர்ந்தெடுத்து, அதன் விவரத்தை நிரப்பவும்',
@@ -99,6 +128,13 @@ export const OFFERS_TEXT = {
     recentlySent: 'சமீபத்தில் அனுப்பியவை',
     loadingHistory: 'வரலாறு ஏற்றப்படுகிறது…',
     noHistory: 'இதுவரை சலுகைகள் எதுவும் அனுப்பப்படவில்லை.',
+    noHistoryMatch: 'இந்த வடிகட்டிகளுக்குப் பொருந்தும் அனுப்புதல்கள் இல்லை.',
+    historySearchLabel: 'தேடு',
+    historySearchPlaceholder: 'வாடிக்கையாளர் பெயர், தொலைபேசி, அல்லது செய்தி...',
+    historyDateFrom: 'முதல்',
+    historyDateTo: 'வரை',
+    clearFilters: 'அழி',
+    historyShowingCount: (shown, total) => (shown === total ? `${total} அனுப்புதல்கள்` : `${total}-இல் ${shown} அனுப்புதல்கள்`),
     statusCount: (n, status) => `${n} ${STATUS_LABEL_TA[status] || status}`,
     editCustomerTitle: 'வாடிக்கையாளரைச் சேர்',
     fieldCustomerName: 'வாடிக்கையாளர் / நிறுவனப் பெயர்',

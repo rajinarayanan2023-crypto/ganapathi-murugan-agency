@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-import { Plus, Pencil, Trash2, HandCoins, StickyNote, Lock, ArrowLeft } from 'lucide-react'
+import { Plus, Pencil, Trash2, HandCoins, Banknote, StickyNote, Lock, ArrowLeft } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EMPLOYEE_CREDITS_TEXT } from '../i18n/employeeCredits.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { formatCurrency, formatDate, formatEmployeeName, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -16,12 +17,13 @@ import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
-const emptyForm = { employeeId: '', date: todayISO(), amount: '', note: '' }
+const emptyForm = { employeeId: '', date: todayISO(), amount: '', type: 'credit', note: '' }
 
 export default function EmployeeCredits() {
   const { employees, employeesLoading, employeesError, addEmployeeCredit, updateEmployeeCredit, deleteEmployeeCredit } = useData()
   const { language } = useLanguage()
   const t = EMPLOYEE_CREDITS_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const loading = employeesLoading
   const navigate = useNavigate()
 
@@ -43,14 +45,37 @@ export default function EmployeeCredits() {
   const rows = useMemo(
     () =>
       employees.flatMap((emp) =>
-        (emp.credits || []).map((c) => ({ ...c, employeeId: emp.id, employeeName: emp.name })),
+        (emp.credits || []).map((c) => {
+          // Repayment and excess both net the same way against what's owed
+          // (utils/salary.js's monthlyCreditTotal subtracts both) — kept as
+          // distinct types so the ledger never shows an excess as if it
+          // were repaying a debt that was never actually owed, but they
+          // share the same sign convention here.
+          const subtracts = c.type === 'repayment' || c.type === 'excess'
+          return {
+            ...c,
+            employeeId: emp.id,
+            employeeName: emp.name,
+            employeeFatherName: emp.fatherName,
+            // Signed so a repayment/excess exports as a negative figure,
+            // same sign convention utils/salary.js already uses internally
+            // — without this, the exported file would show every one as an
+            // indistinguishable positive "credit", silently losing the one
+            // thing this column's on-screen color/label exists to show.
+            amountExport: (subtracts ? -1 : 1) * Number(c.amount),
+            // Searched (not shown as its own column) — lets a search for
+            // "repayment" or "excess" find rows by the same label the
+            // Amount cell already displays underneath the figure.
+            typeLabel: c.type === 'repayment' ? t.typeRepayment : c.type === 'excess' ? t.typeExcess : t.typeCredit,
+          }
+        }),
       ),
-    [employees],
+    [employees, t],
   )
 
-  function openAdd() {
+  function openAdd(type = 'credit') {
     setEditingRow(null)
-    setForm({ ...emptyForm, employeeId: employees[0]?.id || '' })
+    setForm({ ...emptyForm, employeeId: employees[0]?.id || '', type })
     setErrors({})
     setModalOpen(true)
   }
@@ -58,7 +83,7 @@ export default function EmployeeCredits() {
   function openEdit(row) {
     if (row.sourceFuelEntryId) return
     setEditingRow(row)
-    setForm({ employeeId: row.employeeId, date: row.date, amount: String(row.amount), note: row.note || '' })
+    setForm({ employeeId: row.employeeId, date: row.date, amount: String(row.amount), type: row.type || 'credit', note: (row.note || '').trim() })
     setErrors({})
     setModalOpen(true)
   }
@@ -76,12 +101,20 @@ export default function EmployeeCredits() {
     if (!validate()) return
     setSaving(true)
     try {
+      const isRepayment = form.type === 'repayment'
+      const isExcess = form.type === 'excess'
+      const note = form.note.trim()
       if (editingRow) {
-        await updateEmployeeCredit(editingRow.employeeId, editingRow.id, { date: form.date, amount: form.amount, note: form.note })
-        toast.success(t.toastUpdated)
+        await updateEmployeeCredit(editingRow.employeeId, editingRow.id, {
+          date: form.date,
+          amount: form.amount,
+          type: form.type,
+          note,
+        })
+        toast.success(isRepayment ? t.toastRepaymentUpdated : isExcess ? t.toastExcessUpdated : t.toastUpdated)
       } else {
-        await addEmployeeCredit(form.employeeId, { date: form.date, amount: form.amount, note: form.note })
-        toast.success(t.toastAdded)
+        await addEmployeeCredit(form.employeeId, { date: form.date, amount: form.amount, type: form.type, note })
+        toast.success(isRepayment ? t.toastRepaymentAdded : isExcess ? t.toastExcessAdded : t.toastAdded)
       }
       setModalOpen(false)
     } catch (err) {
@@ -111,7 +144,11 @@ export default function EmployeeCredits() {
       header: t.colEmployee,
       sortable: true,
       style: { width: '24%' },
-      body: (row) => <p className="font-medium text-slate-800">{row.employeeName}</p>,
+      body: (row) => (
+        <p className="font-medium text-slate-800">
+          {formatEmployeeName({ name: row.employeeName, fatherName: row.employeeFatherName })}
+        </p>
+      ),
     },
     {
       field: 'date',
@@ -124,8 +161,25 @@ export default function EmployeeCredits() {
       field: 'amount',
       header: t.colAmount,
       sortable: true,
-      style: { width: '14%' },
-      body: (row) => <span className="font-semibold text-rose-500">{formatCurrency(row.amount)}</span>,
+      style: { width: '16%' },
+      exportField: 'amountExport',
+      body: (row) => {
+        const isRepayment = row.type === 'repayment'
+        const isExcess = row.type === 'excess'
+        const subtracts = isRepayment || isExcess
+        const colorClass = isRepayment ? 'text-emerald-600' : isExcess ? 'text-sky-600' : 'text-rose-500'
+        const labelClass = isRepayment ? 'text-emerald-500' : isExcess ? 'text-sky-500' : 'text-rose-400'
+        const label = isRepayment ? t.typeRepayment : isExcess ? t.typeExcess : t.typeCredit
+        return (
+          <div>
+            <span className={`font-semibold ${colorClass}`}>
+              {subtracts ? '−' : ''}
+              {formatCurrency(row.amount)}
+            </span>
+            <p className={`text-[11px] font-medium ${labelClass}`}>{label}</p>
+          </div>
+        )
+      },
     },
     {
       field: 'note',
@@ -153,10 +207,10 @@ export default function EmployeeCredits() {
       body: (row) =>
         row.sourceFuelEntryId ? null : (
           <div className="flex justify-end gap-1">
-            <IconButton onClick={() => openEdit(row)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
+            <IconButton onClick={() => openEdit(row)} disabled={busy} aria-label={commonT.edit} title={commonT.edit} tone="edit">
               <Pencil size={15} />
             </IconButton>
-            <IconButton onClick={() => setDeleteTarget(row)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
+            <IconButton onClick={() => setDeleteTarget(row)} disabled={busy} aria-label={commonT.delete} title={commonT.delete} tone="delete">
               <Trash2 size={15} />
             </IconButton>
           </div>
@@ -190,11 +244,17 @@ export default function EmployeeCredits() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                   <SecondaryButton onClick={() => navigate('/salary')} disabled={busy}>
                     <ArrowLeft size={15} /> {t.backToSalary}
                   </SecondaryButton>
-                  <PrimaryButton onClick={openAdd} disabled={busy}>
+                  <PrimaryButton onClick={() => openAdd('repayment')} disabled={busy}>
+                    <HandCoins size={15} /> {t.recordRepayment}
+                  </PrimaryButton>
+                  <PrimaryButton onClick={() => openAdd('excess')} disabled={busy}>
+                    <Banknote size={15} /> {t.addExcess}
+                  </PrimaryButton>
+                  <PrimaryButton onClick={() => openAdd('credit')} disabled={busy}>
                     <Plus size={16} /> {t.addCredit}
                   </PrimaryButton>
                 </div>
@@ -206,11 +266,11 @@ export default function EmployeeCredits() {
             columns={columns}
             data={rows}
             rowKey="id"
-            globalFilterFields={['employeeName', 'note']}
+            globalFilterFields={['employeeName', 'note', 'date', 'amount', 'typeLabel']}
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="date"
             defaultSortOrder={-1}
-            scrollHeight="calc(100vh - 170px)"
+            scrollHeight="calc(100svh - 170px)"
             exportFilename="employee-credits"
             dense
             toolbarActions={
@@ -218,7 +278,13 @@ export default function EmployeeCredits() {
                 <SecondaryButton onClick={() => navigate('/salary')} disabled={busy} className="px-3.5 py-2 text-xs">
                   <ArrowLeft size={14} /> {t.backToSalary}
                 </SecondaryButton>
-                <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
+                <PrimaryButton onClick={() => openAdd('repayment')} disabled={busy} className="px-3.5 py-2 text-xs">
+                  <HandCoins size={14} /> {t.recordRepayment}
+                </PrimaryButton>
+                <PrimaryButton onClick={() => openAdd('excess')} disabled={busy} className="px-3.5 py-2 text-xs">
+                  <Banknote size={14} /> {t.addExcess}
+                </PrimaryButton>
+                <PrimaryButton onClick={() => openAdd('credit')} disabled={busy} className="px-3.5 py-2 text-xs">
                   <Plus size={14} /> {t.addCredit}
                 </PrimaryButton>
               </>
@@ -230,9 +296,42 @@ export default function EmployeeCredits() {
       <Modal
         isOpen={modalOpen}
         onClose={saving ? () => {} : () => setModalOpen(false)}
-        title={editingRow ? t.editCredit : t.addCredit}
+        title={
+          editingRow
+            ? form.type === 'repayment'
+              ? t.editRepayment
+              : form.type === 'excess'
+                ? t.editExcess
+                : t.editCredit
+            : form.type === 'repayment'
+              ? t.recordRepayment
+              : form.type === 'excess'
+                ? t.addExcess
+                : t.addCredit
+        }
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex gap-1.5">
+            {['credit', 'repayment', 'excess'].map((ty) => (
+              <button
+                key={ty}
+                type="button"
+                onClick={() => setForm({ ...form, type: ty })}
+                disabled={saving}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${
+                  form.type === ty
+                    ? ty === 'repayment'
+                      ? 'bg-emerald-500 text-white shadow-sm'
+                      : ty === 'excess'
+                        ? 'bg-sky-500 text-white shadow-sm'
+                        : 'bg-violet-500 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                {ty === 'repayment' ? t.typeRepayment : ty === 'excess' ? t.typeExcess : t.typeCredit}
+              </button>
+            ))}
+          </div>
           {editingRow ? (
             <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">{editingRow.employeeName}</div>
           ) : (
@@ -272,7 +371,13 @@ export default function EmployeeCredits() {
               rows={3}
               value={form.note}
               onChange={(e) => setForm({ ...form, note: e.target.value })}
-              placeholder={t.placeholderNotes}
+              placeholder={
+                form.type === 'repayment'
+                  ? t.placeholderNotesRepayment
+                  : form.type === 'excess'
+                    ? t.placeholderNotesExcess
+                    : t.placeholderNotes
+              }
               disabled={saving}
             />
           </Field>
@@ -281,7 +386,13 @@ export default function EmployeeCredits() {
               {t.cancel}
             </SecondaryButton>
             <PrimaryButton type="submit" disabled={saving}>
-              {editingRow ? t.saveChanges : t.addCredit}
+              {editingRow
+                ? t.saveChanges
+                : form.type === 'repayment'
+                  ? t.recordRepayment
+                  : form.type === 'excess'
+                    ? t.addExcess
+                    : t.addCredit}
             </PrimaryButton>
           </div>
         </form>
@@ -291,8 +402,20 @@ export default function EmployeeCredits() {
         isOpen={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleDelete}
-        title={t.removeTitle}
-        description={t.removeDesc}
+        title={
+          deleteTarget?.type === 'repayment'
+            ? t.removeRepaymentTitle
+            : deleteTarget?.type === 'excess'
+              ? t.removeExcessTitle
+              : t.removeTitle
+        }
+        description={
+          deleteTarget?.type === 'repayment'
+            ? t.removeRepaymentDesc
+            : deleteTarget?.type === 'excess'
+              ? t.removeExcessDesc
+              : t.removeDesc
+        }
         confirmLabel={t.removeConfirm}
         loading={deleting}
       />

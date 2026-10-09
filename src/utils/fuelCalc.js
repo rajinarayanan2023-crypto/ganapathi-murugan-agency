@@ -93,7 +93,7 @@ export function withCarriedOpenings(sortedEntries) {
         const isBlank = current?.opening === '' || current?.opening == null
         if (!isBlank) continue
         const carried = prev[fuelKey]?.[nozzleKey]?.closing ?? ''
-        if (carried === current.opening) continue
+        if (carried === current?.opening) continue
         nozzles[nozzleKey] = { ...current, opening: carried }
         nozzlesChanged = true
       }

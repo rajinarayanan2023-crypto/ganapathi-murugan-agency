@@ -25,6 +25,8 @@ const CONFIRM_TONE_STYLES = {
       'inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60',
   },
   leave: {
+    // Same brand-gradient look as PrimaryButton (see the 'brand' tone just
+    // below), same as every other spot this exact style appears.
     cancel:
       'rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50',
     confirm:

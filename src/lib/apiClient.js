@@ -85,6 +85,22 @@ async function rawRequest(path, { method = 'GET', body, auth = false } = {}) {
   return { res, data }
 }
 
+// Every 422 from the backend is flattened to the same literal "Validation
+// error." in `detail` (see app/main.py's validation_error_handler) — the
+// actual, specific reason (e.g. "Attendance date cannot be in the future")
+// only exists in `errors[0].msg`. Without this, every single validation
+// failure across the whole app surfaced that one useless generic sentence
+// instead of telling the user what was actually wrong with their input.
+// Pydantic v2 also prefixes a custom validator's message with "Value error, "
+// — stripped here so the user sees the plain sentence the backend wrote.
+function extractErrorMessage(res, data) {
+  if (res.status === 422 && Array.isArray(data?.errors) && data.errors.length) {
+    const raw = data.errors[0]?.msg
+    if (typeof raw === 'string' && raw) return raw.replace(/^Value error,\s*/, '')
+  }
+  return data?.detail || 'Something went wrong. Please try again.'
+}
+
 async function request(path, opts = {}) {
   const startEpoch = authEpoch
   let { res, data } = await rawRequest(path, opts)
@@ -124,7 +140,7 @@ async function request(path, opts = {}) {
       // could silently kick out a user with a perfectly valid session).
       // Let just this one request fail normally; the next authenticated
       // call will simply try refreshing again with the same token.
-      throw new ApiError(data?.detail || 'Something went wrong. Please try again.', res.status)
+      throw new ApiError(extractErrorMessage(res, data), res.status)
     }
     // else: the refresh call itself came back 401 — the refresh token is
     // genuinely invalid/revoked, so falling through below is correct.
@@ -132,7 +148,7 @@ async function request(path, opts = {}) {
 
   if (!res.ok) {
     if (opts.auth && res.status === 401) onSessionExpired?.()
-    throw new ApiError(data?.detail || 'Something went wrong. Please try again.', res.status)
+    throw new ApiError(extractErrorMessage(res, data), res.status)
   }
   return data
 }
@@ -146,6 +162,14 @@ export function getMe() {
 // log in again" response.
 export function changePassword(currentPassword, newPassword) {
   return apiAuthPost('/auth/change-password', { current_password: currentPassword, new_password: newPassword })
+}
+
+// Admin-only (see login_attempt_controller.py's require_admin) — up to 500
+// most recent rows, same "load a bounded set, filter client-side" pattern
+// Offers' own history uses, since this screen's own search/date filters
+// work over whatever's already loaded rather than re-requesting per keystroke.
+export function getLoginAttempts() {
+  return apiGet('/login-attempts?limit=500')
 }
 
 export function apiPost(path, body) {
@@ -173,8 +197,12 @@ function apiDelete(path) {
 }
 
 // ---------- Employees ----------
-export function getEmployees() {
-  return apiGet('/employees')
+export function getEmployees({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/employees${qs ? `?${qs}` : ''}`)
 }
 
 export function createEmployee(data) {
@@ -214,9 +242,40 @@ export function deleteEmployeeCredit(employeeId, creditId) {
   return apiDelete(`/employees/${employeeId}/credits/${creditId}`)
 }
 
+// Salary Payments — an actual disbursement record, distinct from a credit
+// (money advanced, owed back). Also returned embedded in GET /employees.
+export function addSalaryPayment(employeeId, data) {
+  return apiAuthPost(`/employees/${employeeId}/payments`, data)
+}
+
+export function updateSalaryPayment(employeeId, paymentId, data) {
+  return apiPatch(`/employees/${employeeId}/payments/${paymentId}`, data)
+}
+
+export function deleteSalaryPayment(employeeId, paymentId) {
+  return apiDelete(`/employees/${employeeId}/payments/${paymentId}`)
+}
+
 // ---------- Lubricants ----------
-export function getLubricants() {
-  return apiGet('/lubricants')
+// GET /lubricants pages at up to 200 rows per request (the backend's own
+// hard ceiling — see Query(..., le=200) on the controller). A single
+// unparameterized call here used to silently fall back to the backend's
+// default of 100 — the catalog has already grown past that from
+// accumulated real + test data, so the 101st+ product was invisible on this
+// screen with no error or "showing 100 of N" notice anywhere. Looping on
+// `offset` keeps this correct regardless of how large the catalog grows,
+// instead of just moving today's ceiling to a new, still-finite one.
+export async function getLubricants() {
+  const pageSize = 200
+  let offset = 0
+  let all = []
+  for (;;) {
+    const page = await apiGet(`/lubricants?offset=${offset}&limit=${pageSize}`)
+    all = all.concat(page)
+    if (page.length < pageSize) break
+    offset += pageSize
+  }
+  return all
 }
 
 export function createLubricant(data) {
@@ -229,17 +288,6 @@ export function updateLubricant(id, data) {
 
 export function deleteLubricant(id) {
   return apiDelete(`/lubricants/${id}`)
-}
-
-export function addPriceRevision(id, { rate, effective_from }) {
-  return apiAuthPost(`/lubricants/${id}/price-history`, { rate, effective_from })
-}
-
-// The backend rejects (409) deleting a product's only remaining price —
-// there must always be at least one on record for currentRate()/rateOnDate()
-// to fall back on.
-export function deletePriceRevision(productId, revisionId) {
-  return apiDelete(`/lubricants/${productId}/price-history/${revisionId}`)
 }
 
 export function recordPurchase(id, { qty, cost, date }) {
@@ -262,8 +310,12 @@ export function getLubricantSalesHistory(id) {
 }
 
 // ---------- Expenses ----------
-export function getExpenses() {
-  return apiGet('/expenses')
+export function getExpenses({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/expenses${qs ? `?${qs}` : ''}`)
 }
 
 export function createExpenseDay(data) {
@@ -279,8 +331,12 @@ export function deleteExpenseDay(id) {
 }
 
 // ---------- Credit Customers ----------
-export function getCreditCustomers() {
-  return apiGet('/credit-customers')
+export function getCreditCustomers({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/credit-customers${qs ? `?${qs}` : ''}`)
 }
 
 export function createCreditCustomer(data) {
@@ -329,8 +385,12 @@ export function sendLedgerEntryReminder(customerId, entryId) {
 // ---------- Offer Customers ----------
 // Standalone recipient list for Offers — deliberately separate from
 // Employees/Credit Customers (see app/models/offer.py on the backend).
-export function getOfferCustomers() {
-  return apiGet('/offer-customers')
+export function getOfferCustomers({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/offer-customers${qs ? `?${qs}` : ''}`)
 }
 
 export function createOfferCustomer(data) {
@@ -360,8 +420,11 @@ export function sendOffer(data) {
   return apiAuthPost('/offers/send', data)
 }
 
+// 200, not the backend's own default of 100 — Offers.jsx now has its own
+// date/search filters over this list, so it needs enough rows up front for
+// those filters to actually have something to narrow down.
 export function getOfferHistory() {
-  return apiGet('/offers/history')
+  return apiGet('/offers/history?limit=200')
 }
 
 // ---------- Uploads (S3, presigned) ----------
@@ -406,6 +469,10 @@ export function markAttendance(data) {
 
 export function updateAttendance(employeeId, day, data) {
   return apiPatch(`/attendance/${employeeId}/${day}`, data)
+}
+
+export function deleteAttendance(employeeId, day) {
+  return apiDelete(`/attendance/${employeeId}/${day}`)
 }
 
 // ---------- Fuel Entries ----------
@@ -467,8 +534,12 @@ export function createOrReviseFuelRate(data) {
   return apiAuthPost('/fuel-rates', data)
 }
 
-export function getFuelRateHistory() {
-  return apiGet('/fuel-rates')
+export function getFuelRateHistory({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/fuel-rates${qs ? `?${qs}` : ''}`)
 }
 
 export function deleteFuelRateRevision(id) {
@@ -483,8 +554,27 @@ export function createOrReviseFuelStockLog(data) {
   return apiAuthPost('/fuel-stock-logs', data)
 }
 
-export function getFuelStockLogs() {
-  return apiGet('/fuel-stock-logs')
+export function getFuelStockLogs({ offset, limit } = {}) {
+  const params = new URLSearchParams()
+  if (limit != null) params.set('limit', limit)
+  if (offset != null) params.set('offset', offset)
+  const qs = params.toString()
+  return apiGet(`/fuel-stock-logs${qs ? `?${qs}` : ''}`)
+}
+
+// ---------- Salary Period Closures (payroll month lock/unlock) ----------
+// One row per (period_year, period_month) ever closed, reused across every
+// close/reopen cycle — see app/models/employee.py's SalaryPeriodClosure.
+export function getSalaryPeriodClosures() {
+  return apiGet('/salary-period-closures')
+}
+
+export function closeSalaryPeriod(data) {
+  return apiAuthPost('/salary-period-closures', data)
+}
+
+export function reopenSalaryPeriod(periodYear, periodMonth, data) {
+  return apiAuthPost(`/salary-period-closures/${periodYear}/${periodMonth}/reopen`, data)
 }
 
 // ---------- Dashboard ----------

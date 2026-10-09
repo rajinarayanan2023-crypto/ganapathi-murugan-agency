@@ -178,7 +178,15 @@ export function Select({ error, className = '', children, value, onChange, disab
         } ${className}`}
         {...props}
       >
-        <span className={`truncate ${selected ? '' : 'text-slate-400'}`}>{selected ? selected.label : options[0]?.label || ''}</span>
+        {/* A value that doesn't match any option (e.g. legacy data using a
+            role no longer in the fixed list) used to silently fall back to
+            the FIRST option's label here — indistinguishable from that
+            option actually being selected. Falls back to the raw value
+            itself instead, which at least doesn't lie about what's picked;
+            options[0] remains the fallback only for a genuinely empty value. */}
+        <span className={`truncate ${selected ? '' : 'text-slate-400'}`}>
+          {selected ? selected.label : value ? String(value) : options[0]?.label || ''}
+        </span>
         <ChevronDown size={14} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 

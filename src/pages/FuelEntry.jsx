@@ -6,6 +6,7 @@ import { Plus, Pencil, Trash2, Download, Fuel, CheckCircle2, AlertTriangle, Pape
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { formatCurrency, formatDate, formatDateTime, formatLiters, todayISO } from '../utils/format.js'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { getDownloadUrl } from '../lib/apiClient.js'
@@ -110,14 +111,19 @@ function TodayRateCard({ fuelRateHistory, onRevise, onDelete }) {
         <button
           type="button"
           onClick={openModal}
-          className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+          className={`flex max-w-full items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
             confirmed
               ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
               : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
           }`}
         >
-          <Tag size={13} className={confirmed ? 'text-brand-600' : 'text-amber-600'} />
-          <span className="whitespace-nowrap">
+          <Tag size={13} className={`shrink-0 ${confirmed ? 'text-brand-600' : 'text-amber-600'}`} />
+          {/* No whitespace-nowrap/shrink-0 here on purpose — on a narrow
+              phone screen this row (Petrol/Diesel/2T Oil rates) is wider
+              than the viewport, and <main>'s overflow-x-hidden (the
+              page's anti-horizontal-scroll safety net) would otherwise
+              silently clip the tail end instead of wrapping it. */}
+          <span className="text-left">
             {t.fieldPetrolRate.replace(' (₹/L)', '')}: <strong>{formatCurrency(rates.petrol)}</strong>
             <span className="mx-1 text-slate-300">·</span>
             {t.fieldDieselRate.replace(' (₹/L)', '')}: <strong>{formatCurrency(rates.diesel)}</strong>
@@ -234,6 +240,7 @@ export default function FuelEntry() {
   const { fuelEntries, fuelEntriesLoading, deleteFuelEntry, employees, fuelRateHistory, reviseFuelRate, deleteFuelRateRevision, lubricants, creditCustomers } = useData()
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   // fuelEntries loads from the real API now — this used to be a fixed
   // useSimulatedLoading(650) timer from the mock-data era, which meant the
   // skeleton always disappeared after exactly 650ms regardless of whether
@@ -634,8 +641,8 @@ export default function FuelEntry() {
               handleExportEntry(row._entry)
             }}
             disabled={rowBusy}
-            aria-label="Export"
-            title="Export"
+            aria-label={t.exportAction}
+            title={t.exportAction}
             tone="download"
           >
             {exportingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
@@ -646,8 +653,8 @@ export default function FuelEntry() {
               navigate(`/fuel-entry/${row.id}/edit`)
             }}
             disabled={rowBusy}
-            aria-label="Edit"
-            title="Edit"
+            aria-label={commonT.edit}
+            title={commonT.edit}
             tone="edit"
           >
             <Pencil size={15} />
@@ -658,8 +665,8 @@ export default function FuelEntry() {
               setConfirmDeleteId(row.id)
             }}
             disabled={rowBusy}
-            aria-label="Delete"
-            title="Delete"
+            aria-label={commonT.delete}
+            title={commonT.delete}
             tone="delete"
           >
             {deletingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -718,6 +725,14 @@ export default function FuelEntry() {
             columns={historyColumns}
             data={filteredRows}
             rowKey="id"
+            // Date/pump/employee only — this table only grows (every shift,
+            // every pump, every day), and PrimeReact's global filter rescans
+            // every field of every row on every keystroke. fuelSummaryExport
+            // (a long built-up string), totalSaleAmount and excessShortage
+            // (raw numbers nobody actually free-text searches for) tripled
+            // the per-keystroke scan cost for fields that don't match how a
+            // manager actually looks something up here — by date, pump/shift,
+            // or who worked it.
             globalFilterFields={['dateDisplay', 'pumpLabel', 'employeeName']}
             searchPlaceholder={t.searchPlaceholder}
             defaultSortField="date"

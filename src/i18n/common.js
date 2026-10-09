@@ -11,6 +11,17 @@ export const COMMON_TEXT = {
     cancel: 'Cancel',
     search: 'Search...',
     noMatches: 'No matches',
+    // Icon-button aria-label/title pairs repeated identically across many
+    // pages (Employees, Lubricants, Expenses, CreditBills, EmployeeCredits,
+    // FuelEntry, ...) — centralized here instead of each page re-typing the
+    // same hardcoded English word, which is exactly how these ended up
+    // showing English even in Tamil mode in the first place.
+    edit: 'Edit',
+    close: 'Close',
+    previousMonth: 'Previous month',
+    nextMonth: 'Next month',
+    previousDay: 'Previous day',
+    nextDay: 'Next day',
   },
   ta: {
     areYouSure: 'நிச்சயமாகவா?',
@@ -18,5 +29,11 @@ export const COMMON_TEXT = {
     cancel: 'ரத்து செய்',
     search: 'தேடு...',
     noMatches: 'பொருத்தங்கள் இல்லை',
+    edit: 'திருத்து',
+    close: 'மூடு',
+    previousMonth: 'முந்தைய மாதம்',
+    nextMonth: 'அடுத்த மாதம்',
+    previousDay: 'முந்தைய நாள்',
+    nextDay: 'அடுத்த நாள்',
   },
 }

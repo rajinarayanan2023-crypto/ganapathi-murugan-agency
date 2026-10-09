@@ -43,22 +43,6 @@ export const FUEL_RATE_HISTORY = [
 // carry a real per-nozzle rate instead of undefined.
 const SEED_FUEL_RATES = { ...FUEL_RATE_HISTORY[0], oil: FUEL_RATES.oil }
 
-// The dealer's standard commission — per litre for OMC-priced fuel
-// (petrol/diesel/2T oil machine), per piece sold for 2T packet and Servo
-// (cane) oil, since those move by the unit rather than through a nozzle
-// meter. Separate from the retail rate charged to customers, and the basis
-// for the Dashboard/Fuel Entry profit summary (commission earned − expenses,
-// for the selected month). Editable from the Dashboard so it stays matched
-// to the station's actual OMC agreement — a rare event (unlike the retail
-// pump price above), so this is just a flat, current figure with no history.
-export const COMMISSION_RATES = {
-  petrol: 3,
-  diesel: 2,
-  oil: 5,
-  oilPacket: 5,
-  oilCane: 5,
-}
-
 function isoDaysAgo(n) {
   const d = new Date()
   d.setHours(0, 0, 0, 0)

@@ -10,6 +10,7 @@ import CalcBreakdown from './CalcBreakdown.jsx'
 import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
 import { caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
 import { fuelRatesForShiftScope } from '../utils/fuelRate.js'
+import { computeMonthlyPay } from '../utils/salary.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
@@ -351,7 +352,8 @@ export default function AuditModal({
 }) {
   const { language } = useLanguage()
   const t = FUEL_ENTRY_TEXT[language].audit
-  const { addLedgerEntry, removeLedgerEntry, fuelEntries, fuelStockLogs, saveFuelStockLog, fuelRateHistory } = useData()
+  const { addLedgerEntry, removeLedgerEntry, fuelEntries, fuelStockLogs, saveFuelStockLog, fuelRateHistory, attendance, loadAttendanceMonth } =
+    useData()
 
   // A second, independent audit (e.g. the Shift 3 / price-change report)
   // reuses this exact component but is labeled distinctly, both on screen
@@ -370,6 +372,67 @@ export default function AuditModal({
   // testing deduction, though, moves to whichever audit is that day's LAST
   // one — see testingDeductionLtr below.
   const isDayAudit = !variantLabel
+
+  // The audit office wants to see every employee's real total salary for
+  // the month that just closed, once it's fully done — the manager's own
+  // cutoff for that is the 3rd of the following month, main audit only
+  // (Shift 3 is a narrow same-day price-change report, not the place for a
+  // whole-month figure). A plain string slice, not a Date() parse — `date`
+  // is already a YYYY-MM-DD string, and parsing it through `new Date(...)`
+  // for just the day number risks exactly the local-timezone-shift bug
+  // `fuelRate.js`'s previousDateISO had to work around elsewhere in this app.
+  const showPreviousMonthSalary = isDayAudit && date.slice(-2) === '03'
+  // { year, monthIdx } (monthIdx 0-indexed, same convention computeMonthlyPay
+  // itself expects) of the month immediately before this audit's date.
+  const previousMonthInfo = useMemo(() => {
+    if (!showPreviousMonthSalary) return null
+    const [y, m] = date.split('-').map(Number) // m is 1-indexed
+    return m === 1 ? { year: y - 1, monthIdx: 11 } : { year: y, monthIdx: m - 2 }
+  }, [showPreviousMonthSalary, date])
+  // Attendance for that month isn't necessarily already loaded anywhere else
+  // in the app by the time this modal opens (unlike the Attendance page
+  // itself, which always loads whatever month it's currently showing) — this
+  // is what actually fetches it. loadAttendanceMonth no-ops if that month's
+  // already in state, so this is safe to call every time the modal opens.
+  useEffect(() => {
+    if (!isOpen || !previousMonthInfo) return
+    loadAttendanceMonth(previousMonthInfo.year, previousMonthInfo.monthIdx)
+  }, [isOpen, previousMonthInfo, loadAttendanceMonth])
+  // Reactive to `attendance` itself (not frozen at modal-open time) — the
+  // fetch above is async, so computing this straight from whatever
+  // `attendance` holds right now means it's simply correct the moment the
+  // real data arrives, with no race to get wrong, rather than needing its
+  // own separate "resync once loaded" effect the way PumpDayEditor's own
+  // rate-history race needed fixing.
+  const previousMonthSalaryRows = useMemo(() => {
+    if (!previousMonthInfo) return []
+    return (employees || []).map((emp) => {
+      const pay = computeMonthlyPay(emp, attendance[emp.id], previousMonthInfo.year, previousMonthInfo.monthIdx)
+      return { employeeId: emp.id, name: emp.name, computedAmount: Math.round(pay.earnedAmount) }
+    })
+  }, [previousMonthInfo, employees, attendance])
+  const previousMonthLabel = previousMonthInfo
+    ? new Date(previousMonthInfo.year, previousMonthInfo.monthIdx, 1).toLocaleDateString(language === 'ta' ? 'ta-IN' : 'en-IN', {
+        month: 'long',
+        year: 'numeric',
+      })
+    : ''
+  // Editable, same "report-only snapshot" contract as editedSale/
+  // editedPayments/editedVariance below — the manager can correct a figure
+  // before sending without that edit ever touching the real salary records
+  // (Salary page / salary_history) underneath. Keyed by employeeId rather
+  // than holding a full row copy, so a still-unedited row keeps tracking
+  // computedAmount live (see previousMonthSalaryRows above) instead of
+  // freezing at whatever attendance happened to show at modal-open time.
+  const [previousMonthSalaryEdits, setPreviousMonthSalaryEdits] = useState({})
+  const previousMonthSalaryTotal = useMemo(
+    () =>
+      previousMonthSalaryRows.reduce(
+        (sum, row) => sum + (Number(previousMonthSalaryEdits[row.employeeId] ?? row.computedAmount) || 0),
+        0,
+      ),
+    [previousMonthSalaryRows, previousMonthSalaryEdits],
+  )
 
   const [auditorName, setAuditorName] = useState('')
   const [remarks, setRemarks] = useState('')
@@ -492,6 +555,7 @@ export default function AuditModal({
       setStockReceivedDiesel('')
     }
     setCreditPaymentForm({ customerId: '', amount: '', mode: 'Cash' })
+    setPreviousMonthSalaryEdits({})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, date])
   const [contactEmail, setContactEmail] = useState(station?.auditContactEmail || SUGGESTED_AUDIT_EMAIL)
@@ -726,7 +790,7 @@ export default function AuditModal({
     sheet.addRow([reportTitle]).font = { bold: true, size: 14 }
     sheet.addRow([station?.name || ''])
     sheet.addRow([t.dateLabel, formatDate(date)])
-    sheet.addRow([t.auditorNameLabel, auditorName || '—'])
+    sheet.addRow([t.auditorNameLabel, auditorName.trim() || '—'])
     sheet.addRow([])
 
     sheet.addRow([t.daySummaryTitle]).font = { bold: true }
@@ -816,7 +880,19 @@ export default function AuditModal({
     sheet.addRow([t.fieldVariance, roundedCurrency(variance)])
     sheet.addRow([t.billsLabel, billsCount])
     sheet.addRow([])
-    sheet.addRow([t.remarksLabel, remarks || '—'])
+
+    if (showPreviousMonthSalary) {
+      sheet.addRow([t.previousMonthSalaryTitle(previousMonthLabel)]).font = { bold: true }
+      const salaryHeader = sheet.addRow([t.colEmployeeName, t.colSalaryAmount])
+      salaryHeader.font = { bold: true }
+      for (const row of previousMonthSalaryRows) {
+        sheet.addRow([row.name, roundedCurrency(Number(previousMonthSalaryEdits[row.employeeId] ?? row.computedAmount) || 0)])
+      }
+      sheet.addRow([t.totalPreviousMonthSalaryLabel, roundedCurrency(previousMonthSalaryTotal)]).font = { bold: true }
+      sheet.addRow([])
+    }
+
+    sheet.addRow([t.remarksLabel, remarks.trim() || '—'])
 
     sheet.columns.forEach((col) => { col.width = 22 })
 
@@ -1343,6 +1419,55 @@ export default function AuditModal({
             </Field>
           </div>
         </div>
+
+        {showPreviousMonthSalary ? (
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-3.5">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-indigo-700">{t.previousMonthSalaryTitle(previousMonthLabel)}</p>
+              <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                {t.previousMonthSalaryBadge}
+              </span>
+            </div>
+            <p className="mb-3 text-xs text-indigo-700/80">{t.previousMonthSalaryHint(previousMonthLabel)}</p>
+            {previousMonthSalaryRows.length ? (
+              <div className="max-h-56 overflow-auto rounded-lg border border-slate-200 bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="sticky top-0 z-10 bg-slate-50">
+                    <tr className="text-slate-400">
+                      <th className="px-3 py-2 font-semibold">{t.colEmployeeName}</th>
+                      <th className="px-3 py-2 text-right font-semibold">{t.colSalaryAmount}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previousMonthSalaryRows.map((row) => (
+                      <tr key={row.employeeId} className="border-t border-slate-100">
+                        <td className="px-3 py-2 font-medium text-slate-700">{row.name}</td>
+                        <td className="px-3 py-2 text-right">
+                          <div className="ml-auto w-28">
+                            <Input
+                              type="number"
+                              step="any"
+                              value={previousMonthSalaryEdits[row.employeeId] ?? String(row.computedAmount)}
+                              onChange={(e) =>
+                                setPreviousMonthSalaryEdits((prev) => ({ ...prev, [row.employeeId]: e.target.value }))
+                              }
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50">
+                      <td className="px-3 py-2 font-bold text-slate-800">{t.totalPreviousMonthSalaryLabel}</td>
+                      <td className="px-3 py-2 text-right font-bold text-slate-800">{roundedCurrency(previousMonthSalaryTotal)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">{t.noEmployeesForPreviousMonth}</p>
+            )}
+          </div>
+        ) : null}
         </div>
         </div>
 

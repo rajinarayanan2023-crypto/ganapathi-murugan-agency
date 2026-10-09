@@ -16,6 +16,7 @@ import Lubricants from './pages/Lubricants.jsx'
 import CreditBills from './pages/CreditBills.jsx'
 import Offers from './pages/Offers.jsx'
 import Expenses from './pages/Expenses.jsx'
+import LoginAttempts from './pages/LoginAttempts.jsx'
 
 // Shown only while a saved session is being silently restored after a real
 // browser refresh (see DataContext's authRestoring) — a beat of visible
@@ -91,6 +92,7 @@ export default function App() {
           <Route path="/credit-bills" element={<CreditBills />} />
           <Route path="/offers" element={<Offers />} />
           <Route path="/expenses" element={<Expenses />} />
+          <Route path="/login-attempts" element={<LoginAttempts />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -2,9 +2,11 @@ export const CALCULATOR_TEXT = {
   en: {
     calculator: 'Calculator',
     title: 'Calculator',
+    backspace: 'Backspace',
   },
   ta: {
     calculator: 'கால்குலேட்டர்',
     title: 'கால்குலேட்டர்',
+    backspace: 'பின் நீக்கு',
   },
 }

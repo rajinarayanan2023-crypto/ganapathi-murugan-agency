@@ -21,6 +21,16 @@ export default function AppDatePicker({
   // this way; a filter field (e.g. Fuel Entry's history date filter) is the
   // one case that does.
   clearable = false,
+  // A genuine fixed width for the DEFAULT variant (number of px, or any CSS
+  // width string) — a plain `w-[Npx]` className alone can't do this (see
+  // `fullWidth`'s own comment just below): MUI's own fullWidth class still
+  // wins the specificity fight, so the field silently renders at 100% of
+  // its flex parent instead. `compact` already has its own hardcoded fixed
+  // width for a different (small, tinted-chip) look; this is for a normal-
+  // looking field that just needs to not grow to fill its row — e.g. a
+  // "From"/"To" filter pair that has to sit alongside other controls
+  // without pushing them off a single row.
+  fixedWidth,
 }) {
   const isInline = variant === 'inline'
   const isCompact = variant === 'compact'
@@ -53,10 +63,15 @@ export default function AppDatePicker({
           // why this field kept rendering wider/narrower than a sibling
           // plain <input> under the same equal-width grid. `fullWidth`
           // sets width via MUI's own class, so it can't lose that fight.
-          // The compact variant wants its own small fixed width instead
-          // (see the `!important` width below) — fullWidth would otherwise
-          // still fight that, so it's skipped just for this variant.
-          fullWidth: !isCompact,
+          // The compact variant (and, same reasoning, an explicit
+          // fixedWidth) wants its own fixed width instead (see the
+          // `!important` width below) — fullWidth sets width:100% on the
+          // OUTER .MuiFormControl-root wrapper, not the inner
+          // .MuiOutlinedInput-root an sx override targets, so leaving
+          // fullWidth on would keep the wrapper at 100% regardless of what
+          // the sx rule sets on that inner element — it has to be off, not
+          // just out-sized, for a fixed width to actually take.
+          fullWidth: !isCompact && !fixedWidth,
           sx: isInline
             ? {
                 '& .MuiOutlinedInput-root': {
@@ -109,11 +124,21 @@ export default function AppDatePicker({
                   '& .MuiSvgIcon-root': { fontSize: '13px' },
                 }
               : {
-                  '& .MuiOutlinedInput-root': {
+                  // MUI X's DatePicker field (PickersTextField) renders its
+                  // visual box as .MuiPickersOutlinedInput-root, NOT the
+                  // classic .MuiOutlinedInput-root a plain MUI TextField
+                  // uses — targeting only the classic name (as this used to)
+                  // silently matched nothing at all, so no rule in this
+                  // whole block — not even the background color below — was
+                  // ever actually reaching the field. Keeping the classic
+                  // selector alongside it is harmless and future-proofs
+                  // against a MUI version where it's the one that's real.
+                  '& .MuiPickersOutlinedInput-root, & .MuiOutlinedInput-root': {
                     borderRadius: '10px',
                     fontSize: '0.875rem',
                     fontFamily: 'inherit',
                     backgroundColor: '#fbe8d9 !important',
+                    ...(fixedWidth ? { width: `${typeof fixedWidth === 'number' ? `${fixedWidth}px` : fixedWidth} !important` } : null),
                     '& fieldset': { borderColor: '#e2e8f0' },
                     '&:hover fieldset': { borderColor: '#c46f36' },
                     '&.Mui-focused fieldset': { borderColor: '#c46f36', borderWidth: '1.5px' },

@@ -9,6 +9,19 @@ export default function AppTooltip({ title, children, ...props }) {
   return (
     <Tooltip
       title={title}
+      // A real `disabled` native <button>/<input> neither fires mouse
+      // events nor accepts the ref MUI's Tooltip clones onto its child
+      // (confirmed live: elementFromPoint still resolved to the disabled
+      // button itself, yet a genuine mouse hover there never opened the
+      // tooltip) — this is a browser-level behavior for disabled form
+      // controls, not something CSS like `pointer-events` controls. Most
+      // call sites here disable the very element they wrap (a staff-only
+      // "Add X" button, a disabled icon action) specifically so the
+      // tooltip can explain WHY it's disabled, which is exactly the case
+      // this breaks. Wrapping every child in a plain, same-sized span
+      // (MUI's own documented fix for this) gives the Tooltip something
+      // that always responds to hover/focus, regardless of whether — or
+      // how — whatever is inside it is disabled.
       arrow
       // MUI's own default requires a 700ms press-and-hold on a touchscreen
       // before a tooltip opens at all — a normal tap does nothing, which is
@@ -42,7 +55,7 @@ export default function AppTooltip({ title, children, ...props }) {
       }}
       {...props}
     >
-      {children}
+      <span className="inline-flex">{children}</span>
     </Tooltip>
   )
 }

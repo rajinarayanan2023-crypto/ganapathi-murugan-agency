@@ -1,27 +1,11 @@
-import { todayISO } from './format.js'
-
-// priceHistory: [{ effectiveFrom: 'YYYY-MM-DD', rate }] — the entry whose
-// effectiveFrom is the latest one on/before a given date is the rate in
-// force on that date. Mirrors how employee salaries are tracked (see
-// utils/salary.js) so the same product can sell at a different price on
-// different days without losing what it used to cost.
-
-export function sortedPriceHistory(product) {
-  return [...(product?.priceHistory || [])].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
-}
-
-export function rateOnDate(product, dateISO) {
-  const history = sortedPriceHistory(product)
-  let rate = 0
-  for (const entry of history) {
-    if (entry.effectiveFrom > dateISO) break
-    rate = entry.rate
-  }
-  return rate
-}
-
-export function currentRate(product) {
-  return rateOnDate(product, todayISO())
+// Most recent purchase on record (by cost paid), or 0 if the product has
+// never had one logged — what the Lubricants product card shows in place
+// of the old selling-price "Revise Price" figure (removed: Pump 2's oil
+// pricing was always driven by purchase cost, never a separate selling
+// rate, so that figure was display-only and never fed any pricing logic).
+export function latestPurchaseCost(product) {
+  const latest = lastPurchaseOf(product)
+  return latest ? Number(latest.cost) || 0 : 0
 }
 
 // Groups a product's purchase history by cost paid per unit, summing the
@@ -49,12 +33,11 @@ export function lastPurchaseOf(product) {
 
 // How much stock is available at a specific PURCHASE cost — Fuel Entry's
 // oil rows sell out of whichever restock batch the manager picks by its
-// actual per-unit cost (see purchaseBatchesByCost), not the separate
-// selling `priceHistory` tracked above. Deliberately cost-based rather than
-// price-based: this business reprices each restock individually rather
-// than revising one running selling price, so the batches the manager
-// actually needs to tell apart are "the ₹38 lot" vs "the ₹23 lot" — exactly
-// what Purchase History already shows. There's no per-batch stock ledger
+// actual per-unit cost (see purchaseBatchesByCost). Cost-based rather than
+// a single running selling price, since this business reprices each
+// restock individually — the batches the manager actually needs to tell
+// apart are "the ₹38 lot" vs "the ₹23 lot" — exactly what Purchase History
+// already shows. There's no per-batch stock ledger
 // (`product.stock` is one running total, decremented by every sale
 // regardless of which batch it came from), so this is the total ever
 // bought at that cost, capped at whatever is still on hand overall — an
@@ -99,9 +82,22 @@ export function availableAtCostBreakdown(product, cost) {
     return { available: 0, totalStock, costNotFound: true }
   }
 
+  // Units already sold at THIS exact rate (a real Pump 2 oil-row count,
+  // summed server-side — see LubricantService's sold_count_by_rate) have to
+  // come off this batch's own purchased total before it's compared against
+  // the product's one aggregate running stock. Without this, a product with
+  // more than one batch (say 12 @ ₹26 and 8 @ ₹25, only the ₹25 one ever
+  // sold from) kept showing "Available: 8" at ₹25 forever, no matter how
+  // many of those 8 were already sold — because the untouched ₹26 batch's
+  // own units kept the OVERALL stock comfortably above 8, so the
+  // min(batch.qty, totalStock) clamp never actually caught the problem.
+  const soldAtCost = Number(product?.soldCountByRate?.[targetCost] ?? 0)
+  const remainingAtCost = round3(Math.max(0, batch.qty - soldAtCost))
+
   return {
-    available: round3(Math.max(0, Math.min(batch.qty, totalStock))),
+    available: round3(Math.max(0, Math.min(remainingAtCost, totalStock))),
     totalStock,
     purchasedAtCost: round3(batch.qty),
+    soldAtCost: round3(soldAtCost),
   }
 }

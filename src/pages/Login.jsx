@@ -84,20 +84,7 @@ export default function Login() {
 
     setSubmitting(true)
     try {
-      const data = await requestOtp()
-      // TESTING BYPASS — the backend's /auth/login currently returns real
-      // tokens directly (see auth_controller.py) instead of sending an OTP
-      // email, while Railway's outbound-SMTP block is worked around. Detect
-      // that shape and skip straight to the dashboard. This block is safe to
-      // leave in place even after the backend reverts: data.access_token
-      // simply won't be present, and the OTP step below runs as before.
-      if (data.access_token) {
-        login({ accessToken: data.access_token, refreshToken: data.refresh_token, user: data.user })
-        setStep('success')
-        setShowWelcome(true)
-        setTimeout(() => navigate('/dashboard'), WELCOME_DURATION_MS)
-        return
-      }
+      await requestOtp()
       setStep('otp')
     } catch (err) {
       triggerFieldError('user', err.message)

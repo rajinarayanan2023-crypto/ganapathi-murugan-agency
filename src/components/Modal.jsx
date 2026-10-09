@@ -3,8 +3,12 @@ import { X } from 'lucide-react'
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import AppTooltip from './AppTooltip.jsx'
+import { useLanguage } from '../context/LanguageContext.jsx'
+import { COMMON_TEXT } from '../i18n/common.js'
 
-export default function Modal({ isOpen, onClose, title, headerExtra, children, maxWidth = 'max-w-lg', hideCloseButton = false }) {
+export default function Modal({ isOpen, onClose, title, headerExtra, children, maxWidth = 'max-w-lg', hideCloseButton = false, scroll = true }) {
+  const { language } = useLanguage()
+  const commonT = COMMON_TEXT[language]
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') onClose?.()
@@ -18,22 +22,33 @@ export default function Modal({ isOpen, onClose, title, headerExtra, children, m
       {isOpen && (
         <motion.div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          initial={{ opacity: 0 }}
+          initial={false}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
         >
+          {/* No backdrop-filter here on purpose — blurring the full viewport
+              behind the modal is expensive, and on a real GPU-accelerated
+              browser it can visibly pop in over a couple of frames once the
+              page behind it is busy, reading as a flicker on open. The scrim
+              also skips its own enter animation (initial={false}) for the
+              same reason: a full-viewport element animating opacity can get
+              repainted tile-by-tile on real GPU compositing, so part of the
+              screen visibly lags a frame behind the rest while it ramps up —
+              that's the flicker. Appearing at full opacity immediately avoids
+              it entirely; only the (much smaller) dialog card still animates
+              in. Exit still fades normally on close. */}
           <motion.div
-            className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-slate-900/40"
             onClick={onClose}
-            initial={{ opacity: 0 }}
+            initial={false}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           />
           <motion.div
             role="dialog"
             aria-modal="true"
-            className={`relative z-10 w-full ${maxWidth} max-h-[94vh] overflow-y-auto rounded-xl bg-white shadow-2xl`}
+            className={`relative z-10 w-full ${maxWidth} ${scroll ? 'max-h-[94vh] overflow-y-auto' : ''} rounded-xl bg-white shadow-2xl`}
             initial={{ opacity: 0, scale: 0.95, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
@@ -44,11 +59,11 @@ export default function Modal({ isOpen, onClose, title, headerExtra, children, m
               <div className="flex shrink-0 items-center gap-3">
                 {headerExtra}
                 {hideCloseButton ? null : (
-                  <AppTooltip title="Close">
+                  <AppTooltip title={commonT.close}>
                     <button
                       onClick={onClose}
                       className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-500"
-                      aria-label="Close"
+                      aria-label={commonT.close}
                     >
                       <X size={18} />
                     </button>

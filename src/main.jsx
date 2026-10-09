@@ -10,6 +10,7 @@ import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { DataProvider } from './context/DataContext.jsx'
 import { LanguageProvider, useLanguage } from './context/LanguageContext.jsx'
 import { registerPrimeReactLocale } from './i18n/primereactLocale.js'
+import { MUI_DATE_PICKER_TA_LOCALE_TEXT } from './i18n/muiDatePickerLocale.js'
 import muiTheme from './muiTheme.js'
 import 'primereact/resources/themes/lara-light-amber/theme.css'
 import 'primereact/resources/primereact.min.css'
@@ -22,7 +23,11 @@ registerPrimeReactLocale()
 function LocalizedApp() {
   const { language } = useLanguage()
   return (
-    <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale={language === 'ta' ? 'ta' : 'en'}>
+    <LocalizationProvider
+      dateAdapter={AdapterDayjs}
+      adapterLocale={language === 'ta' ? 'ta' : 'en'}
+      localeText={language === 'ta' ? MUI_DATE_PICKER_TA_LOCALE_TEXT : undefined}
+    >
       {/* Last-resort safety net: Layout's own ErrorBoundary only wraps the
           routed page content (<Outlet />), not the sidebar/header around it —
           a render crash there (e.g. a data-driven translation lookup that's

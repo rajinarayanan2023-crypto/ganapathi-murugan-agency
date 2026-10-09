@@ -1,10 +1,8 @@
 import React, { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef } from 'react'
-import {
-  COMMISSION_RATES,
-  STATION,
-} from '../data/mockData.js'
+import { STATION } from '../data/mockData.js'
 import { todayISO } from '../utils/format.js'
 import { currentFuelRates } from '../utils/fuelRate.js'
+import { shiftVariance } from '../utils/fuelCalc.js'
 import {
   getEmployees,
   createEmployee as apiCreateEmployee,
@@ -14,12 +12,13 @@ import {
   addEmployeeCredit as apiAddEmployeeCredit,
   updateEmployeeCredit as apiUpdateEmployeeCredit,
   deleteEmployeeCredit as apiDeleteEmployeeCredit,
+  addSalaryPayment as apiAddSalaryPayment,
+  updateSalaryPayment as apiUpdateSalaryPayment,
+  deleteSalaryPayment as apiDeleteSalaryPayment,
   getLubricants,
   createLubricant as apiCreateLubricant,
   updateLubricant as apiUpdateLubricant,
   deleteLubricant as apiDeleteLubricant,
-  addPriceRevision as apiAddPriceRevision,
-  deletePriceRevision as apiDeletePriceRevision,
   recordPurchase as apiRecordPurchase,
   updatePurchase as apiUpdatePurchase,
   deletePurchase as apiDeletePurchase,
@@ -44,6 +43,7 @@ import {
   getAttendanceMonth,
   markAttendance as apiMarkAttendance,
   updateAttendance as apiUpdateAttendance,
+  deleteAttendance as apiDeleteAttendance,
   getFuelEntries,
   createFuelEntry as apiCreateFuelEntry,
   updateFuelEntry as apiUpdateFuelEntry,
@@ -55,6 +55,7 @@ import {
   getMe,
   apiPost,
   changePassword as apiChangePassword,
+  getLoginAttempts,
   createOrReviseCommissionRate as apiCreateOrReviseCommissionRate,
   getCommissionRateHistory as apiGetCommissionRateHistory,
   deleteCommissionRate as apiDeleteCommissionRate,
@@ -63,6 +64,9 @@ import {
   deleteFuelRateRevision as apiDeleteFuelRateRevision,
   createOrReviseFuelStockLog as apiCreateOrReviseFuelStockLog,
   getFuelStockLogs as apiGetFuelStockLogs,
+  getSalaryPeriodClosures as apiGetSalaryPeriodClosures,
+  closeSalaryPeriod as apiCloseSalaryPeriod,
+  reopenSalaryPeriod as apiReopenSalaryPeriod,
   getDashboardSummary as apiGetDashboardSummary,
 } from '../lib/apiClient.js'
 
@@ -148,7 +152,6 @@ export function DataProvider({ children }) {
   const [offerHistoryLoading, setOfferHistoryLoading] = useState(false)
   const [offerHistoryError, setOfferHistoryError] = useState(null)
   const [station, setStation] = usePersistedState('station', () => STATION)
-  const [commissionRates, setCommissionRates] = usePersistedState('commissionRates', () => COMMISSION_RATES)
   // Fuel Rate History (retail petrol/diesel/2T oil) now comes from the real
   // API (see loadFuelRateHistory below) rather than this browser's own
   // localStorage — a revision is now visible from any device/tablet and
@@ -165,6 +168,13 @@ export function DataProvider({ children }) {
   const [fuelStockLogs, setFuelStockLogs] = useState([])
   const [fuelStockLogsLoading, setFuelStockLogsLoading] = useState(false)
   const [fuelStockLogsError, setFuelStockLogsError] = useState(null)
+
+  // Payroll month locks — one row per (periodYear, periodMonth) ever closed,
+  // reused across every close/reopen cycle. See app/models/employee.py's
+  // SalaryPeriodClosure for the full design.
+  const [salaryPeriodClosures, setSalaryPeriodClosures] = useState([])
+  const [salaryPeriodClosuresLoading, setSalaryPeriodClosuresLoading] = useState(false)
+  const [salaryPeriodClosuresError, setSalaryPeriodClosuresError] = useState(null)
 
   // ---------- Auth ----------
   // The refresh token AND a snapshot of the logged-in user are the two
@@ -205,10 +215,10 @@ export function DataProvider({ children }) {
     // lubricants, credit customers, expenses, offers...) already resets to
     // [] on its own the instant isAuthenticated flips false — each has its
     // own `if (!isAuthenticated) { setX([]); return }` guard in its load
-    // effect below. station/commissionRates/fuelRateHistory are
-    // deliberately left alone: they're shared business config for this one
-    // station (name, address, rates), not anything specific to whoever's
-    // currently logged in, so there's nothing to hide from the next login.
+    // effect below. station/fuelRateHistory are deliberately left alone:
+    // they're shared business config for this one station (name, address,
+    // rates), not anything specific to whoever's currently logged in, so
+    // there's nothing to hide from the next login.
     // PumpDayEditor no longer persists any per-shift draft to localStorage
     // either (removed entirely — nothing is kept anywhere until a
     // deliberate Save Entry click), so there's nothing left behind there
@@ -328,6 +338,44 @@ export function DataProvider({ children }) {
     [],
   )
 
+  // ---------- Login Attempts (admin-only) ----------
+  // Deliberately NOT auto-loaded on login like most other data domains in
+  // this context (see the isAuthenticated effects below) — this 403s for
+  // any non-admin user (see login_attempt_controller.py's require_admin),
+  // so it only ever fetches when the Login Attempts screen itself calls
+  // loadLoginAttempts in its own effect (which only mounts for an admin,
+  // since the nav item/route are gated the same way).
+  const [loginAttempts, setLoginAttempts] = useState([])
+  const [loginAttemptsLoading, setLoginAttemptsLoading] = useState(false)
+  const [loginAttemptsError, setLoginAttemptsError] = useState(null)
+
+  const normalizeLoginAttempt = useCallback(
+    (a) => ({
+      id: a.id,
+      identifier: a.identifier,
+      userId: a.user_id || null,
+      action: a.action,
+      success: a.success,
+      reason: a.reason || null,
+      ipAddress: a.ip_address || null,
+      createdAt: a.created_at,
+    }),
+    [],
+  )
+
+  const loadLoginAttempts = useCallback(async () => {
+    setLoginAttemptsLoading(true)
+    setLoginAttemptsError(null)
+    try {
+      const data = await getLoginAttempts()
+      setLoginAttempts(data.map(normalizeLoginAttempt))
+    } catch (err) {
+      setLoginAttemptsError(err.message)
+    } finally {
+      setLoginAttemptsLoading(false)
+    }
+  }, [normalizeLoginAttempt])
+
   const updateStation = useCallback((patch) => {
     setStation((prev) => ({ ...prev, ...patch }))
   }, [])
@@ -389,7 +437,6 @@ export function DataProvider({ children }) {
         oil_packet: Number(patch.oilPacket) || 0,
         oil_cane: Number(patch.oilCane) || 0,
       })
-      setCommissionRates((prev) => ({ ...prev, ...patch }))
       invalidateDashboardSummariesFrom(effectiveFrom.slice(0, 7))
       return saved
     },
@@ -419,8 +466,20 @@ export function DataProvider({ children }) {
     setFuelRateHistoryLoading(true)
     setFuelRateHistoryError(null)
     try {
-      const data = await apiGetFuelRateHistory()
-      setFuelRateHistory(data.map(normalizeFuelRate))
+      // Same unbounded-fetch risk as loadEmployees/loadFuelEntries above —
+      // small today (a rate revision is rare), but this only ever grows and
+      // a single capped call would silently drop the OLDEST revisions,
+      // corrupting this history's own lookups for old entries.
+      const pageSize = 1000
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await apiGetFuelRateHistory({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setFuelRateHistory(all.map(normalizeFuelRate))
     } catch (err) {
       setFuelRateHistoryError(err.message)
     } finally {
@@ -493,8 +552,19 @@ export function DataProvider({ children }) {
     setFuelStockLogsLoading(true)
     setFuelStockLogsError(null)
     try {
-      const data = await apiGetFuelStockLogs()
-      setFuelStockLogs(data.map(normalizeFuelStockLog))
+      // Same unbounded-fetch risk as the others above — one row/date means
+      // this grows forever; a silently-capped fetch would eventually drop
+      // old checkpoints AuditModal's previousStockCheckpoint depends on.
+      const pageSize = 1000
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await apiGetFuelStockLogs({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setFuelStockLogs(all.map(normalizeFuelStockLog))
     } catch (err) {
       setFuelStockLogsError(err.message)
     } finally {
@@ -537,6 +607,81 @@ export function DataProvider({ children }) {
     [normalizeFuelStockLog],
   )
 
+  const normalizeSalaryPeriodClosure = useCallback(
+    (c) => ({
+      id: c.id,
+      periodYear: c.period_year,
+      periodMonth: c.period_month,
+      status: c.status,
+      closedAt: c.closed_at,
+      closedBy: c.closed_by,
+      closedByName: c.closed_by_name || null,
+      reopenedAt: c.reopened_at,
+      reopenedBy: c.reopened_by,
+      reopenedByName: c.reopened_by_name || null,
+      note: c.note || '',
+    }),
+    [],
+  )
+
+  const loadSalaryPeriodClosures = useCallback(async () => {
+    setSalaryPeriodClosuresLoading(true)
+    setSalaryPeriodClosuresError(null)
+    try {
+      const data = await apiGetSalaryPeriodClosures()
+      setSalaryPeriodClosures(data.map(normalizeSalaryPeriodClosure))
+    } catch (err) {
+      setSalaryPeriodClosuresError(err.message)
+    } finally {
+      setSalaryPeriodClosuresLoading(false)
+    }
+  }, [normalizeSalaryPeriodClosure])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setSalaryPeriodClosures([])
+      return
+    }
+    loadSalaryPeriodClosures()
+  }, [isAuthenticated, loadSalaryPeriodClosures])
+
+  // Replaces the matching (periodYear, periodMonth) row locally — same row
+  // gets reused across every close/reopen cycle server-side, never deleted.
+  const _upsertSalaryPeriodClosure = useCallback(
+    (closure) => {
+      setSalaryPeriodClosures((prev) => {
+        const rows = prev.filter((c) => !(c.periodYear === closure.periodYear && c.periodMonth === closure.periodMonth))
+        rows.push(closure)
+        return rows
+      })
+    },
+    [],
+  )
+
+  const closeSalaryPeriod = useCallback(
+    async (periodYear, periodMonth, note) => {
+      const saved = await apiCloseSalaryPeriod({
+        period_year: periodYear,
+        period_month: periodMonth,
+        note: note || undefined,
+      })
+      const closure = normalizeSalaryPeriodClosure(saved)
+      _upsertSalaryPeriodClosure(closure)
+      return closure
+    },
+    [normalizeSalaryPeriodClosure, _upsertSalaryPeriodClosure],
+  )
+
+  const reopenSalaryPeriod = useCallback(
+    async (periodYear, periodMonth, note) => {
+      const saved = await apiReopenSalaryPeriod(periodYear, periodMonth, { note: note || undefined })
+      const closure = normalizeSalaryPeriodClosure(saved)
+      _upsertSalaryPeriodClosure(closure)
+      return closure
+    },
+    [normalizeSalaryPeriodClosure, _upsertSalaryPeriodClosure],
+  )
+
   // ---------- Employees & Attendance ----------
   // API <-> UI field names differ (snake_case, and history/credit rows keyed
   // differently) — normalized here once so every page below (Salary,
@@ -551,13 +696,33 @@ export function DataProvider({ children }) {
       joinDate: e.join_date,
       active: e.active,
       notes: e.notes || '',
-      salaryHistory: (e.salary_history || []).map((h) => ({ id: h.id, effectiveFrom: h.effective_from, amount: Number(h.amount) })),
+      salaryHistory: (e.salary_history || []).map((h) => ({
+        id: h.id,
+        effectiveFrom: h.effective_from,
+        amount: Number(h.amount),
+        createdByName: h.created_by_name || null,
+        updatedByName: h.updated_by_name || null,
+        createdAt: h.created_at,
+        updatedAt: h.updated_at,
+      })),
       credits: (e.credits || []).map((c) => ({
         id: c.id,
         date: c.date,
         amount: Number(c.amount),
+        type: c.type || 'credit',
         note: c.note || '',
         sourceFuelEntryId: c.source_fuel_entry_id,
+      })),
+      payments: (e.payments || []).map((p) => ({
+        id: p.id,
+        periodYear: p.period_year,
+        periodMonth: p.period_month,
+        amountPaid: Number(p.amount_paid),
+        payableSnapshot: p.payable_snapshot != null ? Number(p.payable_snapshot) : null,
+        paidDate: p.paid_date,
+        note: p.note || '',
+        createdByName: p.created_by_name || null,
+        createdAt: p.created_at,
       })),
     }),
     [],
@@ -567,8 +732,24 @@ export function DataProvider({ children }) {
     setEmployeesLoading(true)
     setEmployeesError(null)
     try {
-      const data = await getEmployees()
-      setEmployees(data.map(normalizeEmployee))
+      // Same unbounded-fetch bug as Lubricants' catalog — a single
+      // unparameterized call silently capped at the backend's default page
+      // (100). Confirmed LIVE, not just latent: this test DB already has
+      // 115 employees, so ~15 of them (plus their salary/credit/attendance
+      // history, and their entry in Fuel Entry's own assignment dropdown)
+      // were silently missing from every screen that reads this list.
+      // Paging on `offset` keeps this correct regardless of how many
+      // employees ever get added.
+      const pageSize = 200
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await getEmployees({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setEmployees(all.map(normalizeEmployee))
     } catch (err) {
       setEmployeesError(err.message)
     } finally {
@@ -661,8 +842,13 @@ export function DataProvider({ children }) {
   // standalone screen. Same response-updates-local-state pattern as
   // reviseSalary above: the API returns the whole employee, re-normalized.
   const addEmployeeCredit = useCallback(
-    async (employeeId, { date, amount, note }) => {
-      const updated = await apiAddEmployeeCredit(employeeId, { date, amount: Number(amount), note: note || null })
+    async (employeeId, { date, amount, type, note }) => {
+      const updated = await apiAddEmployeeCredit(employeeId, {
+        date,
+        amount: Number(amount),
+        type: type || 'credit',
+        note: note || null,
+      })
       const employee = normalizeEmployee(updated)
       setEmployees((prev) => prev.map((e) => (e.id === employeeId ? employee : e)))
       return employee
@@ -671,10 +857,11 @@ export function DataProvider({ children }) {
   )
 
   const updateEmployeeCredit = useCallback(
-    async (employeeId, creditId, { date, amount, note }) => {
+    async (employeeId, creditId, { date, amount, type, note }) => {
       const payload = {}
       if (date !== undefined) payload.date = date
       if (amount !== undefined) payload.amount = Number(amount)
+      if (type !== undefined) payload.type = type
       if (note !== undefined) payload.note = note || null
       const updated = await apiUpdateEmployeeCredit(employeeId, creditId, payload)
       const employee = normalizeEmployee(updated)
@@ -694,13 +881,50 @@ export function DataProvider({ children }) {
     )
   }, [])
 
-  const deleteEmployee = useCallback((id) => {
-    setEmployees((prev) => prev.filter((e) => e.id !== id))
-    setAttendanceState((prev) => {
-      const next = { ...prev }
-      delete next[id]
-      return next
-    })
+  // Salary Payments — an actual disbursement record, distinct from a credit
+  // (money advanced, owed back against future pay). Same
+  // response-updates-local-state pattern as reviseSalary/addEmployeeCredit.
+  const addSalaryPayment = useCallback(
+    async (employeeId, { periodYear, periodMonth, amountPaid, payableSnapshot, paidDate, note }) => {
+      const updated = await apiAddSalaryPayment(employeeId, {
+        period_year: periodYear,
+        period_month: periodMonth,
+        amount_paid: Number(amountPaid),
+        payable_snapshot: payableSnapshot != null ? Number(payableSnapshot) : null,
+        paid_date: paidDate,
+        note: note || null,
+      })
+      const employee = normalizeEmployee(updated)
+      setEmployees((prev) => prev.map((e) => (e.id === employeeId ? employee : e)))
+      return employee
+    },
+    [normalizeEmployee],
+  )
+
+  const updateSalaryPayment = useCallback(
+    async (employeeId, paymentId, { periodYear, periodMonth, amountPaid, paidDate, note }) => {
+      const payload = {}
+      if (periodYear !== undefined) payload.period_year = periodYear
+      if (periodMonth !== undefined) payload.period_month = periodMonth
+      if (amountPaid !== undefined) payload.amount_paid = Number(amountPaid)
+      if (paidDate !== undefined) payload.paid_date = paidDate
+      if (note !== undefined) payload.note = note || null
+      const updated = await apiUpdateSalaryPayment(employeeId, paymentId, payload)
+      const employee = normalizeEmployee(updated)
+      setEmployees((prev) => prev.map((e) => (e.id === employeeId ? employee : e)))
+      return employee
+    },
+    [normalizeEmployee],
+  )
+
+  // No updated employee comes back from a delete (just a confirmation
+  // message), same as deleteEmployeeCredit above — splices the removed
+  // payment out of local state directly rather than re-normalizing.
+  const deleteSalaryPayment = useCallback(async (employeeId, paymentId) => {
+    await apiDeleteSalaryPayment(employeeId, paymentId)
+    setEmployees((prev) =>
+      prev.map((e) => (e.id === employeeId ? { ...e, payments: e.payments.filter((p) => p.id !== paymentId) } : e)),
+    )
   }, [])
 
   const ATTENDANCE_STATUS_TO_API = {
@@ -784,7 +1008,16 @@ export function DataProvider({ children }) {
       try {
         record = await apiMarkAttendance({ employee_id: employeeId, date, ...body })
       } catch (err) {
-        if (err.status === 409) {
+        // A 409 here means one of two unrelated things: a record already
+        // exists (the local cache just didn't know about it — fine, retry as
+        // an update), or the period is closed (mark_attendance checks that
+        // BEFORE the existence check — see attendance_service.py). Retrying
+        // the latter as a PATCH used to either mask the real "period is
+        // closed" message behind update_attendance's own unrelated 404 (it
+        // checks "record exists" before "period open", and there IS no
+        // record), or silently "succeed" at editing something that was never
+        // actually created. Only the genuine duplicate case gets retried.
+        if (err.status === 409 && /already recorded/i.test(err.message || '')) {
           record = await apiUpdateAttendance(employeeId, date, body)
         } else {
           throw err
@@ -797,6 +1030,47 @@ export function DataProvider({ children }) {
       [employeeId]: { ...prev[employeeId], [date]: normalized },
     }))
   }, [attendance])
+
+  // Best-effort, create-only-if-nothing-exists-yet — used for the double-
+  // shift modal's "auto-suggest tomorrow as Duty Off" side effect. That used
+  // to only check the LOCAL attendance cache before deciding whether to
+  // create it, so a tomorrow nobody had loaded into this browser session yet
+  // (a month boundary, a tab that just opened) looked "empty" locally even
+  // when a real record already existed server-side, and got silently
+  // overwritten. Always asks the server directly via POST; if anything
+  // already exists there (or that day's period is closed) it just skips the
+  // auto-suggestion quietly — it's a convenience, not the user's actual save,
+  // so it shouldn't surface a second, confusing error after the real save
+  // (today's day) already succeeded.
+  const createAttendanceDayIfAbsent = useCallback(async (employeeId, date, patch) => {
+    const status = patch.status
+    const isShiftDay = status === 'oneShift' || status === 'doubleShift'
+    const body = {
+      status: ATTENDANCE_STATUS_TO_API[status] || status,
+      start_time: isShiftDay ? patch.startTime || '08:00' : null,
+    }
+    try {
+      const record = await apiMarkAttendance({ employee_id: employeeId, date, ...body })
+      const normalized = normalizeAttendanceRecord(record)
+      setAttendanceState((prev) => ({
+        ...prev,
+        [employeeId]: { ...prev[employeeId], [date]: normalized },
+      }))
+      return normalized
+    } catch (err) {
+      if (err.status === 409) return null
+      throw err
+    }
+  }, [])
+
+  const deleteAttendanceDay = useCallback(async (employeeId, date) => {
+    await apiDeleteAttendance(employeeId, date)
+    setAttendanceState((prev) => {
+      const forEmployee = { ...prev[employeeId] }
+      delete forEmployee[date]
+      return { ...prev, [employeeId]: forEmployee }
+    })
+  }, [])
 
   // ---------- Fuel Entries ----------
   // The backend is now the single source of truth for the whole cascade a
@@ -929,8 +1203,26 @@ export function DataProvider({ children }) {
     setFuelEntriesLoading(true)
     setFuelEntriesError(null)
     try {
-      const data = await getFuelEntries({ limit: 2000 })
-      setFuelEntries(data.map(normalizeFuelEntry))
+      // A single `limit: 2000` call used to silently cap this at the
+      // backend's own default page — fine at today's row count, but this
+      // table only grows (roughly 2 pumps × up to 3 shifts × 365 days/year)
+      // and would silently drop the OLDEST entries (list_with_details orders
+      // by date desc) off this screen, carry-forward opening-stock lookups,
+      // and the audit report the moment a real deployment's history passes
+      // that ceiling — the same class of hidden-rows bug found and fixed on
+      // the Lubricants catalog. Paging on `offset` at the backend's own max
+      // page size (2000) keeps this correct regardless of how large the
+      // table grows, instead of just moving today's ceiling to a new one.
+      const pageSize = 2000
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await getFuelEntries({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setFuelEntries(all.map(normalizeFuelEntry))
     } catch (err) {
       setFuelEntriesError(err.message)
     } finally {
@@ -986,8 +1278,22 @@ export function DataProvider({ children }) {
     setCreditCustomersLoading(true)
     setCreditCustomersError(null)
     try {
-      const data = await getCreditCustomers()
-      setCreditCustomers(data.map(normalizeCreditCustomer))
+      // Same unbounded-fetch risk as loadFuelEntries above (and the
+      // Lubricants catalog before that) — a single unparameterized call
+      // silently capped at the backend's default page (500), which would
+      // drop customers past that count off this screen with no error or
+      // notice. Paging on `offset` keeps this correct regardless of how
+      // large the customer base grows.
+      const pageSize = 1000
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await getCreditCustomers({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setCreditCustomers(all.map(normalizeCreditCustomer))
     } catch (err) {
       setCreditCustomersError(err.message)
     } finally {
@@ -1007,10 +1313,19 @@ export function DataProvider({ children }) {
       unit: p.unit,
       packaging: p.packaging,
       stock: Number(p.stock),
-      priceHistory: (p.price_history || []).map((h) => ({ id: h.id, effectiveFrom: h.effective_from, rate: Number(h.rate) })),
       purchaseHistory: (p.purchase_history || []).map((h) => ({ id: h.id, date: h.date, qty: Number(h.qty), cost: Number(h.cost) })),
       lastSoldDate: p.last_sold_date || null,
       totalSold: Number(p.total_sold) || 0,
+      // Re-keyed through Number(rate) — the API sends Decimal keys as
+      // fixed-scale strings ("25.00"), but purchaseBatchesByCost (and
+      // every other cost figure here) already works with the plain
+      // Number form (25). A JS object key is always coerced to a string
+      // on access either way, so keying by the SAME Number(...) both here
+      // and at every lookup site is what actually makes "25.00" and 25
+      // land on the same key instead of two different ones.
+      soldCountByRate: Object.fromEntries(
+        Object.entries(p.sold_count_by_rate || {}).map(([rate, qty]) => [Number(rate), Number(qty) || 0]),
+      ),
     }),
     [],
   )
@@ -1060,7 +1375,21 @@ export function DataProvider({ children }) {
     (entry) => {
       const payments = entry?.payments || []
       if (payments.some((p) => p.type === 'credit' && Number(p.amount) > 0)) loadCreditCustomers()
-      if (payments.some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0)) loadEmployees()
+      // Two SEPARATE server-side triggers create an employee credit row, not
+      // just the explicit "pay via employee credit" payment line checked
+      // below — FuelEntryService._apply_shift_variance_credit also auto-ties
+      // the shift's own cash shortage/excess (totalPayments - totalSaleAmount)
+      // to whoever worked it, whenever an employee is assigned and that
+      // variance is nonzero, with NO payment line involved at all. Missing
+      // this second case left a shift with just a shortage/excess (the
+      // common case — no manual employee-credit payment line) saving its
+      // real server-side credit row fine, while this client's own cached
+      // `employees` (and the credits embedded in it, which the Employee
+      // Credits page reads from) kept showing stale data with that row
+      // missing until the next full reload.
+      const hasEmployeeCreditPayment = payments.some((p) => p.type === 'employeeCredit' && Number(p.amount) > 0)
+      const hasShiftVarianceCredit = Boolean(entry?.employeeId) && shiftVariance(entry) !== 0
+      if (hasEmployeeCreditPayment || hasShiftVarianceCredit) loadEmployees()
       if (entry?.pumpKey === 'pump2' && [...(entry?.oilRows || []), ...(entry?.caneOilRows || [])].some((r) => r.productId && Number(r.stockCount) > 0)) {
         loadLubricants()
       }
@@ -1217,33 +1546,6 @@ export function DataProvider({ children }) {
     [normalizeLubricant],
   )
 
-  // Adds (or replaces, if effectiveFrom matches an existing entry — the API
-  // upserts by date server-side) a price history entry. Local state is
-  // updated from the response's full, fresh price_history.
-  const reviseLubricantPrice = useCallback(
-    async (productId, { rate, effectiveFrom }) => {
-      const updated = await apiAddPriceRevision(productId, { rate: Number(rate), effective_from: effectiveFrom })
-      const product = normalizeLubricant(updated)
-      lubricantsVersionRef.current += 1
-      setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
-      return product
-    },
-    [normalizeLubricant],
-  )
-
-  // Same "at least one on record" guard as deleteSalaryRevision — the API
-  // rejects (409, surfaced via ApiError.message) deleting a product's last
-  // remaining price.
-  const deletePriceRevision = useCallback(
-    async (productId, revisionId) => {
-      const updated = await apiDeletePriceRevision(productId, revisionId)
-      const product = normalizeLubricant(updated)
-      lubricantsVersionRef.current += 1
-      setLubricants((prev) => prev.map((l) => (l.id === productId ? product : l)))
-      return product
-    },
-    [normalizeLubricant],
-  )
 
   const deleteLubricant = useCallback(async (id) => {
     await apiDeleteLubricant(id)
@@ -1418,8 +1720,22 @@ export function DataProvider({ children }) {
     setOfferCustomersLoading(true)
     setOfferCustomersError(null)
     try {
-      const data = await getOfferCustomers()
-      setOfferCustomers(data.map(normalizeOfferCustomer))
+      // Same unbounded-fetch risk as loadCreditCustomers/loadEmployees above
+      // — a single unparameterized call silently capped at the backend's
+      // default page (500), which would drop recipients past that count off
+      // this screen (and out of every bulk send) with no error or notice.
+      // Paging on `offset` keeps this correct regardless of how large the
+      // recipient list grows.
+      const pageSize = 1000
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await getOfferCustomers({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setOfferCustomers(all.map(normalizeOfferCustomer))
     } catch (err) {
       setOfferCustomersError(err.message)
     } finally {
@@ -1521,8 +1837,23 @@ export function DataProvider({ children }) {
     setExpensesLoading(true)
     setExpensesError(null)
     try {
-      const data = await getExpenses()
-      setExpenseDays(data)
+      // Same unbounded-fetch risk as loadCreditCustomers/loadEmployees above
+      // — a single unparameterized call silently capped at the backend's
+      // default page (200), which would drop expense days older than that
+      // off this screen with no error or notice. One row per calendar day
+      // with any logged expense means ~200 days (under 7 months of daily
+      // use) is all it'd take. Paging on `offset` keeps this correct
+      // regardless of how long the station has been recording expenses.
+      const pageSize = 500
+      let offset = 0
+      let all = []
+      for (;;) {
+        const page = await getExpenses({ offset, limit: pageSize })
+        all = all.concat(page)
+        if (page.length < pageSize) break
+        offset += pageSize
+      }
+      setExpenseDays(all)
     } catch (err) {
       setExpensesError(err.message)
     } finally {
@@ -1603,7 +1934,11 @@ export function DataProvider({ children }) {
       fuelStockLogsLoading,
       fuelStockLogsError,
       saveFuelStockLog,
-      commissionRates,
+      salaryPeriodClosures,
+      salaryPeriodClosuresLoading,
+      salaryPeriodClosuresError,
+      closeSalaryPeriod,
+      reopenSalaryPeriod,
       updateCommissionRates,
       getCommissionRateHistory,
       deleteCommissionRate,
@@ -1620,21 +1955,29 @@ export function DataProvider({ children }) {
       setSaveUnsavedChangesHandler,
       logout,
       changePassword,
+      loginAttempts,
+      loginAttemptsLoading,
+      loginAttemptsError,
+      loadLoginAttempts,
       employees,
       employeesLoading,
       employeesError,
       addEmployee,
       updateEmployee,
-      deleteEmployee,
       reviseSalary,
       deleteSalaryRevision,
       addEmployeeCredit,
       updateEmployeeCredit,
       deleteEmployeeCredit,
+      addSalaryPayment,
+      updateSalaryPayment,
+      deleteSalaryPayment,
       attendance,
       attendanceLoading,
       attendanceError,
       setAttendanceDay,
+      createAttendanceDayIfAbsent,
+      deleteAttendanceDay,
       loadAttendanceMonth,
       fuelEntries,
       fuelEntriesLoading,
@@ -1648,8 +1991,6 @@ export function DataProvider({ children }) {
       addLubricant,
       updateLubricant,
       deleteLubricant,
-      reviseLubricantPrice,
-      deletePriceRevision,
       addPurchase,
       updatePurchase,
       deletePurchase,
@@ -1691,7 +2032,11 @@ export function DataProvider({ children }) {
       fuelStockLogsLoading,
       fuelStockLogsError,
       saveFuelStockLog,
-      commissionRates,
+      salaryPeriodClosures,
+      salaryPeriodClosuresLoading,
+      salaryPeriodClosuresError,
+      closeSalaryPeriod,
+      reopenSalaryPeriod,
       updateCommissionRates,
       getCommissionRateHistory,
       deleteCommissionRate,
@@ -1708,21 +2053,29 @@ export function DataProvider({ children }) {
       setSaveUnsavedChangesHandler,
       logout,
       changePassword,
+      loginAttempts,
+      loginAttemptsLoading,
+      loginAttemptsError,
+      loadLoginAttempts,
       employees,
       employeesLoading,
       employeesError,
       addEmployee,
       updateEmployee,
-      deleteEmployee,
       reviseSalary,
       deleteSalaryRevision,
       addEmployeeCredit,
       updateEmployeeCredit,
       deleteEmployeeCredit,
+      addSalaryPayment,
+      updateSalaryPayment,
+      deleteSalaryPayment,
       attendance,
       attendanceLoading,
       attendanceError,
       setAttendanceDay,
+      createAttendanceDayIfAbsent,
+      deleteAttendanceDay,
       loadAttendanceMonth,
       fuelEntries,
       fuelEntriesLoading,
@@ -1736,8 +2089,6 @@ export function DataProvider({ children }) {
       addLubricant,
       updateLubricant,
       deleteLubricant,
-      reviseLubricantPrice,
-      deletePriceRevision,
       addPurchase,
       updatePurchase,
       deletePurchase,

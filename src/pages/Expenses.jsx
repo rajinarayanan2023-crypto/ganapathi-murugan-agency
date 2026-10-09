@@ -5,12 +5,14 @@ import { Plus, Pencil, Trash2, Receipt, X } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { EXPENSES_TEXT } from '../i18n/expenses.js'
+import { COMMON_TEXT } from '../i18n/common.js'
 import { formatCurrency, formatDate, todayISO } from '../utils/format.js'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
+import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
@@ -23,10 +25,13 @@ function emptyItem() {
   return { id: makeItemId(), label: '', amount: '' }
 }
 
+const _EARLIEST_SANE_EXPENSE_DATE = '1970-01-01'
+
 export default function Expenses() {
-  const { expenseDays, expensesLoading, expensesError, addExpenseDay, updateExpenseDay, deleteExpenseDay } = useData()
+  const { expenseDays, expensesLoading, expensesError, addExpenseDay, updateExpenseDay, deleteExpenseDay, currentUser } = useData()
   const { language } = useLanguage()
   const t = EXPENSES_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const loading = expensesLoading
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -41,6 +46,12 @@ export default function Expenses() {
   // make (add/edit, delete) — while any of them is running, every OTHER
   // action on this screen is blocked too.
   const busy = saving || deleting
+  // Add/edit/delete all hit backend routes gated to require_manager_or_admin
+  // (see expense_controller.py) — a staff user saw every one of these
+  // controls fully enabled and only found out they weren't allowed after
+  // the request came back 403.
+  const isManagerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager'
+  const writeBlocked = busy || !isManagerOrAdmin
 
   const rows = useMemo(
     () =>
@@ -55,6 +66,27 @@ export default function Expenses() {
       })),
     [expenseDays],
   )
+
+  // A separate control from the free-text search box above — narrows WHICH
+  // days are even candidates before that search runs, same two-part filter
+  // as Login Attempts' own date range + search combo.
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+  const dateFilterActive = !!(filterDateFrom || filterDateTo)
+
+  const dateFilteredRows = useMemo(() => {
+    if (!dateFilterActive) return rows
+    return rows.filter((d) => {
+      if (filterDateFrom && d.date < filterDateFrom) return false
+      if (filterDateTo && d.date > filterDateTo) return false
+      return true
+    })
+  }, [rows, filterDateFrom, filterDateTo, dateFilterActive])
+
+  function clearDateFilter() {
+    setFilterDateFrom('')
+    setFilterDateTo('')
+  }
 
   function openAdd() {
     setEditingId(null)
@@ -88,13 +120,19 @@ export default function Expenses() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (saving) return
     const validItems = items
       .filter((i) => i.label.trim() && Number(i.amount) > 0)
       .map((i) => ({ id: i.id, label: i.label.trim(), amount: Number(i.amount) }))
 
     const errs = {}
     if (!date) errs.date = t.errorDateRequired
-    else if (!editingId && expenseDays.some((d) => d.date === date)) errs.date = t.errorDateExists
+    // Excludes the day currently being edited from the check against
+    // itself — editing a day WITHOUT touching its date would otherwise
+    // flag a collision against its own existing record. The backend
+    // catches a real collision on edit too either way (see
+    // update_expense_day), so this is purely an earlier, clearer error.
+    else if (expenseDays.some((d) => d.date === date && d.id !== editingId)) errs.date = t.errorDateExists
     if (validItems.length === 0) errs.items = t.errorItemsRequired
     setErrors(errs)
     if (Object.keys(errs).length > 0) return
@@ -117,6 +155,7 @@ export default function Expenses() {
   }
 
   async function handleDelete() {
+    if (deleting) return
     setDeleting(true)
     try {
       await deleteExpenseDay(confirmDeleteId)
@@ -171,12 +210,20 @@ export default function Expenses() {
       style: { width: '16%' },
       body: (d) => (
         <div className="flex justify-end gap-1">
-          <IconButton onClick={() => openEdit(d)} disabled={busy} aria-label="Edit" title="Edit" tone="edit">
-            <Pencil size={15} />
-          </IconButton>
-          <IconButton onClick={() => setConfirmDeleteId(d.id)} disabled={busy} aria-label="Delete" title="Delete" tone="delete">
-            <Trash2 size={15} />
-          </IconButton>
+          <AppTooltip title={isManagerOrAdmin ? commonT.edit : t.staffOnlyHint}>
+            <span>
+              <IconButton onClick={() => openEdit(d)} disabled={writeBlocked} aria-label={commonT.edit} tone="edit">
+                <Pencil size={15} />
+              </IconButton>
+            </span>
+          </AppTooltip>
+          <AppTooltip title={isManagerOrAdmin ? commonT.delete : t.staffOnlyHint}>
+            <span>
+              <IconButton onClick={() => setConfirmDeleteId(d.id)} disabled={writeBlocked} aria-label={commonT.delete} tone="delete">
+                <Trash2 size={15} />
+              </IconButton>
+            </span>
+          </AppTooltip>
         </div>
       ),
     },
@@ -208,25 +255,56 @@ export default function Expenses() {
               title={t.emptyTitle}
               description={t.emptyDesc}
               action={
-                <PrimaryButton onClick={openAdd} disabled={busy}>
-                  <Plus size={16} /> {t.addExpenseDay}
-                </PrimaryButton>
+                <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                  <span>
+                    <PrimaryButton onClick={openAdd} disabled={writeBlocked}>
+                      <Plus size={16} /> {t.addExpenseDay}
+                    </PrimaryButton>
+                  </span>
+                </AppTooltip>
               }
             />
           </div>
         ) : (
           <DataTable
             columns={columns}
-            data={rows}
+            data={dateFilteredRows}
             rowKey="id"
+            globalFilterFields={['itemsExport', 'date', 'total']}
+            searchPlaceholder={t.searchPlaceholder}
             defaultSortField="date"
             defaultSortOrder={-1}
             exportFilename="expenses"
             dense
             toolbarActions={
-              <PrimaryButton onClick={openAdd} disabled={busy} className="px-3.5 py-2 text-xs">
-                <Plus size={14} /> {t.addExpenseDay}
-              </PrimaryButton>
+              <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                <span>
+                  <PrimaryButton onClick={openAdd} disabled={writeBlocked} className="px-3.5 py-2 text-xs">
+                    <Plus size={14} /> {t.addExpenseDay}
+                  </PrimaryButton>
+                </span>
+              </AppTooltip>
+            }
+            trailingContent={
+              <div className="flex shrink-0 flex-nowrap items-center gap-1.5">
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-xs font-semibold text-slate-500">{t.dateFrom}</span>
+                  <AppDatePicker value={filterDateFrom} onChange={setFilterDateFrom} maxDate={filterDateTo || todayISO()} clearable fixedWidth={172} />
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-xs font-semibold text-slate-500">{t.dateTo}</span>
+                  <AppDatePicker value={filterDateTo} onChange={setFilterDateTo} minDate={filterDateFrom || undefined} maxDate={todayISO()} clearable fixedWidth={172} />
+                </div>
+                {dateFilterActive ? (
+                  <button
+                    type="button"
+                    onClick={clearDateFilter}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-50"
+                  >
+                    <X size={13} /> {t.clearFilters}
+                  </button>
+                ) : null}
+              </div>
             }
           />
         )}
@@ -239,7 +317,14 @@ export default function Expenses() {
       >
         <form onSubmit={handleSubmit} onKeyDown={submitOnEnter} className="space-y-4">
           <Field label={t.fieldDate} required error={errors.date} className="max-w-xs">
-            <AppDatePicker value={date} onChange={setDate} className="w-full" disabled={saving} />
+            <AppDatePicker
+              value={date}
+              onChange={setDate}
+              className="w-full"
+              disabled={saving}
+              minDate={_EARLIEST_SANE_EXPENSE_DATE}
+              maxDate={todayISO()}
+            />
           </Field>
 
           <Field label={t.itemsLabel} error={errors.items}>

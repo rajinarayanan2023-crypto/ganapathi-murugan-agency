@@ -11,6 +11,7 @@ export const LAYOUT_TEXT = {
       creditBills: 'Credit Bills',
       expenses: 'Expenses',
       offers: 'Offers',
+      loginAttempts: 'Login Attempts',
     },
     navShort: {
       dashboard: 'Dashboard',
@@ -22,6 +23,7 @@ export const LAYOUT_TEXT = {
       creditBills: 'Credit',
       expenses: 'Expenses',
       offers: 'Offers',
+      loginAttempts: 'Security',
     },
     admin: 'Admin',
     logout: 'Logout',
@@ -64,6 +66,7 @@ export const LAYOUT_TEXT = {
       creditBills: 'கடன் பில்கள்',
       expenses: 'செலவுகள்',
       offers: 'சலுகைகள்',
+      loginAttempts: 'உள்நுழைவு முயற்சிகள்',
     },
     navShort: {
       dashboard: 'டாஷ்போர்டு',
@@ -75,6 +78,7 @@ export const LAYOUT_TEXT = {
       creditBills: 'கடன்',
       expenses: 'செலவு',
       offers: 'சலுகை',
+      loginAttempts: 'பாதுகாப்பு',
     },
     admin: 'நிர்வாகி',
     logout: 'வெளியேறு',

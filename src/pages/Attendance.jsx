@@ -2,16 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
 import { Link } from 'react-router-dom'
-import { Users, Phone, CalendarDays, UserPlus, ChevronLeft, ChevronRight, Pencil } from 'lucide-react'
+import { Users, Phone, CalendarDays, UserPlus, ChevronLeft, ChevronRight, Pencil, Eraser } from 'lucide-react'
 import { useData } from '../context/DataContext.jsx'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { ATTENDANCE_TEXT } from '../i18n/attendance.js'
 import { EMPLOYEES_TEXT } from '../i18n/employees.js'
-import { STATUS_OPTIONS, nextDateISO } from '../utils/attendance.js'
-import { formatDate, formatDayLabel, todayISO, toISODate } from '../utils/format.js'
+import { COMMON_TEXT } from '../i18n/common.js'
+import { STATUS_OPTIONS, nextDateISO, previousDateISO } from '../utils/attendance.js'
+import { formatDate, formatDayLabel, formatEmployeeName, todayISO, toISODate } from '../utils/format.js'
 import EmptyState from '../components/EmptyState.jsx'
 import DataTable from '../components/DataTable.jsx'
 import Modal from '../components/Modal.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { Field, PrimaryButton, SecondaryButton, IconButton, submitOnEnter } from '../components/FormControls.jsx'
 import AppTooltip from '../components/AppTooltip.jsx'
 import { SkeletonTable } from '../components/Skeleton.jsx'
@@ -51,9 +53,21 @@ function formatTime12h(time) {
 }
 
 export default function Attendance() {
-  const { employees, employeesLoading, attendance, attendanceLoading, attendanceError, setAttendanceDay, loadAttendanceMonth } = useData()
+  const {
+    employees,
+    employeesLoading,
+    attendance,
+    attendanceLoading,
+    attendanceError,
+    setAttendanceDay,
+    createAttendanceDayIfAbsent,
+    deleteAttendanceDay,
+    loadAttendanceMonth,
+    currentUser,
+  } = useData()
   const { language } = useLanguage()
   const t = ATTENDANCE_TEXT[language]
+  const commonT = COMMON_TEXT[language]
   const roleLabels = EMPLOYEES_TEXT[language].roleLabels
   const loading = employeesLoading || attendanceLoading
   const today = todayISO()
@@ -65,11 +79,31 @@ export default function Attendance() {
   const [editTarget, setEditTarget] = useState(null)
   const [modalStatus, setModalStatus] = useState('oneShift')
   const [modalStartTime, setModalStartTime] = useState(DEFAULT_START_TIME)
+  // Visible, opt-out suggestion shown IN the modal while the manager is
+  // saving a double shift — not a silent background write they never see.
+  // Defaults to on (matches the long-standing "auto-suggests" behavior,
+  // see legendDoubleShift below) but can be unchecked before Save.
+  const [autoMarkNextDayOff, setAutoMarkNextDayOff] = useState(true)
   // Covers both markAll (mark-all-staff buttons) and saveEditAttendance (the
   // per-employee edit modal) — whichever is in flight, every other control
   // on this screen is blocked too via `busy` below.
   const [saving, setSaving] = useState(false)
-  const busy = saving
+  const [clearTarget, setClearTarget] = useState(null)
+  const [clearing, setClearing] = useState(false)
+  const busy = saving || clearing
+  // Marking/editing/clearing attendance all hit backend routes gated to
+  // require_manager_or_admin (see attendance_controller.py) — a staff user
+  // saw every one of these controls fully enabled and only found out they
+  // weren't allowed after the request came back 403.
+  const isManagerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager'
+  const writeBlocked = busy || !isManagerOrAdmin
+  // One of the 3 "Mark All" buttons was just clicked — holds the status it
+  // would apply (or null) so the confirmation dialog can show which one.
+  // The actual bulk write (markAll below) only ever fires from the dialog's
+  // own Confirm button, never straight from the toolbar click — this
+  // affects every active staff member at once, so a stray click shouldn't
+  // be able to fire it immediately.
+  const [confirmMarkAll, setConfirmMarkAll] = useState(null)
 
   // History tab browses a different month than "today" — load whichever
   // month is actually being viewed/marked; loadAttendanceMonth no-ops if
@@ -128,7 +162,16 @@ export default function Attendance() {
     }
   }
 
+  function goPrevSelectedDay() {
+    setSelectedDate((d) => previousDateISO(d))
+  }
+
+  function goNextSelectedDay() {
+    setSelectedDate((d) => (d >= today ? d : nextDateISO(d)))
+  }
+
   async function markAll(status) {
+    if (saving) return
     const eligible = activeEmployees.filter((emp) => !hasNotJoinedYet(emp, selectedDate))
     const skipped = activeEmployees.length - eligible.length
     setSaving(true)
@@ -136,6 +179,7 @@ export default function Attendance() {
       await Promise.all(eligible.map((emp) => setAttendanceDay(emp.id, selectedDate, { status })))
       toast.success(t.toastMarkedAll(t.statusLabel[status], formatDate(selectedDate)))
       if (skipped > 0) toast.error(t.toastSkippedNotJoined(skipped))
+      setConfirmMarkAll(null)
     } catch (err) {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
@@ -143,16 +187,22 @@ export default function Attendance() {
     }
   }
 
+  // Eligible count for whichever status is currently staged in the
+  // confirmation dialog — same "not joined yet" filter markAll itself
+  // applies, so the dialog's count always matches what will actually happen.
+  const confirmMarkAllCount = confirmMarkAll ? activeEmployees.filter((emp) => !hasNotJoinedYet(emp, selectedDate)).length : 0
+
   function openEditAttendance(emp) {
     const record = attendance[emp.id]?.[selectedDate]
     setEditTarget(emp)
     setModalStatus(record?.status || 'oneShift')
     setModalStartTime(record?.startTime || DEFAULT_START_TIME)
+    setAutoMarkNextDayOff(true)
   }
 
   async function saveEditAttendance(e) {
     e?.preventDefault()
-    if (!editTarget) return
+    if (saving || !editTarget) return
     // Defensive re-check, in case the date changed underneath an already-open
     // modal — the edit button itself is disabled for this case (see the
     // status column body below), so this should only ever catch that edge.
@@ -165,11 +215,14 @@ export default function Attendance() {
     setSaving(true)
     try {
       await setAttendanceDay(editTarget.id, selectedDate, patch)
-      if (modalStatus === 'doubleShift') {
+      if (modalStatus === 'doubleShift' && autoMarkNextDayOff) {
+        // Always asks the server directly (createAttendanceDayIfAbsent),
+        // never the local `attendance` cache — a next-day that simply hasn't
+        // been loaded into this browser session yet (a month boundary, a
+        // fresh tab) used to look "empty" locally even when a real record
+        // already existed, and this auto-suggestion silently overwrote it.
         const nextDate = nextDateISO(selectedDate)
-        if (!attendance[editTarget.id]?.[nextDate]) {
-          await setAttendanceDay(editTarget.id, nextDate, { status: 'dutyOff' })
-        }
+        await createAttendanceDayIfAbsent(editTarget.id, nextDate, { status: 'dutyOff' })
       }
       toast.success(t.toastSaved(editTarget.name))
       setEditTarget(null)
@@ -177,6 +230,24 @@ export default function Attendance() {
       toast.error(err.message || t.toastSaveFailed)
     } finally {
       setSaving(false)
+    }
+  }
+
+  function openClearAttendance(emp) {
+    setClearTarget(emp)
+  }
+
+  async function confirmClearAttendance() {
+    if (clearing || !clearTarget) return
+    setClearing(true)
+    try {
+      await deleteAttendanceDay(clearTarget.id, selectedDate)
+      toast.success(t.toastCleared(clearTarget.name))
+      setClearTarget(null)
+    } catch (err) {
+      toast.error(err.message || t.toastSaveFailed)
+    } finally {
+      setClearing(false)
     }
   }
 
@@ -203,9 +274,15 @@ export default function Attendance() {
           nameExport: [emp.name, emp.fatherName ? `${t.sonOf} ${emp.fatherName}` : '', roleLabels[emp.role] || emp.role]
             .filter(Boolean)
             .join(' - '),
+          // Searched (not shown) — lets a search in Tamil find a role by its
+          // Tamil label, since the raw `role` field is always the English
+          // value underneath (see globalFilterFields below).
+          roleLabel: roleLabels[emp.role] || emp.role,
           attendanceExport: status
             ? `${t.statusLabel[status]}${isShiftDay ? ` (${formatTime12h(record?.startTime || DEFAULT_START_TIME)})` : ''}`
-            : t.noRecord,
+            : hasNotJoinedYet(emp, selectedDate)
+              ? t.notYetJoinedBadge
+              : t.noRecord,
         }
       }),
     [activeEmployees, attendance, selectedDate, t, roleLabels],
@@ -220,7 +297,7 @@ export default function Attendance() {
       exportField: 'nameExport',
       body: (emp) => (
         <>
-          <p className="font-medium text-slate-800">{emp.name}</p>
+          <p className="font-medium text-slate-800">{formatEmployeeName(emp)}</p>
           {emp.fatherName ? (
             <p className="text-xs font-medium text-slate-500">
               {t.sonOf} {emp.fatherName}
@@ -280,17 +357,27 @@ export default function Attendance() {
                 <p className="mt-1 text-[10px] font-medium text-slate-400">{t.shiftWindow(formatTime12h(startTime), formatTime12h(end), rolledOver)}</p>
               ) : null}
             </div>
-            <AppTooltip title={notYetJoined ? t.notYetJoinedTooltip(formatDate(emp.joinDate)) : undefined}>
-              <IconButton
-                onClick={() => openEditAttendance(emp)}
-                disabled={busy || notYetJoined}
-                aria-label={t.editAttendance}
-                title={notYetJoined ? undefined : t.editAttendance}
-                tone="edit"
-              >
-                <Pencil size={15} />
-              </IconButton>
+            <AppTooltip title={notYetJoined ? t.notYetJoinedTooltip(formatDate(emp.joinDate)) : !isManagerOrAdmin ? t.staffOnlyHint : t.editAttendance}>
+              <span>
+                <IconButton
+                  onClick={() => openEditAttendance(emp)}
+                  disabled={writeBlocked || notYetJoined}
+                  aria-label={t.editAttendance}
+                  tone="edit"
+                >
+                  <Pencil size={15} />
+                </IconButton>
+              </span>
             </AppTooltip>
+            {status ? (
+              <AppTooltip title={isManagerOrAdmin ? t.clearAttendance : t.staffOnlyHint}>
+                <span>
+                  <IconButton onClick={() => openClearAttendance(emp)} disabled={writeBlocked} aria-label={t.clearAttendance} tone="delete">
+                    <Eraser size={15} />
+                  </IconButton>
+                </span>
+              </AppTooltip>
+            ) : null}
           </div>
         )
       },
@@ -358,22 +445,22 @@ export default function Attendance() {
 
             {activeTab === 'history' ? (
               <div className="flex items-center gap-2">
-                <AppTooltip title="Previous month">
+                <AppTooltip title={commonT.previousMonth}>
                   <button
                     onClick={goPrevMonth}
                     disabled={busy}
-                    aria-label="Previous month"
+                    aria-label={commonT.previousMonth}
                     className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <ChevronLeft size={16} />
                   </button>
                 </AppTooltip>
                 <span className="min-w-[130px] text-center text-sm font-bold text-slate-800">{monthLabel}</span>
-                <AppTooltip title="Next month">
+                <AppTooltip title={commonT.nextMonth}>
                   <button
                     onClick={goNextMonth}
                     disabled={isCurrentMonth || busy}
-                    aria-label="Next month"
+                    aria-label={commonT.nextMonth}
                     className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <ChevronRight size={16} />
@@ -415,7 +502,7 @@ export default function Attendance() {
                   columns={columns}
                   data={selectedDateData}
                   rowKey="id"
-                  globalFilterFields={['name', 'phone', 'role', 'fatherName']}
+                  globalFilterFields={['name', 'phone', 'role', 'roleLabel', 'fatherName', 'attendanceExport']}
                   searchPlaceholder={t.searchPlaceholder}
                   defaultSortField="name"
                   fillHeight
@@ -428,34 +515,57 @@ export default function Attendance() {
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
                           <CalendarDays size={13} />
                         </div>
+                        <AppTooltip title={commonT.previousDay}>
+                          <button
+                            type="button"
+                            onClick={goPrevSelectedDay}
+                            aria-label={commonT.previousDay}
+                            className="rounded-md p-1 text-slate-500 transition-colors hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ChevronLeft size={15} />
+                          </button>
+                        </AppTooltip>
                         <AppDatePicker value={selectedDate} onChange={setSelectedDate} maxDate={today} variant="inline" className="w-[140px]" />
+                        <AppTooltip title={commonT.nextDay}>
+                          <button
+                            type="button"
+                            onClick={goNextSelectedDay}
+                            disabled={selectedDate >= today}
+                            aria-label={commonT.nextDay}
+                            className="rounded-md p-1 text-slate-500 transition-colors hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ChevronRight size={15} />
+                          </button>
+                        </AppTooltip>
                         {selectedDate === today ? (
                           <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">{t.today}</span>
                         ) : null}
                       </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <button
-                          onClick={() => markAll('oneShift')}
-                          disabled={busy}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {t.markAllOneShift}
-                        </button>
-                        <button
-                          onClick={() => markAll('absent')}
-                          disabled={busy}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {t.markAllAbsent}
-                        </button>
-                        <button
-                          onClick={() => markAll('leave')}
-                          disabled={busy}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {t.markAllLeave}
-                        </button>
-                      </div>
+                      <AppTooltip title={isManagerOrAdmin ? '' : t.staffOnlyHint}>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            onClick={() => setConfirmMarkAll('oneShift')}
+                            disabled={writeBlocked}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {t.markAllOneShift}
+                          </button>
+                          <button
+                            onClick={() => setConfirmMarkAll('absent')}
+                            disabled={writeBlocked}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 transition-all hover:bg-rose-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {t.markAllAbsent}
+                          </button>
+                          <button
+                            onClick={() => setConfirmMarkAll('leave')}
+                            disabled={writeBlocked}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-all hover:bg-amber-100 hover:shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {t.markAllLeave}
+                          </button>
+                        </div>
+                      </AppTooltip>
                     </>
                   }
                 />
@@ -491,7 +601,7 @@ export default function Attendance() {
                     <tbody>
                       {activeEmployees.map((emp) => (
                         <tr key={emp.id} className="bg-white">
-                          <td className="sticky left-0 z-10 whitespace-nowrap bg-inherit px-2 py-1 font-medium text-slate-700">{emp.name}</td>
+                          <td className="sticky left-0 z-10 whitespace-nowrap bg-inherit px-2 py-1 font-medium text-slate-700">{formatEmployeeName(emp)}</td>
                           {monthDays.map((d) => {
                             const record = attendance[emp.id]?.[d]
                             const status = record?.status
@@ -575,6 +685,19 @@ export default function Attendance() {
               </Field>
             ) : null}
 
+            {modalStatus === 'doubleShift' ? (
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={autoMarkNextDayOff}
+                  onChange={(e) => setAutoMarkNextDayOff(e.target.checked)}
+                  disabled={saving}
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-2 focus:ring-brand-200"
+                />
+                {t.suggestNextDayOff(formatDate(nextDateISO(selectedDate)))}
+              </label>
+            ) : null}
+
             <div className="flex justify-end gap-2 pt-1">
               <SecondaryButton type="button" onClick={() => setEditTarget(null)} disabled={saving}>
                 {t.cancel}
@@ -586,6 +709,27 @@ export default function Attendance() {
           </form>
         ) : null}
       </Modal>
+
+      <ConfirmDialog
+        isOpen={!!confirmMarkAll}
+        onClose={() => setConfirmMarkAll(null)}
+        onConfirm={() => markAll(confirmMarkAll)}
+        title={t.confirmMarkAllTitle}
+        description={confirmMarkAll ? t.confirmMarkAllDesc(confirmMarkAllCount, t.statusLabel[confirmMarkAll], formatDate(selectedDate)) : ''}
+        confirmLabel={t.confirmMarkAllButton}
+        confirmTone="brand"
+        loading={saving}
+      />
+
+      <ConfirmDialog
+        isOpen={!!clearTarget}
+        onClose={() => setClearTarget(null)}
+        onConfirm={confirmClearAttendance}
+        title={t.confirmClearTitle}
+        description={clearTarget ? t.confirmClearDesc(clearTarget.name, formatDate(selectedDate)) : ''}
+        confirmLabel={t.confirmClearButton}
+        loading={clearing}
+      />
     </div>
   )
 }
