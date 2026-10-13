@@ -411,7 +411,7 @@ export default function Attendance() {
           key={tab.key}
           onClick={() => setActiveTab(tab.key)}
           disabled={busy}
-          className={`relative px-4 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+          className={`relative min-h-11 px-4 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
             activeTab === tab.key ? 'text-brand-700' : 'text-slate-500 hover:text-slate-700'
           }`}
         >

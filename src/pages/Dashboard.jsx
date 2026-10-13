@@ -15,6 +15,7 @@ import CountUp from '../components/CountUp.jsx'
 import Modal from '../components/Modal.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import AppDatePicker from '../components/AppDatePicker.jsx'
+import AppTooltip from '../components/AppTooltip.jsx'
 import { Field, Input, PrimaryButton, SecondaryButton, IconButton } from '../components/FormControls.jsx'
 import { FullPageLoader } from '../components/Loader.jsx'
 
@@ -604,9 +605,11 @@ export default function Dashboard() {
                     <span className="flex min-w-0 items-center gap-1.5">
                       <CalendarDays size={11} className="shrink-0 text-slate-400" />
                       <span className="shrink-0 font-semibold text-slate-700">{formatDate(row.effective_from)}</span>
-                      <span className="truncate">
-                        {t.historyEntry(row.petrol, row.diesel, row.oil, row.oil_packet, row.oil_cane)}
-                      </span>
+                      <AppTooltip title={t.historyEntry(row.petrol, row.diesel, row.oil, row.oil_packet, row.oil_cane)}>
+                        <span className="min-w-0 truncate">
+                          {t.historyEntry(row.petrol, row.diesel, row.oil, row.oil_packet, row.oil_cane)}
+                        </span>
+                      </AppTooltip>
                     </span>
                     <span className="flex shrink-0 gap-1">
                       <IconButton

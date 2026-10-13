@@ -207,7 +207,7 @@ export default function EmployeeCredits() {
       exportable: false,
       body: (row) =>
         row.sourceFuelEntryId ? null : (
-          <div className="flex items-center justify-end gap-1">
+          <div className="flex flex-wrap items-center justify-end gap-1">
             {row.createdByName ? (
               <AppTooltip title={t.creditCreatedByLabel(row.createdByName, formatDateTime(row.createdAt))}>
                 <Info size={11} className="shrink-0 cursor-help text-slate-300 hover:text-slate-400" />

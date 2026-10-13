@@ -147,6 +147,14 @@ export default function AppDatePicker({
                     padding: '8px 12px',
                     backgroundColor: 'transparent',
                   },
+                  // Touch-target baseline (44x44) for the calendar-icon
+                  // trigger — only on this default variant, not inline/
+                  // compact (those are deliberately dense chips used in
+                  // tight toolbar rows elsewhere, e.g. Fuel Entry's filters).
+                  '& .MuiIconButton-root': {
+                    minWidth: '44px',
+                    minHeight: '44px',
+                  },
                 },
         },
         popper: {

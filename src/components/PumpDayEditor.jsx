@@ -582,7 +582,7 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             />
           </div>
         </div>
-        <div className="flex min-w-[150px] items-center gap-1.5 sm:min-w-0 sm:flex-[1.5]">
+        <div className="flex min-w-[150px] items-center gap-1.5 sm:min-w-[130px] sm:flex-[1.5]">
           <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
           <div className="min-w-0 flex-1">
             <Input value={formatCurrency(amount)} readOnly disabled className="bg-slate-50 text-xs font-bold text-emerald-700" />

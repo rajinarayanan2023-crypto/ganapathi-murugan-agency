@@ -68,7 +68,7 @@ export default function LoginAttempts() {
       header: t.colTime,
       sortable: true,
       style: { width: '14%' },
-      body: (a) => <span className="whitespace-nowrap text-xs text-slate-600">{formatDateTime(a.createdAt)}</span>,
+      body: (a) => <span className="text-xs text-slate-600">{formatDateTime(a.createdAt)}</span>,
     },
     {
       field: 'identifier',
@@ -201,11 +201,11 @@ export default function LoginAttempts() {
                 <p className="shrink-0 whitespace-nowrap text-xs text-slate-400">{t.showingCount(dateFilteredAttempts.length, loginAttempts.length)}</p>
                 <div className="flex shrink-0 items-center gap-1">
                   <span className="text-xs font-semibold text-slate-500">{t.dateFrom}</span>
-                  <AppDatePicker value={dateFrom} onChange={setDateFrom} maxDate={dateTo || undefined} clearable fixedWidth={118} />
+                  <AppDatePicker value={dateFrom} onChange={setDateFrom} maxDate={dateTo || undefined} clearable fixedWidth={172} />
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <span className="text-xs font-semibold text-slate-500">{t.dateTo}</span>
-                  <AppDatePicker value={dateTo} onChange={setDateTo} minDate={dateFrom || undefined} clearable fixedWidth={118} />
+                  <AppDatePicker value={dateTo} onChange={setDateTo} minDate={dateFrom || undefined} clearable fixedWidth={172} />
                 </div>
                 {dateFilterActive ? (
                   <button

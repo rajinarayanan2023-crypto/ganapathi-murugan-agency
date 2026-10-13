@@ -606,7 +606,7 @@ export default function CreditBills() {
       align: 'right',
       style: { width: '17%' },
       body: (c) => (
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
           <AppTooltip title={!isManagerOrAdmin ? t.staffOnlyHint : c.phone ? t.tooltipSendReminder : t.tooltipPhone}>
             <span>
               <IconButton onClick={() => setConfirmSendReminder(c)} disabled={writeBlocked || !c.phone} aria-label={t.tooltipSendReminder} tone="success">

@@ -272,7 +272,7 @@ export const PrimaryButton = forwardRef(function PrimaryButton({ className = '',
   return (
     <button
       ref={ref}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-brand-500 to-brand-700 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/30 transition-all hover:from-brand-600 hover:to-brand-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -284,7 +284,7 @@ export const SecondaryButton = forwardRef(function SecondaryButton({ className =
   return (
     <button
       ref={ref}
-      className={`inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition-all hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -307,9 +307,13 @@ const ICON_BUTTON_TONES = {
 export function IconButton({ tone = 'neutral', className = '', type = 'button', title, children, ...props }) {
   return (
     <AppTooltip title={title}>
+      {/* min-h/min-w-11 (44px) — a touch target recommendation; p-2 plus a
+          typically 14-18px icon alone lands closer to 32-34px square, which
+          is the minimum, not a target. Doesn't change the icon's own visual
+          size, only guarantees the tappable area around it. */}
       <button
         type={type}
-        className={`inline-flex items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
+        className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
         {...props}
       >
         {children}

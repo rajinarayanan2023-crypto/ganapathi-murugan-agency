@@ -222,7 +222,7 @@ export default function Layout() {
           <button
             onClick={() => setCollapsed((c) => !c)}
             aria-label={collapsed ? t.expandSidebar : t.collapseSidebar}
-            className="absolute -right-3 top-6 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-brand-200 bg-white text-slate-500 shadow-sm transition-colors hover:bg-brand-50 hover:text-brand-700"
+            className="absolute -right-3 top-6 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-brand-200 bg-white text-slate-500 shadow-sm transition-colors hover:bg-brand-50 hover:text-brand-700"
           >
             {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
@@ -253,7 +253,7 @@ export default function Layout() {
                   onClick={(e) => handleNavClick(e, item.to)}
                   className={({ isActive }) =>
                     collapsed
-                      ? `mx-auto flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
+                      ? `mx-auto flex h-11 w-11 items-center justify-center rounded-xl transition-colors ${
                           isActive ? 'bg-white text-brand-700 shadow-sm' : 'bg-white/40 text-slate-600 hover:bg-white/80 hover:text-slate-900'
                         }`
                       : `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
@@ -275,8 +275,8 @@ export default function Layout() {
               onClick={openPasswordModal}
               className={
                 collapsed
-                  ? 'mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900 active:scale-[0.98]'
-                  : 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-white/60 hover:text-slate-900 active:scale-[0.98]'
+                  ? 'mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900 active:scale-[0.98]'
+                  : 'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-white/60 hover:text-slate-900 active:scale-[0.98]'
               }
             >
               <KeyRound size={18} />
@@ -288,8 +288,8 @@ export default function Layout() {
               onClick={() => setLogoutConfirmOpen(true)}
               className={
                 collapsed
-                  ? 'mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
-                  : 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
+                  ? 'mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
+                  : 'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
               }
             >
               <LogOut size={18} />
@@ -317,7 +317,7 @@ export default function Layout() {
           <div className="flex items-center gap-3">
             <button
               onClick={toggleLanguage}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700 active:scale-95"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700 active:scale-95"
             >
               <Languages size={14} />
               {language === 'en' ? 'தமிழ்' : 'English'}
@@ -331,7 +331,7 @@ export default function Layout() {
               <button
                 onClick={() => setCalculatorOpen(true)}
                 aria-label={calculatorT.calculator}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-md shadow-emerald-600/40 transition-transform hover:scale-110 hover:shadow-lg active:scale-95"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-md shadow-emerald-600/40 transition-transform hover:scale-110 hover:shadow-lg active:scale-95"
               >
                 <Calculator size={19} strokeWidth={2.3} />
               </button>
@@ -357,7 +357,7 @@ export default function Layout() {
                     onClick={(e) => handleNavClick(e, '/login-attempts')}
                     aria-label={t.nav.loginAttempts}
                     className={({ isActive }) =>
-                      `flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-white shadow-md shadow-amber-600/40 transition-transform active:scale-95 ${
+                      `flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-white shadow-md shadow-amber-600/40 transition-transform active:scale-95 ${
                         isActive ? 'scale-105 ring-2 ring-amber-300 ring-offset-2 ring-offset-brand-50' : 'hover:scale-110 hover:shadow-lg'
                       }`
                     }
@@ -380,7 +380,7 @@ export default function Layout() {
               <button
                 onClick={openPasswordModal}
                 aria-label={t.changePassword}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700 transition-transform hover:scale-105 active:scale-95"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700 transition-transform hover:scale-105 active:scale-95"
               >
                 AD
               </button>
@@ -388,7 +388,7 @@ export default function Layout() {
             <AppTooltip title={t.logout}>
               <button
                 onClick={() => setLogoutConfirmOpen(true)}
-                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600 lg:hidden"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg p-2 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600 lg:hidden"
                 aria-label={t.logout}
               >
                 <LogOut size={18} />

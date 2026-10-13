@@ -320,14 +320,14 @@ export default function Offers() {
               <button
                 onClick={selectAll}
                 disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <CheckSquare size={13} /> {t.selectAll}
               </button>
               <button
                 onClick={clearSelection}
                 disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Square size={13} /> {t.clear}
               </button>
@@ -388,7 +388,7 @@ export default function Offers() {
                 type="button"
                 onClick={() => setTemplateUsed(tpl.id)}
                 disabled={busy}
-                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                className={`min-h-11 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   templateUsed === tpl.id
                     ? 'border-brand-400 bg-brand-100 text-brand-800'
                     : 'border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100'
