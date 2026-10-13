@@ -111,7 +111,17 @@ export default function DataTable({
                 // a visible track appearing even when content is just a
                 // couple of px wider than the card.
                 'flex-nowrap items-center justify-between gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
-              : 'flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'
+              : // sm:flex-wrap — a `shrink-0` toolbarActions group (below)
+                // never actually wraps ITSELF based on available row space;
+                // a shrink-0 flex item always claims its own full
+                // max-content width first, so without this, once that
+                // group's buttons add up to more than what's left beside
+                // the search box, the ROW just overflows (the last button
+                // clipped past the edge) instead of the whole group
+                // dropping to its own line below. This lets the group wrap
+                // as ONE unit when needed, same as it already does on
+                // mobile — just not gated on a hard breakpoint switch.
+                'flex-col flex-wrap gap-3 sm:flex-row sm:items-center sm:justify-between'
           }`}
         >
           <div
@@ -143,7 +153,15 @@ export default function DataTable({
                 relevant with toolbarNowrap — nothing wraps there either way. */}
             {trailingContent}
           </div>
-          <div className="flex shrink-0 items-center gap-2 self-start">
+          {/* flex-wrap — toolbarActions is whatever buttons a given page
+              passes (Employee Credits alone has four: Back to Salary,
+              Record Repayment, Add Excess, Add Credit, plus Export CSV
+              right after), and this previously had no wrap at all, unlike
+              the leading/search group right above it which already wraps
+              by default. A page with only one or two actions (the common
+              case) is unaffected either way — this only ever matters once
+              there are enough buttons that they wouldn't already fit. */}
+          <div className="flex shrink-0 flex-wrap items-center gap-2 self-start">
             {toolbarActions}
             {hideExport ? null : (
               <SecondaryButton

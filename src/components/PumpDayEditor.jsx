@@ -500,38 +500,53 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
 
   return (
     <div>
-      <div className="flex flex-nowrap items-center gap-1.5">
-        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.oilProductLabel}</span>
-        <div className="min-w-[130px] flex-[2]">
-          <Select
-            value={productId || ''}
-            onChange={(e) => onSelectProduct(e.target.value)}
-            className={`text-xs ${isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
-          >
-            <option value="">{t.selectProduct}</option>
-            {(lubricants || []).map((product) => (
-              <option key={product.id} value={product.id}>
-                {product.name}
-              </option>
-            ))}
-          </Select>
+      {/* flex-wrap below sm, flex-nowrap at sm+ (unchanged desktop layout) —
+          this row packs a product picker, rate, Available, Sold Count, and
+          Amount, which was never going to fit a phone's width. A
+          horizontal-scroll approach (like the Reading grid above) was tried
+          first, but unlike that grid this is a FORM, not a table meant to be
+          read sideways — scrolling Rate/Available/Sold Count off-screen
+          with no visible edge or scrollbar hint just hid them instead of
+          fixing anything. Wrapping instead keeps every field visible, just
+          stacked. Each label+control is its own flex sub-group (gap-1.5)
+          so wrapping only ever breaks BETWEEN groups, never between a label
+          and its own field. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:flex-nowrap sm:gap-1.5">
+        <div className="flex min-w-[150px] flex-1 items-center gap-1.5 sm:min-w-[160px] sm:flex-[2]">
+          <span className="shrink-0 text-xs font-semibold text-slate-600">{t.oilProductLabel}</span>
+          <div className="min-w-0 flex-1">
+            <Select
+              value={productId || ''}
+              onChange={(e) => onSelectProduct(e.target.value)}
+              className={`text-xs ${isDuplicate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+            >
+              <option value="">{t.selectProduct}</option>
+              {(lubricants || []).map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
-        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.rate}</span>
-        <div className="min-w-[80px] flex-1">
-          <Select
-            value={rate || ''}
-            onChange={(e) => handleRateChange(e.target.value)}
-            disabled={!selectedProduct}
-            title={missingRate ? t.oilRowIncompleteHint : t.oilStockRateHint}
-            className={`text-xs ${isDuplicate || missingRate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
-          >
-            <option value="">{t.selectRate}</option>
-            {batches.map((b) => (
-              <option key={b.cost} value={b.cost}>
-                {formatCurrency(b.cost)}
-              </option>
-            ))}
-          </Select>
+        <div className="flex min-w-[110px] items-center gap-1.5 sm:min-w-0 sm:flex-1">
+          <span className="shrink-0 text-xs font-semibold text-slate-600">{t.rate}</span>
+          <div className="min-w-0 flex-1">
+            <Select
+              value={rate || ''}
+              onChange={(e) => handleRateChange(e.target.value)}
+              disabled={!selectedProduct}
+              title={missingRate ? t.oilRowIncompleteHint : t.oilStockRateHint}
+              className={`text-xs ${isDuplicate || missingRate ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+            >
+              <option value="">{t.selectRate}</option>
+              {batches.map((b) => (
+                <option key={b.cost} value={b.cost}>
+                  {formatCurrency(b.cost)}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
         {selectedProduct && rate ? (
           <AppTooltip title={<CalcBreakdown rows={availableTooltipRows} formula={availableTooltipFormula} note={availableTooltipNote} />}>
@@ -541,33 +556,37 @@ function OilRow({ t, lubricants, productId, onSelectProduct, count, rate, onRate
             </span>
           </AppTooltip>
         ) : null}
-        <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-600">{t.soldCountLabel}</span>
-        <div className="min-w-[70px] flex-1">
-          <Input
-            type="number"
-            min="0"
-            step="any"
-            value={count || ''}
-            onChange={(e) => handleCountChange(e.target.value)}
-            placeholder="0"
-            disabled={!rate}
-            title={
-              !rate
-                ? t.oilStockSelectRateFirstHint
-                : isOverStock
-                  ? t.oilCountExceedsStockHint(effectiveAvailable)
-                  : missingCount
-                    ? t.oilRowIncompleteHint
-                    : available != null
-                      ? t.soldCountHint(available)
-                      : undefined
-            }
-            className={`text-xs ${isOverStock || missingCount ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
-          />
+        <div className="flex min-w-[140px] items-center gap-1.5 sm:min-w-0 sm:flex-1">
+          <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-600">{t.soldCountLabel}</span>
+          <div className="min-w-0 flex-1">
+            <Input
+              type="number"
+              min="0"
+              step="any"
+              value={count || ''}
+              onChange={(e) => handleCountChange(e.target.value)}
+              placeholder="0"
+              disabled={!rate}
+              title={
+                !rate
+                  ? t.oilStockSelectRateFirstHint
+                  : isOverStock
+                    ? t.oilCountExceedsStockHint(effectiveAvailable)
+                    : missingCount
+                      ? t.oilRowIncompleteHint
+                      : available != null
+                        ? t.soldCountHint(available)
+                        : undefined
+              }
+              className={`text-xs ${isOverStock || missingCount ? 'border-rose-400 bg-rose-50 focus:border-rose-500 focus:ring-rose-100' : ''}`}
+            />
+          </div>
         </div>
-        <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
-        <div className="min-w-[100px] flex-[1.5]">
-          <Input value={formatCurrency(amount)} readOnly disabled className="bg-slate-50 text-xs font-bold text-emerald-700" />
+        <div className="flex min-w-[150px] items-center gap-1.5 sm:min-w-0 sm:flex-[1.5]">
+          <span className="shrink-0 text-xs font-semibold text-slate-600">{t.amount}:</span>
+          <div className="min-w-0 flex-1">
+            <Input value={formatCurrency(amount)} readOnly disabled className="bg-slate-50 text-xs font-bold text-emerald-700" />
+          </div>
         </div>
         {showRemove ? (
           <IconButton onClick={onRemove} aria-label={t.removeOilRow} title={t.removeOilRow} tone="delete">
