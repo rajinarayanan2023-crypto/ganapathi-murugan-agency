@@ -606,7 +606,17 @@ export default function CreditBills() {
       align: 'right',
       style: { width: '17%' },
       body: (c) => (
-        <div className="flex flex-wrap items-center justify-end gap-1">
+        // flex-nowrap, not flex-wrap — this is a `dense` (tableLayout:
+        // fixed) table, so this cell's width is a strict percentage of
+        // whatever width the table itself has, not auto-sized to its
+        // content. On a narrower screen (or just a narrower window) that
+        // percentage can come out smaller than the 4 icon buttons' combined
+        // width, and flex-wrap let the last one (Delete) drop onto its own
+        // second line instead of staying level with the others. The
+        // table's own horizontal scroll (same pattern already used
+        // elsewhere in this app) is what should handle that case, not an
+        // in-cell wrap.
+        <div className="flex flex-nowrap items-center justify-end gap-1">
           <AppTooltip title={!isManagerOrAdmin ? t.staffOnlyHint : c.phone ? t.tooltipSendReminder : t.tooltipPhone}>
             <span>
               <IconButton onClick={() => setConfirmSendReminder(c)} disabled={writeBlocked || !c.phone} aria-label={t.tooltipSendReminder} tone="success">

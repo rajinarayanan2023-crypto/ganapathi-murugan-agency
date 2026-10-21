@@ -24,7 +24,9 @@ const SUGGESTED_AUDIT_EMAIL = 'sreeabinayaassociates@gmail.com'
 // Litres are rounded to whole numbers everywhere in this audit report (and
 // only here — the fuel-entry screens elsewhere keep their 2-decimal
 // precision) since an auditor reading/printing this report cares about
-// round-number litres, not fractional ones.
+// round-number litres, not fractional ones. The one exception is the
+// Payments Received Breakdown table's own Litres column (see its own
+// comment below), which shows the exact figure instead.
 function roundLtr(value) {
   return Math.round(Number(value) || 0)
 }
@@ -33,7 +35,10 @@ function roundLtr(value) {
 // in the emailed summary, and in the downloaded workbook) is rounded to the
 // nearest whole rupee — and only here, formatCurrency's 2-decimal precision
 // is untouched everywhere else in the app — since a printed/emailed audit
-// report is read and reconciled in whole rupees, not paise.
+// report is read and reconciled in whole rupees, not paise. Same exception
+// as roundLtr above: the Payments Received Breakdown table's own Amount
+// column shows the exact figure instead, since that table is meant to be
+// checked line-by-line against what was actually entered on the pump.
 function roundedCurrency(value) {
   return '₹' + Math.round(Number(value) || 0).toLocaleString('en-IN')
 }
@@ -828,7 +833,11 @@ export default function AuditModal({
       const fuel = rowConversionFuel(row)
       const litres = rowLiters(row, dayTotals)
       const labelWithFuel = fuel ? `${row.label} (${fuel === 'petrol' ? t.colPetrol : t.colDiesel})` : row.label
-      sheet.addRow([labelWithFuel, litres != null ? roundLtr(litres) : '—', roundedCurrency(row.amount)])
+      // Exact figures here too, matching the on-screen table (see its own
+      // comment above) — kept as a plain number (not the " L"-suffixed
+      // display string) for the same reason exactOilLtr is above: every
+      // other Litres cell in this sheet is a plain number.
+      sheet.addRow([labelWithFuel, litres != null ? Math.round(litres * 100) / 100 : '—', formatCurrency(row.amount)])
     }
     sheet.addRow([])
 
@@ -1194,8 +1203,15 @@ export default function AuditModal({
                           </span>
                         ) : null}
                       </td>
-                      <td className="px-3 py-2 text-right text-slate-500">{litres != null ? `${roundLtr(litres)} L` : '—'}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-slate-800">{roundedCurrency(row.amount)}</td>
+                      {/* Exact Litres and Amount here, not roundLtr/
+                          roundedCurrency — this is the one table in the
+                          audit report meant to be reconciled line-by-line
+                          against what was actually entered on the pump, so
+                          both figures stay at their original precision
+                          instead of this report's usual whole-number
+                          rounding. */}
+                      <td className="px-3 py-2 text-right text-slate-500">{litres != null ? formatLiters(litres) : '—'}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-slate-800">{formatCurrency(row.amount)}</td>
                     </tr>
                   )
                 })}

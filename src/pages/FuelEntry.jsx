@@ -634,8 +634,13 @@ export default function FuelEntry() {
         // above).
         const rowBusy = deletingId === row.id || exportingId === row.id
         return (
+        // compact — 3 icons in a dense 10%-width column; keeping them at the
+        // app's usual 44px touch target meant they no longer fit on one row
+        // at normal widths, so this column deliberately trades that for
+        // staying in a single row instead of wrapping or overlapping.
         <div className="flex justify-end gap-1">
           <IconButton
+            compact
             onClick={(e) => {
               e.stopPropagation()
               handleExportEntry(row._entry)
@@ -645,9 +650,10 @@ export default function FuelEntry() {
             title={t.exportAction}
             tone="download"
           >
-            {exportingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            {exportingId === row.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
           </IconButton>
           <IconButton
+            compact
             onClick={(e) => {
               e.stopPropagation()
               navigate(`/fuel-entry/${row.id}/edit`)
@@ -657,9 +663,10 @@ export default function FuelEntry() {
             title={commonT.edit}
             tone="edit"
           >
-            <Pencil size={15} />
+            <Pencil size={13} />
           </IconButton>
           <IconButton
+            compact
             onClick={(e) => {
               e.stopPropagation()
               setConfirmDeleteId(row.id)
@@ -669,7 +676,7 @@ export default function FuelEntry() {
             title={commonT.delete}
             tone="delete"
           >
-            {deletingId === row.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            {deletingId === row.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
           </IconButton>
         </div>
         )

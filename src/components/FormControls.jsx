@@ -304,7 +304,12 @@ const ICON_BUTTON_TONES = {
   brand: 'bg-brand-50 text-brand-700 hover:bg-brand-100',
 }
 
-export function IconButton({ tone = 'neutral', className = '', type = 'button', title, children, ...props }) {
+// compact — opts OUT of the 44px touch-target minimum below. Only for a
+// call site that's explicitly decided several of these need to stay packed
+// in one row (e.g. a dense table's Actions column with 3+ icons) rather
+// than wrapping or wideninig their own column — a deliberate, local
+// trade-off, not the default.
+export function IconButton({ tone = 'neutral', className = '', type = 'button', title, children, compact = false, ...props }) {
   return (
     <AppTooltip title={title}>
       {/* min-h/min-w-11 (44px) — a touch target recommendation; p-2 plus a
@@ -313,7 +318,7 @@ export function IconButton({ tone = 'neutral', className = '', type = 'button', 
           size, only guarantees the tappable area around it. */}
       <button
         type={type}
-        className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
+        className={`inline-flex ${compact ? '' : 'min-h-11 min-w-11'} items-center justify-center rounded-lg p-2 transition-colors active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 ${ICON_BUTTON_TONES[tone] || ICON_BUTTON_TONES.neutral} ${className}`}
         {...props}
       >
         {children}
