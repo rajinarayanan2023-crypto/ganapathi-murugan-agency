@@ -449,12 +449,17 @@ export default function AuditModal({
   // throw off the excess/shortage math. This section exists purely so the
   // audit report also shows what credit was collected on this date.
   const [creditPaymentForm, setCreditPaymentForm] = useState({ customerId: '', amount: '', mode: 'Cash' })
-  // Rounded to the nearest rupee, same as every other amount in this report
-  // (see roundedCurrency) — the auditor is reconciling whole-rupee cash/UPI
-  // totals, not fractional paise, so that's the exact figure to start from.
-  const [editedSale, setEditedSale] = useState(String(Math.round(dayTotals.totalSaleAmount)))
-  const [editedPayments, setEditedPayments] = useState(String(Math.round(dayTotals.totalPayments)))
-  const [editedVariance, setEditedVariance] = useState(String(Math.round(dayTotals.excessShortage)))
+  // Total Sale Amount starts at its exact value (2-decimal, not rounded to
+  // the nearest rupee like every other amount in this report) — this is the
+  // one figure an auditor reconciles line-by-line against the Fuel Sold
+  // table's own exact Amount column above it, so it has to match exactly,
+  // not just to the nearest rupee. Payments and Variance are exact for the
+  // same reason — rounding either one separately could make the three
+  // fields stop reconciling with each other (Payments − Sale Amount no
+  // longer landing exactly on the shown Variance).
+  const [editedSale, setEditedSale] = useState(String(Math.round(dayTotals.totalSaleAmount * 100) / 100))
+  const [editedPayments, setEditedPayments] = useState(String(Math.round(dayTotals.totalPayments * 100) / 100))
+  const [editedVariance, setEditedVariance] = useState(String(Math.round(dayTotals.excessShortage * 100) / 100))
   // This modal never unmounts between opens (its parent just toggles isOpen)
   // and, unlike PumpDayEditor, isn't even remounted on a date change (no
   // `key={date}` — FuelEntryForm just flips `date` in place) — so without
@@ -499,14 +504,20 @@ export default function AuditModal({
     const freshAuditTotalSaleAmount =
       roundedPetrolLtr * (ratesOnDate.petrol || 0) +
       roundedDieselLtr * (ratesOnDate.diesel || 0) +
-      exactOilLtr * (ratesOnDate.oil || 0) +
+      displayOilLtr * (ratesOnDate.oil || 0) +
       pocketAndServoOilAmount
-    setEditedSale(String(Math.round(freshAuditTotalSaleAmount)))
-    setEditedPayments(String(Math.round(dayTotals.totalPayments)))
+    // Exact (2-decimal), not rounded to the nearest rupee — all three
+    // fields here (Sale, Payments, Variance) share the same precision so
+    // Payments minus Sale always lands exactly on the shown Variance; if
+    // any one of the three were whole-rupee-rounded instead, its own hidden
+    // paise would leak into Variance as a confusing mismatch.
+    const exactPayments = Math.round(dayTotals.totalPayments * 100) / 100
+    setEditedSale(String(Math.round(freshAuditTotalSaleAmount * 100) / 100))
+    setEditedPayments(String(exactPayments))
     // Excess/Shortage default is simply Total Payments Collected minus this
     // same audit-consistent Total Sale Amount — not dayTotals.excessShortage,
     // which is derived from dayTotals.totalSaleAmount (see above).
-    setEditedVariance(String(Math.round(dayTotals.totalPayments - freshAuditTotalSaleAmount)))
+    setEditedVariance(String(Math.round((exactPayments - freshAuditTotalSaleAmount) * 100) / 100))
     // Fuel Stock — real, saved DB records now (see app/models/fuel_stock_log.py
     // and DataContext's saveFuelStockLog), not re-derived guesses. Both the
     // day audit and the Shift 3 audit get their own checkpoint here
@@ -629,13 +640,22 @@ export default function AuditModal({
   const roundedPetrolLtr = Math.max(0, pump1PetrolBreakdown.liters + pump2PetrolBreakdown.liters - testingDeductionLtr)
   const roundedDieselLtr = Math.max(0, pump1DieselBreakdown.liters + pump2DieselBreakdown.liters - testingDeductionLtr)
   const exactOilLtr = pump2OilBreakdown.liters
-  // Audit-only Amount = this report's own Rounded/Exact Litres × the
+  // The Litres cell for 2T Oil displays exactOilLtr rounded to 2 decimals
+  // (via formatLiters) — Amount is computed from that SAME rounded figure,
+  // not the fuller-precision exactOilLtr, so an auditor who multiplies the
+  // two numbers actually shown gets exactly this row's Amount, not a value
+  // that's silently off by whatever got rounded away from the display.
+  const displayOilLtr = Math.round(exactOilLtr * 100) / 100
+  // Audit-only Amount = this report's own Rounded Litres × the
   // auditor-revisable rate above — deliberately NOT dayTotals.petrolAmount/
   // dieselAmount/oilAmount (each shift's own saved rate × its own litres),
-  // so revising the rate here recomputes the whole row instantly.
+  // so revising the rate here recomputes the whole row instantly. Kept at
+  // full precision here (no rounding) — only the on-screen/exported display
+  // of these amounts rounds, via formatCurrency, never the value itself, so
+  // the Total Sale Amount below stays an exact sum of exactly what's shown.
   const auditPetrolAmount = roundedPetrolLtr * (Number(auditRatePetrol) || 0)
   const auditDieselAmount = roundedDieselLtr * (Number(auditRateDiesel) || 0)
-  const auditOilAmount = exactOilLtr * (Number(auditRateOil) || 0)
+  const auditOilAmount = displayOilLtr * (Number(auditRateOil) || 0)
   const shiftLabel = FUEL_ENTRY_TEXT[language].pumpEditor.shiftLabel
   const nozzleLabel = FUEL_ENTRY_TEXT[language].pumpEditor.nozzleLabel
   const employeeCreditLabel = FUEL_ENTRY_TEXT[language].pumpEditor.employeeCreditLabel
@@ -801,13 +821,16 @@ export default function AuditModal({
     sheet.addRow([t.daySummaryTitle]).font = { bold: true }
     const header = sheet.addRow([t.colFuel, t.colLitres, t.colRate, t.colAmount])
     header.font = { bold: true }
-    sheet.addRow([t.colPetrol, roundedPetrolLtr, Number(auditRatePetrol) || 0, roundedCurrency(auditPetrolAmount)])
+    // Amount cells here are exact (formatCurrency), not rounded — matching
+    // the on-screen table, so an auditor reconciling the downloaded sheet
+    // sees the same figures as the report they already checked on screen.
+    sheet.addRow([t.colPetrol, roundedPetrolLtr, Number(auditRatePetrol) || 0, formatCurrency(auditPetrolAmount)])
     if (testingDeductionLtr > 0) sheet.addRow(['', t.testingDeductionNote(testingDeductionLtr)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
-    sheet.addRow([t.colDiesel, roundedDieselLtr, Number(auditRateDiesel) || 0, roundedCurrency(auditDieselAmount)])
+    sheet.addRow([t.colDiesel, roundedDieselLtr, Number(auditRateDiesel) || 0, formatCurrency(auditDieselAmount)])
     if (testingDeductionLtr > 0) sheet.addRow(['', t.testingDeductionNote(testingDeductionLtr)]).font = { italic: true, color: { argb: 'FF94A3B8' } }
-    if (dayTotals.oilLtr) sheet.addRow([t.colOil, Math.round(exactOilLtr * 100) / 100, Number(auditRateOil) || 0, roundedCurrency(auditOilAmount)])
-    sheet.addRow([t.colPocketCane, '—', '—', roundedCurrency(pocketAndServoOilAmount)])
-    sheet.addRow([t.fieldSale, '', '', roundedCurrency(auditTotalSaleAmount)]).font = { bold: true }
+    if (dayTotals.oilLtr) sheet.addRow([t.colOil, displayOilLtr, Number(auditRateOil) || 0, formatCurrency(auditOilAmount)])
+    sheet.addRow([t.colPocketCane, '—', '—', formatCurrency(pocketAndServoOilAmount)])
+    sheet.addRow([t.fieldSale, '', '', formatCurrency(auditTotalSaleAmount)]).font = { bold: true }
     sheet.addRow([])
 
     sheet.addRow([t.lubricantSalesTitle]).font = { bold: true }
@@ -884,9 +907,9 @@ export default function AuditModal({
     sheet.addRow([])
 
     sheet.addRow([t.overallTitle]).font = { bold: true }
-    sheet.addRow([t.fieldSale, roundedCurrency(Number(editedSale) || 0)])
-    sheet.addRow([t.fieldPayments, roundedCurrency(Number(editedPayments) || 0)])
-    sheet.addRow([t.fieldVariance, roundedCurrency(variance)])
+    sheet.addRow([t.fieldSale, formatCurrency(Number(editedSale) || 0)])
+    sheet.addRow([t.fieldPayments, formatCurrency(Number(editedPayments) || 0)])
+    sheet.addRow([t.fieldVariance, formatCurrency(variance)])
     sheet.addRow([t.billsLabel, billsCount])
     sheet.addRow([])
 
@@ -940,9 +963,9 @@ export default function AuditModal({
     const body = t.whatsAppMessage(
       station?.name || '',
       formatDate(date),
-      roundedCurrency(Number(editedSale) || 0),
-      roundedCurrency(Number(editedPayments) || 0),
-      `${t.fieldVariance}: ${variance >= 0 ? '+' : ''}${roundedCurrency(variance)}`,
+      formatCurrency(Number(editedSale) || 0),
+      formatCurrency(Number(editedPayments) || 0),
+      `${t.fieldVariance}: ${variance >= 0 ? '+' : ''}${formatCurrency(variance)}`,
     )
 
     setSendingAction('email')
@@ -1045,7 +1068,7 @@ export default function AuditModal({
                       <Input type="number" step="any" min="0" value={auditRatePetrol} onChange={(e) => setAuditRatePetrol(e.target.value)} placeholder="0" />
                     </div>
                   </td>
-                  <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditPetrolAmount)}</td>
+                  <td className="px-3 py-2 text-right text-slate-600">{formatCurrency(auditPetrolAmount)}</td>
                 </tr>
                 <tr className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold text-blue-600">{t.colDiesel}</td>
@@ -1080,7 +1103,7 @@ export default function AuditModal({
                       <Input type="number" step="any" min="0" value={auditRateDiesel} onChange={(e) => setAuditRateDiesel(e.target.value)} placeholder="0" />
                     </div>
                   </td>
-                  <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditDieselAmount)}</td>
+                  <td className="px-3 py-2 text-right text-slate-600">{formatCurrency(auditDieselAmount)}</td>
                 </tr>
                 {dayTotals.oilLtr ? (
                   <tr className="border-t border-slate-100">
@@ -1111,18 +1134,18 @@ export default function AuditModal({
                         <Input type="number" step="any" min="0" value={auditRateOil} onChange={(e) => setAuditRateOil(e.target.value)} placeholder="0" />
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(auditOilAmount)}</td>
+                    <td className="px-3 py-2 text-right text-slate-600">{formatCurrency(auditOilAmount)}</td>
                   </tr>
                 ) : null}
                 <tr className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold text-emerald-700">{t.colPocketCane}</td>
                   <td className="px-3 py-2 text-slate-400">—</td>
                   <td className="px-3 py-2 text-slate-400">—</td>
-                  <td className="px-3 py-2 text-right text-slate-600">{roundedCurrency(pocketAndServoOilAmount)}</td>
+                  <td className="px-3 py-2 text-right text-slate-600">{formatCurrency(pocketAndServoOilAmount)}</td>
                 </tr>
                 <tr className="border-t border-slate-200 bg-slate-50">
                   <td className="px-3 py-2 font-bold text-slate-800" colSpan={3}>{t.fieldSale}</td>
-                  <td className="px-3 py-2 text-right font-bold text-slate-800">{roundedCurrency(auditTotalSaleAmount)}</td>
+                  <td className="px-3 py-2 text-right font-bold text-slate-800">{formatCurrency(auditTotalSaleAmount)}</td>
                 </tr>
               </tbody>
             </table>
