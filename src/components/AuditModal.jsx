@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Send, Download, ClipboardCheck, X, Loader2, CalendarDays } from 'lucide-react'
+import { Send, Download, ClipboardCheck, X, Loader2, CalendarDays, History } from 'lucide-react'
 import Modal from './Modal.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import { FullPageLoader } from './Loader.jsx'
 import { Field, Input, Select, Textarea, PrimaryButton, SecondaryButton } from './FormControls.jsx'
 import AppTooltip from './AppTooltip.jsx'
 import CalcBreakdown from './CalcBreakdown.jsx'
-import { formatDate, formatCurrency, formatLiters } from '../utils/format.js'
+import { formatDate, formatDateTime, formatCurrency, formatLiters } from '../utils/format.js'
 import { caneOilRawAmount, NOZZLE_KEYS, sortPumpEntries, withCarriedOpenings } from '../utils/fuelCalc.js'
 import { fuelRatesForShiftScope } from '../utils/fuelRate.js'
 import { computeMonthlyPay } from '../utils/salary.js'
 import { closingBalance } from '../data/mockData.js'
 import { useLanguage } from '../context/LanguageContext.jsx'
 import { useData } from '../context/DataContext.jsx'
-import { sendAuditEmail } from '../lib/apiClient.js'
+import { sendAuditEmail, fetchAuditEmailLog } from '../lib/apiClient.js'
 import { FUEL_ENTRY_TEXT } from '../i18n/fuelEntry.js'
 
 // Suggested audit recipient — pre-filled but always editable, so the report
@@ -575,6 +575,31 @@ export default function AuditModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, date])
   const [contactEmail, setContactEmail] = useState(station?.auditContactEmail || SUGGESTED_AUDIT_EMAIL)
+  // Last few Audit-report email sends for this exact date + audit type (see
+  // fetchAuditEmailLog) — fetched fresh whenever the modal opens for a given
+  // date, and again right after a send succeeds, so "last sent" never shows
+  // stale info from a previous date this same modal instance was last open
+  // for (it never unmounts between opens — see the isOpen effect above).
+  const [emailHistory, setEmailHistory] = useState([])
+  const [emailHistoryLoading, setEmailHistoryLoading] = useState(false)
+  async function refreshEmailHistory() {
+    setEmailHistoryLoading(true)
+    try {
+      const log = await fetchAuditEmailLog(date, !isDayAudit)
+      setEmailHistory(log || [])
+    } catch {
+      // Silently leave whatever was last shown (or empty) — a failed
+      // history fetch shouldn't block or error out the rest of the modal,
+      // which works fine without it.
+    } finally {
+      setEmailHistoryLoading(false)
+    }
+  }
+  useEffect(() => {
+    if (!isOpen) return
+    refreshEmailHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, date])
   // Tracks WHICH of Download/Send Email is in flight (not just whether one
   // is) so only the button actually clicked shows its own spinner, while
   // both still disable — same "one write in flight blocks the other" intent
@@ -981,9 +1006,15 @@ export default function AuditModal({
         bodyText: body,
         workbookBlob,
         filename: `audit-report-${date}.xlsx`,
+        date,
+        isShift3: !isDayAudit,
       })
       onUpdateAuditContact?.(trimmedEmail)
       toast.success(t.toastSent)
+      // Refresh right away so "last sent" reflects this send immediately —
+      // without this the modal would keep showing whatever was last fetched
+      // on open until it's closed and reopened.
+      refreshEmailHistory()
     } catch (err) {
       toast.error(err.message || t.toastReportFailed)
     } finally {
@@ -1533,6 +1564,45 @@ export default function AuditModal({
             </button>
           ) : null}
           <p className="mt-1.5 text-xs text-slate-400">{t.sendHint}</p>
+
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <History size={13} /> {t.emailHistoryTitle}
+            </p>
+            {emailHistoryLoading ? (
+              <p className="text-xs text-slate-400">{t.emailHistoryLoading}</p>
+            ) : emailHistory.length === 0 ? (
+              <p className="text-xs text-slate-400">{t.emailHistoryNotSent}</p>
+            ) : (
+              <ul className="space-y-1">
+                {emailHistory.map((entry) => (
+                  <li key={entry.id} className="text-xs text-slate-600">
+                    {t
+                      .emailHistoryEntryParts(entry.recipient_email, formatDateTime(entry.sent_at), entry.created_by_name)
+                      .map((part, i) =>
+                        part.text != null ? (
+                          <span key={i}>{part.text}</span>
+                        ) : (
+                          <span
+                            key={i}
+                            className={
+                              part.type === 'email'
+                                ? 'font-semibold text-brand-700'
+                                : part.type === 'name'
+                                  ? 'font-semibold text-violet-600'
+                                  : ''
+                            }
+                          >
+                            {part.value}
+                          </span>
+                        ),
+                      )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             <SecondaryButton type="button" onClick={handleDownload} disabled={sending}>
               <Download size={15} /> {t.downloadButton}

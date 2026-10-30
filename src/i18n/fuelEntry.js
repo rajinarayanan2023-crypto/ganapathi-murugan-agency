@@ -199,6 +199,23 @@ export const FUEL_ENTRY_TEXT = {
       downloadButton: 'Download (.xlsx)',
       sendWhatsAppButton: 'Send via Email',
       sendHint: 'Emails the report directly to the address above, with the .xlsx report already attached.',
+      emailHistoryTitle: 'Last Sent',
+      emailHistoryLoading: 'Checking send history…',
+      emailHistoryNotSent: 'Not sent yet',
+      // Returns an ordered list of parts instead of one plain string, so the
+      // UI can color the email and sender name differently (see AuditModal)
+      // — a plain templated string can't carry that styling. Each part is
+      // either { text } (plain connective words, unstyled) or
+      // { type, value } for the three dynamic bits (email/date/name), kept
+      // separate so each language's own word order/grammar still works
+      // (e.g. Tamil's dative suffix directly after the email, no "to").
+      emailHistoryEntryParts: (email, dateTime, name) => [
+        { text: 'Sent to ' },
+        { type: 'email', value: email },
+        { text: ' on ' },
+        { type: 'date', value: dateTime },
+        ...(name ? [{ text: ' by ' }, { type: 'name', value: name }] : []),
+      ],
       sendingEmailLabel: 'Sending audit report…',
       contactRequired: 'Enter an email address for the audit contact first',
       toastDownloaded: 'Audit report downloaded',
@@ -518,6 +535,16 @@ export const FUEL_ENTRY_TEXT = {
       downloadButton: 'பதிவிறக்கு (.xlsx)',
       sendWhatsAppButton: 'மின்னஞ்சல் வழியாக அனுப்பு',
       sendHint: 'மேலே உள்ள முகவரிக்கு அறிக்கை நேரடியாக மின்னஞ்சல் செய்யப்படும், .xlsx அறிக்கை ஏற்கனவே இணைக்கப்பட்டிருக்கும்.',
+      emailHistoryTitle: 'கடைசியாக அனுப்பியது',
+      emailHistoryLoading: 'அனுப்பிய வரலாற்றை சரிபார்க்கிறது…',
+      emailHistoryNotSent: 'இன்னும் அனுப்பப்படவில்லை',
+      emailHistoryEntryParts: (email, dateTime, name) => [
+        { type: 'email', value: email },
+        { text: ' க்கு ' },
+        { type: 'date', value: dateTime },
+        { text: ' அன்று ' },
+        ...(name ? [{ type: 'name', value: name }, { text: ' அனுப்பினார்' }] : [{ text: 'அனுப்பப்பட்டது' }]),
+      ],
       sendingEmailLabel: 'தணிக்கை அறிக்கை அனுப்பப்படுகிறது…',
       contactRequired: 'முதலில் தணிக்கை தொடர்புக்கான மின்னஞ்சல் முகவரியை உள்ளிடவும்',
       toastDownloaded: 'தணிக்கை அறிக்கை பதிவிறக்கப்பட்டது',

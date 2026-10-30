@@ -255,7 +255,7 @@ export default function Login() {
                     <label className="mb-[7px] block text-[12.5px] font-semibold text-slate-600">Username / Email</label>
                     <motion.div key={userShakeKey} animate={userError ? { x: [0, -8, 8, -5, 5, 0] } : {}} transition={{ duration: 0.45 }}>
                       <div className="relative flex items-center">
-                        <Mail size={17} className="pointer-events-none absolute left-[13px] text-slate-400" />
+                        <Mail size={17} className="pointer-events-none absolute left-[13px] top-1/2 -translate-y-1/2 text-slate-400" />
                         <input
                           type="text"
                           value={username}
@@ -276,7 +276,7 @@ export default function Login() {
                     <label className="mb-[7px] block text-[12.5px] font-semibold text-slate-600">Password</label>
                     <motion.div key={passShakeKey} animate={passError ? { x: [0, -8, 8, -5, 5, 0] } : {}} transition={{ duration: 0.45 }}>
                       <div className="relative flex items-center">
-                        <Lock size={17} className="pointer-events-none absolute left-[13px] text-slate-400" />
+                        <Lock size={17} className="pointer-events-none absolute left-[13px] top-1/2 -translate-y-1/2 text-slate-400" />
                         <input
                           type={showPassword ? 'text' : 'password'}
                           value={password}
@@ -293,7 +293,7 @@ export default function Login() {
                             type="button"
                             onClick={() => setShowPassword((v) => !v)}
                             aria-label={showPassword ? 'Hide password' : 'Show password'}
-                            className="absolute right-3 flex text-slate-400 transition-all hover:scale-110 hover:text-brand-600"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 flex text-slate-400 transition-all hover:scale-110 hover:text-brand-600"
                           >
                             {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                           </button>

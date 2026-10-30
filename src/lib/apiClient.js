@@ -495,14 +495,30 @@ export function getFuelEntries({ pumpKey, date, before, limit, offset } = {}) {
 // never rebuilt or re-validated on the backend, only attached and sent.
 // apiAuthPost already passes a FormData body straight through untouched
 // (see rawRequest's isFormData branch), so no separate low-level helper is
-// needed here.
-export function sendAuditEmail({ toEmail, subject, bodyText, workbookBlob, filename }) {
+// needed here. date/isShift3 don't affect the send itself — the backend
+// only uses them to record this send in the Audit Email history (see
+// fetchAuditEmailLog below), scoped to the right date + audit type.
+export function sendAuditEmail({ toEmail, subject, bodyText, workbookBlob, filename, date, isShift3 }) {
   const formData = new FormData()
   formData.set('to_email', toEmail)
   formData.set('subject', subject)
   formData.set('body_text', bodyText)
+  formData.set('date', date)
+  formData.set('is_shift3', isShift3 ? 'true' : 'false')
   formData.set('attachment', workbookBlob, filename)
   return apiAuthPost('/fuel-entries/send-audit-email', formData)
+}
+
+// Last few Audit-report email sends for one date + audit type (day vs
+// Shift 3) — lets AuditModal show "last sent" history that survives the
+// modal being closed and reopened, instead of that info only ever living
+// in React state for as long as the tab stays open.
+export function fetchAuditEmailLog(date, isShift3, limit = 3) {
+  const params = new URLSearchParams()
+  params.set('date', date)
+  params.set('is_shift3', isShift3 ? 'true' : 'false')
+  params.set('limit', limit)
+  return apiGet(`/fuel-entries/audit-email-log?${params.toString()}`)
 }
 
 export function getFuelEntry(id) {

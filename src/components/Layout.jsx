@@ -228,7 +228,7 @@ export default function Layout() {
           </button>
         </AppTooltip>
 
-        <div className={`flex items-center border-b border-brand-100 ${collapsed ? 'justify-center py-3' : 'gap-2.5 px-5 py-4'}`}>
+        <div className={`flex items-center border-b border-brand-100 ${collapsed ? 'justify-center py-2' : 'gap-2.5 px-5 py-4'}`}>
           <div className={`flex shrink-0 items-center justify-center ${collapsed ? 'h-8 w-8' : 'h-10 w-14'}`}>
             <img src={station.logo} alt={station.name} className="h-full w-full object-contain" />
           </div>
@@ -240,7 +240,7 @@ export default function Layout() {
           )}
         </div>
 
-        <nav className={`flex-1 overflow-y-auto overflow-x-hidden ${collapsed ? 'space-y-2 px-4 py-3' : 'space-y-1 px-3 py-3'}`}>
+        <nav className={`flex-1 overflow-y-auto overflow-x-hidden ${collapsed ? 'space-y-2.5 px-4 py-2' : 'space-y-1 px-3 py-3'}`}>
           {visibleNavItems.map((item) => (
             <AppTooltip key={item.to} title={collapsed ? t.nav[item.key] : ''} placement="right">
               {/* MUI Tooltip clones its child to attach hover/ref handlers, which
@@ -253,7 +253,7 @@ export default function Layout() {
                   onClick={(e) => handleNavClick(e, item.to)}
                   className={({ isActive }) =>
                     collapsed
-                      ? `mx-auto flex h-11 w-11 items-center justify-center rounded-xl transition-colors ${
+                      ? `mx-auto flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${
                           isActive ? 'bg-white text-brand-700 shadow-sm' : 'bg-white/40 text-slate-600 hover:bg-white/80 hover:text-slate-900'
                         }`
                       : `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
@@ -269,13 +269,13 @@ export default function Layout() {
           ))}
         </nav>
 
-        <div className={`border-t border-brand-100 py-3 ${collapsed ? 'space-y-2 px-4' : 'space-y-1 px-3'}`}>
+        <div className={`border-t border-brand-100 ${collapsed ? 'space-y-2 px-4 py-2.5' : 'space-y-1 px-3 py-3'}`}>
           <AppTooltip title={collapsed ? t.changePassword : ''} placement="right">
             <button
               onClick={openPasswordModal}
               className={
                 collapsed
-                  ? 'mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900 active:scale-[0.98]'
+                  ? 'mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900 active:scale-[0.98]'
                   : 'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-white/60 hover:text-slate-900 active:scale-[0.98]'
               }
             >
@@ -288,7 +288,7 @@ export default function Layout() {
               onClick={() => setLogoutConfirmOpen(true)}
               className={
                 collapsed
-                  ? 'mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
+                  ? 'mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-white/40 text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
                   : 'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-rose-50 hover:text-rose-600 active:scale-[0.98]'
               }
             >
